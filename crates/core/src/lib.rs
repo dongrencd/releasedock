@@ -4,7 +4,9 @@
 //! decisions in two places.
 
 pub mod asset_matcher;
+pub mod config;
 pub mod install_plan;
+pub mod installer;
 pub mod manifest;
 pub mod release;
 pub mod repo;

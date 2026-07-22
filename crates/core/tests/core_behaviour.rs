@@ -1,7 +1,7 @@
 use ghrm_core::{
     asset_matcher::{Architecture, AssetMatcher, OperatingSystem},
     install_plan::InstallPlan,
-    manifest::{InstalledApp, ManifestStore},
+    manifest::{InstallPathKind, InstalledApp, ManifestStore},
     release::{Release, ReleaseAsset},
     repo::RepoRef,
 };
@@ -79,9 +79,96 @@ fn writes_and_reads_manifest_atomically() {
         .unwrap();
 
     let manifest = store.load().unwrap();
-    assert_eq!(manifest.schema_version, 1);
+    assert_eq!(manifest.schema_version, 2);
     assert_eq!(manifest.apps[0].id, "owner/project");
     assert_eq!(manifest.apps[0].installed_version, "v1.0.0");
+}
+
+#[test]
+fn upserts_and_removes_manifest_entries() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ManifestStore::at_path(temp.path().join("apps.json"));
+
+    store
+        .upsert_app(InstalledApp::new(
+            "owner/project",
+            "project",
+            "v1.0.0",
+            "project-linux-x86_64.tar.gz",
+            temp.path().join("project"),
+        ))
+        .unwrap();
+    store
+        .upsert_app(InstalledApp::new(
+            "owner/project",
+            "project",
+            "v1.1.0",
+            "project-linux-x86_64.tar.gz",
+            temp.path().join("project"),
+        ))
+        .unwrap();
+
+    let manifest = store.load().unwrap();
+    assert_eq!(manifest.apps.len(), 1);
+    assert_eq!(manifest.apps[0].installed_version, "v1.1.0");
+
+    let removed = store.remove_app("owner/project").unwrap();
+    assert!(removed.is_some());
+    assert!(store.load().unwrap().apps.is_empty());
+}
+
+#[test]
+fn upgrades_legacy_manifest_entries_to_current_install_metadata() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ManifestStore::at_path(temp.path().join("apps.json"));
+    std::fs::write(
+        store.path(),
+        r#"{
+          "schema_version": 1,
+          "apps": [
+            {
+              "id": "owner/project",
+              "name": "project",
+              "repo_url": "https://github.com/owner/project",
+              "installed_version": "v1.0.0",
+              "installed_at": "2026-07-21T10:20:30Z",
+              "asset_name": "project-windows-x64.exe",
+              "install_path": "/tmp/project/project-windows-x64.exe"
+            }
+          ]
+        }"#,
+    )
+    .unwrap();
+
+    let manifest = store.load().unwrap();
+    assert_eq!(manifest.schema_version, 2);
+    assert!(!manifest.apps[0].uninstall_supported);
+    assert_eq!(
+        manifest.apps[0].install_path_kind,
+        ghrm_core::manifest::InstallPathKind::SystemInstaller
+    );
+}
+
+#[test]
+fn rejects_uninstall_for_system_installer_entries() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ManifestStore::at_path(temp.path().join("apps.json"));
+    store
+        .save_apps(&[InstalledApp::with_install_metadata(
+            "owner/project",
+            "project",
+            "v1.0.0",
+            "project-windows-x64.exe",
+            temp.path().join("project/project-windows-x64.exe"),
+            ghrm_core::asset_matcher::InstallType::WindowsInstaller,
+            InstallPathKind::SystemInstaller,
+            false,
+        )])
+        .unwrap();
+
+    let error = ghrm_core::installer::uninstall_repo(&store, "owner/project").unwrap_err();
+    assert!(error.to_string().contains("system installer"));
+    assert_eq!(store.load().unwrap().apps.len(), 1);
 }
 
 #[test]

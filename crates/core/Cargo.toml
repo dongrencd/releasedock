@@ -7,11 +7,15 @@ edition.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 directories.workspace = true
+flate2.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tar.workspace = true
 thiserror.workspace = true
+zip.workspace = true
 url.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+tokio.workspace = true

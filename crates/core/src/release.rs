@@ -1,6 +1,9 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT};
+use reqwest::{
+    Proxy,
+    header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT},
+};
 use serde::{Deserialize, Serialize};
 
 use crate::repo::RepoRef;
@@ -72,7 +75,7 @@ pub struct ReleaseClient {
 }
 
 impl ReleaseClient {
-    pub fn new(github_token: Option<&str>) -> Result<Self> {
+    pub fn new(github_token: Option<&str>, proxy_url: Option<&str>) -> Result<Self> {
         let mut headers = HeaderMap::new();
         headers.insert(USER_AGENT, HeaderValue::from_static("gh-release-manager"));
         headers.insert(
@@ -86,11 +89,15 @@ impl ReleaseClient {
             headers.insert(AUTHORIZATION, value);
         }
 
+        let mut builder = reqwest::Client::builder().default_headers(headers);
+        if let Some(proxy_url) = proxy_url.filter(|value| !value.trim().is_empty()) {
+            let proxy =
+                Proxy::all(proxy_url).context("failed to configure proxy for GitHub client")?;
+            builder = builder.proxy(proxy);
+        }
+
         Ok(Self {
-            client: reqwest::Client::builder()
-                .default_headers(headers)
-                .build()
-                .context("failed to build GitHub client")?,
+            client: builder.build().context("failed to build GitHub client")?,
         })
     }
 
@@ -118,5 +125,24 @@ impl ReleaseClient {
             .json::<Release>()
             .await
             .context("failed to parse GitHub release response")
+    }
+
+    pub async fn download_bytes(&self, url: &str) -> Result<Vec<u8>> {
+        let response = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .context("failed to request GitHub asset")?;
+
+        if !response.status().is_success() {
+            anyhow::bail!("GitHub asset request failed with {}", response.status());
+        }
+
+        response
+            .bytes()
+            .await
+            .map(|bytes| bytes.to_vec())
+            .context("failed to read GitHub asset body")
     }
 }

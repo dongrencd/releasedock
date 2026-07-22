@@ -40,6 +40,7 @@ This release does not include a release note.
 - 当前版本到最新版本。
 - 发布时间。
 - release note 原文。
+- 安装预览，包含选择到的 asset、安装类型和确认提示。
 - asset 文件。
 - 安装路径。
 - 打开 Release 页面。

@@ -1,12 +1,17 @@
 [package]
-name = "ghrm"
+name = "ghrm-cli"
 version = "0.1.0"
 edition.workspace = true
+
+[[bin]]
+name = "ghrm"
+path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
 ghrm-core = { path = "../core" }
+serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 

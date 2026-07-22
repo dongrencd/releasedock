@@ -1,5 +1,5 @@
 [package]
-name = "ghrm-desktop"
+name = "ghrm"
 version = "0.1.0"
 edition = "2024"
 
@@ -9,9 +9,13 @@ edition = "2024"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+url = "2"
+ghrm-cli = { package = "ghrm-cli", path = "../../../crates/cli" }
 ghrm-core = { path = "../../../crates/core" }
 
 [features]

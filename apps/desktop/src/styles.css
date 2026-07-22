@@ -121,6 +121,7 @@ input {
 
 .topbar {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   align-items: center;
   padding: 18px 22px;
@@ -139,6 +140,46 @@ input {
   border-radius: 8px;
   color: #64748b;
   background: #f8fafc;
+}
+
+.repoBox {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  color: #64748b;
+  background: #fffdf8;
+}
+
+.repoBox input {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  color: #18212f;
+  background: transparent;
+}
+
+.settingsTopbarCopy {
+  display: flex;
+  flex: 1;
+  min-width: 240px;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.settingsTopbarCopy strong {
+  color: #18212f;
+  font-size: 15px;
+}
+
+.settingsTopbarCopy span {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .searchBox input {
@@ -160,6 +201,14 @@ input {
   min-height: 38px;
   border-radius: 8px;
   cursor: pointer;
+}
+
+.ghostButton:disabled,
+.primaryButton:disabled,
+.iconButton:disabled,
+.linkButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .ghostButton {
@@ -205,6 +254,68 @@ input {
   gap: 18px;
   padding: 20px 22px;
   min-height: 0;
+}
+
+.settingsPanel {
+  display: grid;
+  gap: 18px;
+  padding: 20px 22px 24px;
+}
+
+.settingsForm {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.fieldRow {
+  display: grid;
+  gap: 8px;
+}
+
+.fieldRow span {
+  color: #243044;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.fieldRow small {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.fieldRow input {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  color: #18212f;
+  background: #f8fafc;
+}
+
+.fieldRow.wide {
+  grid-column: 1 / -1;
+}
+
+.settingsActions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  padding: 0 22px 4px;
+}
+
+.errorBanner {
+  margin: 0 22px;
+  padding: 12px 14px;
+  border: 1px solid #f5c2c7;
+  border-radius: 8px;
+  color: #991b1b;
+  background: #fef2f2;
 }
 
 .inboxPanel,
@@ -270,6 +381,7 @@ h2 {
   border-radius: 999px;
   color: #475569;
   background: #ffffff;
+  cursor: pointer;
 }
 
 .filterPill.active {
@@ -307,6 +419,7 @@ h2 {
   color: #18212f;
   background: #ffffff;
   text-align: left;
+  cursor: pointer;
 }
 
 .tableRow:hover,
@@ -378,6 +491,25 @@ h2 {
 .rowAction {
   color: #0f766e;
   font-weight: 700;
+  text-align: right;
+}
+
+.emptyState,
+.emptyInspector {
+  display: grid;
+  align-content: center;
+  justify-items: start;
+  gap: 6px;
+  min-height: 180px;
+  padding: 18px 14px;
+  color: #64748b;
+  background: #f8fafc;
+  border: 1px dashed #cbd5e1;
+  border-radius: 8px;
+}
+
+.emptyState {
+  grid-column: 1 / -1;
 }
 
 .inspector {
@@ -467,6 +599,42 @@ h2 {
   line-height: 1.55;
 }
 
+.installPreview {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+  padding: 14px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.previewLine {
+  color: #243044;
+  font-weight: 600;
+}
+
+.previewNotes {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 18px;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.previewActions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.previewActions .ghostButton,
+.previewActions .primaryButton {
+  flex: 1 1 132px;
+}
+
 .detailList {
   display: grid;
   gap: 12px;
@@ -514,4 +682,19 @@ h2 {
   height: 100%;
   border-radius: inherit;
   background: #0f766e;
+}
+
+.progressTrack.busy .progressValue {
+  width: 36%;
+  animation: progressShift 1.2s ease-in-out infinite alternate;
+}
+
+@keyframes progressShift {
+  from {
+    transform: translateX(0);
+  }
+
+  to {
+    transform: translateX(160%);
+  }
 }

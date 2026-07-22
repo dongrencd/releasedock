@@ -6,13 +6,16 @@ export type ManagedApp = {
   currentVersion: string;
   latestVersion: string;
   status: AppStatus;
-  source?: string;
+  source: string;
   releaseTitle?: string;
   releaseNote?: string;
   releaseUrl?: string;
   publishedAt?: string;
   assetName?: string;
-  installPath?: string;
+  installPath: string;
+  installType?: "WindowsInstaller" | "PortableArchive" | "AppImage" | "LinuxPackage" | "Archive" | "Unknown";
+  installPathKind?: "ManagedPath" | "SystemInstaller" | "Unknown";
+  uninstallSupported?: boolean;
 };
 
 export type InboxItem = ManagedApp & {
@@ -20,51 +23,14 @@ export type InboxItem = ManagedApp & {
   priority: number;
 };
 
-export const demoApps: ManagedApp[] = [
-  {
-    id: "mifi/lossless-cut",
-    name: "LosslessCut",
-    currentVersion: "v3.64.0",
-    latestVersion: "v3.65.0",
-    status: "updateAvailable",
-    source: "GitHub",
-    releaseTitle: "Stable release",
-    releaseNote:
-      "Fix crash and improve startup.\n\n- Windows startup is faster\n- Portable archive layout is unchanged\n- Export progress no longer freezes on long videos",
-    releaseUrl: "https://github.com/mifi/lossless-cut/releases/tag/v3.65.0",
-    publishedAt: "2026-07-21T10:20:30Z",
-    assetName: "LosslessCut-win-x64.7z",
-    installPath: "%LOCALAPPDATA%\\Programs\\ghrm\\LosslessCut"
-  },
-  {
-    id: "zyedidia/micro",
-    name: "micro",
-    currentVersion: "v2.0.14",
-    latestVersion: "v2.0.14",
-    status: "current",
-    source: "GitHub",
-    releaseTitle: "micro v2.0.14",
-    releaseNote: "This release does not include a release note.",
-    releaseUrl: "https://github.com/zyedidia/micro/releases/tag/v2.0.14",
-    publishedAt: "2026-07-16T08:00:00Z",
-    assetName: "micro-2.0.14-win64.zip",
-    installPath: "%LOCALAPPDATA%\\Programs\\ghrm\\micro"
-  },
-  {
-    id: "rustdesk/rustdesk",
-    name: "RustDesk",
-    currentVersion: "v1.4.1",
-    latestVersion: "v1.4.2",
-    status: "needsChoice",
-    source: "GitHub",
-    releaseTitle: "RustDesk 1.4.2",
-    releaseNote:
-      "Release contains multiple Windows assets.\n\nChoose the installer when you want Start Menu integration. Choose portable when you want files managed only by GitHub Release Manager.",
-    releaseUrl: "https://github.com/rustdesk/rustdesk/releases/tag/1.4.2",
-    publishedAt: "2026-07-20T12:30:00Z",
-    assetName: "多个 Windows 资产候选",
-    installPath: "%LOCALAPPDATA%\\Programs\\ghrm\\RustDesk"
-  }
+export type InboxFilter = "all" | "updateAvailable" | "needsChoice" | "failed" | "current";
+
+export const inboxFilters: Array<{ id: InboxFilter; label: string }> = [
+  { id: "all", label: "全部" },
+  { id: "updateAvailable", label: "有更新" },
+  { id: "needsChoice", label: "需确认" },
+  { id: "failed", label: "失败" },
+  { id: "current", label: "最新" }
 ];
 
 export function buildUpdateInbox(apps: ManagedApp[]): InboxItem[] {
@@ -75,6 +41,25 @@ export function buildUpdateInbox(apps: ManagedApp[]): InboxItem[] {
       priority: priorityForStatus(app.status)
     }))
     .sort((left, right) => left.priority - right.priority || left.name.localeCompare(right.name));
+}
+
+export function filterManagedApps(apps: ManagedApp[], filter: InboxFilter, query: string): ManagedApp[] {
+  const needle = query.trim().toLowerCase();
+  return apps.filter((app) => {
+    if (filter !== "all" && app.status !== filter) {
+      return false;
+    }
+
+    if (!needle) {
+      return true;
+    }
+
+    const haystack = [app.id, app.name, app.source, app.releaseTitle, app.assetName, app.releaseUrl]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes(needle);
+  });
 }
 
 function actionForStatus(status: AppStatus): InboxItem["actionLabel"] {
