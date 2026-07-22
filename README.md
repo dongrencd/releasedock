@@ -22,10 +22,10 @@ GitHub Release Manager 管理从 GitHub Releases 安装的软件。它面向手�
 ## 常用命令
 
 ```bash
-rtk cargo test
-rtk cargo run -p ghrm -- --help
-rtk cargo run -p ghrm -- list
-rtk cargo run -p ghrm -- install zyedidia/micro
+cargo test
+cargo run -p ghrm -- --help
+cargo run -p ghrm -- list
+cargo run -p ghrm -- install zyedidia/micro
 ```
 
 ## Actions 产物下载
@@ -39,7 +39,7 @@ rtk cargo run -p ghrm -- install zyedidia/micro
 CLI 下载后可先验证：
 
 ```bash
-rtk ./ghrm-linux-x64 --help
+./ghrm-linux-x64 --help
 ```
 
 Windows 上验证：
@@ -51,12 +51,21 @@ Windows 上验证：
 桌面端：
 
 ```bash
-rtk cd apps/desktop
-rtk npm install
-rtk npm test
-rtk npm run build
-rtk cargo check --manifest-path src-tauri/Cargo.toml
-rtk npm run tauri dev
+cd apps/desktop
+npm install
+npm test
+npm run build
+cargo check --manifest-path src-tauri/Cargo.toml
+npm run tauri dev
+```
+
+## Releases 下载
+
+推送 `v*.*.*` tag 后，GitHub Actions 会创建同名 GitHub Release，并上传 Linux CLI、Windows CLI、Windows 桌面 exe、NSIS 安装包和 MSI。
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
 ```
 
 ## 安全边界

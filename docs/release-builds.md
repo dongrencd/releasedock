@@ -2,7 +2,7 @@
 
 ## 目标
 
-GitHub Actions 在每次推送到 `main`、创建 pull request 或手动触发时构建可下载产物，方便验证 CLI 和 Windows 桌面程序。
+GitHub Actions 在每次推送到 `main`、创建 pull request 或手动触发时构建可下载产物，方便验证 CLI 和 Windows 桌面程序。推送版本 tag 时，工作流还会创建 GitHub Release 并上传正式发布产物。
 
 ## Workflow
 
@@ -15,6 +15,7 @@ GitHub Actions 在每次推送到 `main`、创建 pull request 或手动触发�
 触发方式：
 
 - push 到 `main`
+- push tag，例如 `v0.1.0`
 - pull request
 - GitHub UI 手动 `workflow_dispatch`
 
@@ -27,20 +28,33 @@ GitHub Actions 在每次推送到 `main`、创建 pull request 或手动触发�
 CLI jobs 只测试和构建 `ghrm-core`、`ghrm`，避免为了命令行产物编译桌面端依赖。桌面端由 Windows Desktop job 单独执行 `npm run tauri build`。
 桌面端 artifact 上传路径使用仓库根相对路径 `apps/desktop/src-tauri/target/...`，因为 `actions/upload-artifact` 不继承命令步骤的 `working-directory`。
 
+## GitHub Releases
+
+正式发布通过 tag 触发：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+tag workflow 成功后，项目 Releases 页面会出现同名 Release。Release assets 包含 Linux CLI、Windows CLI、Windows 桌面 exe、NSIS 安装包和 MSI。
+
+如果同名 Release 已存在，发布 job 会失败。此时应删除旧 Release 和 tag，或者发布新的版本号。
+
 ## 本地验证
 
 提交前运行：
 
 ```bash
-rtk cargo test --workspace
-rtk cd apps/desktop
-rtk npm test
-rtk npm run build
-rtk cargo check --manifest-path src-tauri/Cargo.toml
+cargo test --workspace
+cd apps/desktop
+npm test
+npm run build
+cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
 ## 注意
 
-- Actions 只上传 artifacts，不自动创建 GitHub Release。
+- main、pull request、手动触发只上传 Actions artifacts；tag 触发会创建 GitHub Release。
 - 不提交 `target/`、`node_modules/`、`dist/` 等生成目录。
 - GitHub token 只用于认证，不能写入仓库、日志或 remote URL。
