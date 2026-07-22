@@ -101,7 +101,9 @@ jobs:
         with:
           name: ghrm-desktop-windows-x64
           path: |
+            target/release/ghrm-desktop.exe
             target/release/bundle/nsis/*.exe
             target/release/bundle/msi/*.msi
+            ../../target/release/ghrm-desktop.exe
             ../../target/release/bundle/nsis/*.exe
             ../../target/release/bundle/msi/*.msi

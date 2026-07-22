@@ -34,7 +34,7 @@ rtk cargo run -p ghrm -- install zyedidia/micro
 
 - `ghrm-linux-x64`：Linux CLI。
 - `ghrm-windows-x64`：Windows CLI。
-- `ghrm-desktop-windows-x64`：Windows Tauri 桌面程序安装包。
+- `ghrm-desktop-windows-x64`：Windows Tauri 桌面程序，可包含免安装 exe 和安装包。
 
 CLI 下载后可先验证：
 
