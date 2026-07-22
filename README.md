@@ -55,6 +55,7 @@ rtk cd apps/desktop
 rtk npm install
 rtk npm test
 rtk npm run build
+rtk cargo check --manifest-path src-tauri/Cargo.toml
 rtk npm run tauri dev
 ```
 

@@ -3,6 +3,8 @@ name = "ghrm-desktop"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

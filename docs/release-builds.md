@@ -24,16 +24,18 @@ GitHub Actions 在每次推送到 `main`、创建 pull request 或手动触发�
 - `ghrm-windows-x64`：Windows CLI，可执行 `.\ghrm-windows-x64.exe --help`。
 - `ghrm-desktop-windows-x64`：Windows Tauri 桌面安装包。
 
+CLI jobs 只测试和构建 `ghrm-core`、`ghrm`，避免为了命令行产物编译桌面端依赖。桌面端由 Windows Desktop job 单独执行 `npm run tauri build`。
+
 ## 本地验证
 
 提交前运行：
 
 ```bash
 rtk cargo test --workspace
-rtk cargo check -p ghrm-desktop
 rtk cd apps/desktop
 rtk npm test
 rtk npm run build
+rtk cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
 ## 注意

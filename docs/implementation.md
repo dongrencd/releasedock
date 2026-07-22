@@ -6,7 +6,7 @@
 
 ## 架构
 
-项目采用 Rust workspace：
+项目采用 Rust workspace 管理 core 和 CLI；Tauri 桌面 crate 独立构建，避免 `cargo test --workspace` 在干净 clone 上依赖前端 `dist`。
 
 - `crates/core`：所有业务规则。CLI 和 GUI 必须复用这里的接口。
 - `crates/cli`：命令行入口，负责参数解析和结果输出。

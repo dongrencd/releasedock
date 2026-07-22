@@ -18,17 +18,8 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install Tauri Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf
-
-      - name: Test workspace
-        run: cargo test --workspace
+      - name: Test core and CLI
+        run: cargo test -p ghrm-core -p ghrm
 
       - name: Build Linux CLI
         run: cargo build -p ghrm --release
@@ -55,8 +46,8 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Test workspace
-        run: cargo test --workspace
+      - name: Test core and CLI
+        run: cargo test -p ghrm-core -p ghrm
 
       - name: Build Windows CLI
         run: cargo build -p ghrm --release
