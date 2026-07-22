@@ -25,6 +25,7 @@ GitHub Actions 在每次推送到 `main`、创建 pull request 或手动触发�
 - `ghrm-desktop-windows-x64`：Windows Tauri 桌面程序，可包含免安装 exe 和安装包。
 
 CLI jobs 只测试和构建 `ghrm-core`、`ghrm`，避免为了命令行产物编译桌面端依赖。桌面端由 Windows Desktop job 单独执行 `npm run tauri build`。
+桌面端 artifact 上传路径使用仓库根相对路径 `apps/desktop/src-tauri/target/...`，因为 `actions/upload-artifact` 不继承命令步骤的 `working-directory`。
 
 ## 本地验证
 
