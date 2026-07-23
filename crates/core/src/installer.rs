@@ -7,6 +7,7 @@ use std::{
 use anyhow::{Context, Result};
 use flate2::read::GzDecoder;
 use tar::Archive as TarArchive;
+use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
 use crate::{
@@ -210,7 +211,9 @@ fn extract_archive(
     if asset_name.ends_with(".zip") {
         extract_zip(downloaded, &install_dir)?;
     } else if asset_name.ends_with(".tar.gz") || asset_name.ends_with(".tgz") {
-        extract_tar_gz(downloaded, &install_dir)?;
+        extract_tar_archive(GzDecoder::new(open_archive(downloaded)?), &install_dir)?;
+    } else if asset_name.ends_with(".tar.xz") {
+        extract_tar_archive(XzDecoder::new(open_archive(downloaded)?), &install_dir)?;
     } else {
         anyhow::bail!("archive format for {} is not supported yet", asset_name);
     }
@@ -251,11 +254,13 @@ fn extract_zip(downloaded: &Path, install_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn extract_tar_gz(downloaded: &Path, install_dir: &Path) -> Result<()> {
-    let file = fs::File::open(downloaded)
-        .with_context(|| format!("failed to open archive {}", downloaded.display()))?;
-    let decoder = GzDecoder::new(file);
-    let mut archive = TarArchive::new(decoder);
+fn open_archive(downloaded: &Path) -> Result<fs::File> {
+    fs::File::open(downloaded)
+        .with_context(|| format!("failed to open archive {}", downloaded.display()))
+}
+
+fn extract_tar_archive<R: io::Read>(reader: R, install_dir: &Path) -> Result<()> {
+    let mut archive = TarArchive::new(reader);
     archive
         .unpack(install_dir)
         .with_context(|| format!("failed to extract archive into {}", install_dir.display()))?;
@@ -455,8 +460,13 @@ fn mark_executable(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        asset_matcher::{Architecture, AssetMatcher, OperatingSystem},
+        release::{Release, ReleaseAsset},
+    };
     use flate2::{Compression, write::GzEncoder};
     use tar::Builder;
+    use xz2::write::XzEncoder;
 
     fn sample_plan(install_type: InstallType, asset_name: &str) -> InstallPlan {
         InstallPlan {
@@ -490,6 +500,23 @@ mod tests {
         builder.finish().expect("finish tar");
     }
 
+    fn write_tar_xz_fixture(path: &Path) {
+        let file = fs::File::create(path).unwrap();
+        let encoder = XzEncoder::new(file, 6);
+        let mut builder = Builder::new(encoder);
+        let contents = b"hello xz world";
+
+        let mut header = tar::Header::new_gnu();
+        header.set_size(contents.len() as u64);
+        header.set_mode(0o644);
+        header.set_path("bundle/hello-xz.txt").expect("set path");
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "bundle/hello-xz.txt", &contents[..])
+            .expect("append tar entry");
+        builder.finish().expect("finish tar");
+    }
+
     #[tokio::test]
     async fn installs_tar_gz_fixture_and_updates_manifest() {
         let temp = tempfile::tempdir().unwrap();
@@ -515,6 +542,46 @@ mod tests {
         assert_eq!(removed.id, "owner/project");
         assert!(!outcome.install_path.exists());
         assert!(manifest.load().unwrap().apps.is_empty());
+    }
+
+    #[tokio::test]
+    async fn installs_tar_xz_fixture_and_updates_manifest() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = ManifestStore::at_path(temp.path().join("apps.json"));
+        let archive_path = temp.path().join("fixture.tar.xz");
+        write_tar_xz_fixture(&archive_path);
+
+        let plan = sample_plan(InstallType::Archive, "fixture.tar.xz");
+        let outcome = install_from_plan(&plan, &manifest, Some(&archive_path), None)
+            .await
+            .expect("install should succeed");
+
+        assert!(outcome.install_path.exists());
+        assert!(outcome.install_path.join("bundle/hello-xz.txt").exists());
+        let stored = manifest.load().unwrap();
+        assert_eq!(stored.apps.len(), 1);
+        assert_eq!(stored.apps[0].asset_name, "fixture.tar.xz");
+    }
+
+    #[test]
+    fn linux_packages_require_confirmation_for_install_plan() {
+        let repo = RepoRef::parse("owner/project").unwrap();
+        let release = Release::fixture(
+            "v2.0.0",
+            vec![ReleaseAsset::fixture("project-linux-amd64.deb")],
+        );
+        let matched = AssetMatcher::new(OperatingSystem::Linux, Architecture::X64)
+            .select_best(&release)
+            .unwrap();
+
+        let plan = InstallPlan::from_match(&repo, &release, &matched);
+
+        assert!(plan.requires_user_confirmation);
+        assert!(
+            plan.notes
+                .iter()
+                .any(|note| note.contains("Linux .deb/.rpm packages"))
+        );
     }
 
     #[test]

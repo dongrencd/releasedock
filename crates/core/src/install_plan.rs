@@ -20,14 +20,24 @@ pub struct InstallPlan {
 
 impl InstallPlan {
     pub fn from_match(repo: &RepoRef, release: &Release, matched: &MatchedAsset) -> Self {
-        let requires_user_confirmation = matched.install_type == InstallType::WindowsInstaller;
+        let requires_user_confirmation = matches!(
+            matched.install_type,
+            InstallType::WindowsInstaller | InstallType::LinuxPackage
+        );
         let mut notes = Vec::new();
 
         if requires_user_confirmation {
-            notes.push(
-                "Windows .exe/.msi installers are downloaded first and must be confirmed before execution."
-                    .to_string(),
-            );
+            notes.push(match matched.install_type {
+                InstallType::WindowsInstaller => {
+                    "Windows .exe/.msi installers are downloaded first and must be confirmed before execution."
+                        .to_string()
+                }
+                InstallType::LinuxPackage => {
+                    "Linux .deb/.rpm packages are downloaded first and must be confirmed before system installation."
+                        .to_string()
+                }
+                _ => unreachable!(),
+            });
         }
 
         Self {

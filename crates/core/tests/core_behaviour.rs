@@ -191,6 +191,27 @@ fn creates_install_plan_without_executing_installer() {
 }
 
 #[test]
+fn linux_package_install_plan_requires_confirmation() {
+    let repo = RepoRef::parse("owner/project").unwrap();
+    let release = Release::fixture(
+        "v1.0.0",
+        vec![ReleaseAsset::fixture("project-linux-amd64.deb")],
+    );
+    let matched = AssetMatcher::new(OperatingSystem::Linux, Architecture::X64)
+        .select_best(&release)
+        .unwrap();
+
+    let plan = InstallPlan::from_match(&repo, &release, &matched);
+
+    assert!(plan.requires_user_confirmation);
+    assert!(
+        plan.notes
+            .iter()
+            .any(|note| note.contains("Linux .deb/.rpm packages"))
+    );
+}
+
+#[test]
 fn parses_release_note_url_and_publish_time() {
     let release: Release = serde_json::from_str(
         r#"{

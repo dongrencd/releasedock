@@ -15,7 +15,7 @@ GitHub Actions 在每次推送到 `main`、创建 pull request 或手动触发�
 触发方式：
 
 - push 到 `main`
-- push tag，例如 `v0.1.0`
+- push tag，例如 `v0.2.0`
 - pull request
 - GitHub UI 手动 `workflow_dispatch`
 
@@ -32,8 +32,8 @@ CLI jobs 只测试和构建 `ghrm-core`、`ghrm-cli`，避免为了命令行产�
 正式发布通过 tag 触发：
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 tag workflow 成功后，项目 Releases 页面会出现同名 Release。Release assets 包含 Linux CLI、Windows 桌面 exe、NSIS 安装包和 MSI。
@@ -46,14 +46,16 @@ tag workflow 成功后，项目 Releases 页面会出现同名 Release。Release
 
 ```bash
 cargo test --workspace
+bash scripts/linux/build-cli.sh
+bash scripts/linux/build-desktop.sh
 cd apps/desktop
 npm test
 npm run build
 cargo check --manifest-path src-tauri/Cargo.toml
-npm run tauri build
 ```
 
-`npm run tauri build` 在部分本地环境里会继续到 AppImage 打包阶段，并依赖 `linuxdeploy`；如果系统里缺少该工具，前面的 Rust 编译、前端构建和 deb/rpm 打包仍可作为有效验证结果。
+本地 desktop 脚本默认只构建 `apps/desktop/src-tauri/target/release/ghrm`，不再默认进入 AppImage 打包阶段。
+如果需要额外验证本地打包，可显式传 `--bundles deb,rpm`；AppImage 仍建议放到 Actions 或具备完整工具链的环境里构建。
 
 ## 注意
 

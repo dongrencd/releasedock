@@ -1,6 +1,6 @@
 [package]
 name = "ghrm-core"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 
 [dependencies]
@@ -13,6 +13,7 @@ serde.workspace = true
 serde_json.workspace = true
 tar.workspace = true
 thiserror.workspace = true
+xz2.workspace = true
 zip.workspace = true
 url.workspace = true
 

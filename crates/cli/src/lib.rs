@@ -179,10 +179,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
         Commands::Update(args) => update(args).await,
         Commands::Uninstall(args) => uninstall(args),
         Commands::Info(args) => info(args).await,
-        Commands::Doctor => {
-            println!("ghrm doctor: core CLI is available");
-            Ok(())
-        }
+        Commands::Doctor => doctor(),
         Commands::Config(args) => config(args),
     }
 }
@@ -326,9 +323,7 @@ async fn update(args: UpdateArgs) -> Result<()> {
             plans.push((app.id.clone(), plan));
         }
 
-        if !plans.is_empty() {
-            confirm_execution("update", &plans[0].1, yes)?;
-        }
+        confirm_bulk_execution("update", &plans, yes)?;
 
         for (_app_id, plan) in plans {
             let outcome = install_from_plan(
@@ -592,6 +587,48 @@ fn config(args: ConfigArgs) -> Result<()> {
     Ok(())
 }
 
+fn doctor() -> Result<()> {
+    let store = config_store()?;
+    let config = store.load()?;
+
+    println!("ghrm doctor: core CLI is available");
+    println!("config path: {}", store.path().display());
+    println!(
+        "github token: {}",
+        if config
+            .github_token
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+        {
+            "已配置"
+        } else {
+            "未配置"
+        }
+    );
+    println!(
+        "proxy: {}",
+        if config
+            .proxy_url
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+        {
+            "已配置"
+        } else {
+            "未配置"
+        }
+    );
+    println!(
+        "install root: {}",
+        config
+            .install_root
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "默认位置".to_string())
+    );
+
+    Ok(())
+}
+
 fn config_store() -> Result<ConfigStore> {
     ConfigStore::from_env_or_default()
 }
@@ -630,6 +667,52 @@ fn confirm_execution(action: &str, plan: &InstallPlan, yes: bool) -> Result<()> 
     }
     if plan.requires_user_confirmation {
         println!("  该安装包需要系统权限确认。");
+    }
+
+    print!("继续执行吗？[y/N] ");
+    io::stdout()
+        .flush()
+        .context("failed to flush confirmation prompt")?;
+    let mut input = String::new();
+    io::stdin()
+        .read_line(&mut input)
+        .context("failed to read confirmation")?;
+    let answer = input.trim().to_ascii_lowercase();
+    if matches!(answer.as_str(), "y" | "yes") {
+        return Ok(());
+    }
+
+    anyhow::bail!("已取消 {} 操作", action);
+}
+
+fn confirm_bulk_execution(action: &str, plans: &[(String, InstallPlan)], yes: bool) -> Result<()> {
+    if yes {
+        return Ok(());
+    }
+
+    if !io::stdin().is_terminal() {
+        anyhow::bail!("{} 需要交互确认；请使用 --yes 或在交互式终端中运行", action);
+    }
+
+    println!("准备执行 {}：", action);
+    println!("  共 {} 个项目", plans.len());
+    for (index, (app_id, plan)) in plans.iter().enumerate() {
+        println!(
+            "  {}. {} -> {} / {}",
+            index + 1,
+            app_id,
+            plan.version,
+            plan.asset_name
+        );
+        for note in &plan.notes {
+            println!("     提示: {}", note);
+        }
+    }
+    if plans
+        .iter()
+        .any(|(_, plan)| plan.requires_user_confirmation)
+    {
+        println!("  其中包含系统安装器，执行时会继续触发系统权限确认。");
     }
 
     print!("继续执行吗？[y/N] ");

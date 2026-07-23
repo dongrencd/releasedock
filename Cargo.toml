@@ -23,6 +23,7 @@ thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 url = "2"
 flate2 = "1"
+xz2 = "0.1"
 tar = "0.4"
 zip = "2"
 assert_cmd = "2"

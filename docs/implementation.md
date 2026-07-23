@@ -29,8 +29,11 @@ core 中的主要模块：
 - CLI `install` 支持真实 GitHub 请求，也支持 `--release-fixture` 和 `--artifact-fixture` 做离线测试；`--json` 仅输出安装计划，`--yes` 可跳过交互确认。
 - CLI `config` 可以读取、设置和清除 GitHub token、代理和安装根目录。
 - CLI `info` 支持查看 latest release 的 release note 和 asset 列表。
+- CLI `doctor` 会输出配置文件位置、token/proxy 是否已配置和安装根目录，不泄露 token 明文。
 - CLI `list`、`check`、`update`、`uninstall` 支持默认 manifest 和 `--manifest` 覆盖路径；`check` 会逐个对已安装软件比对 latest release，并输出更新状态。
-- GUI 已接入真实 manifest 读取和 GitHub release 刷新，不再依赖静态 demo 数据；首次启动会默认跟踪当前项目 `dongrencd/gh-release-manager`，安装流程先生成预览，再由用户确认后执行，设置页可编辑 GitHub token、代理和安装根目录，外部 GitHub 链接通过 Tauri 后端命令打开，并限制为 https://github.com 域名。
+- GUI 已接入真实 manifest 读取和 GitHub release 刷新，不再依赖静态 demo 数据；首次启动会默认跟踪当前项目 `dongrencd/gh-release-manager`，首页采用添加仓库、已管理软件列表、详情和操作三段式工作台布局，默认以图标承载低频动作、以文本承载重要判断，按钮说明与字段说明通过 hover 和辅助属性补充，右侧详情保留 release note 摘要与版本信息，更多字段默认折叠，列表支持按本地清单过滤、逐项勾选和一次性批量移除未安装的跟踪项，安装流程先生成预览，再由用户确认后执行，设置页可编辑 GitHub token、代理和安装根目录，外部 GitHub 链接通过 Tauri 后端命令打开，并限制为 https://github.com 域名。
+- GUI 的列表筛选只过滤本地已管理软件，不做 GitHub 全网搜索；公开仓库不需要 token，私有仓库和高频刷新建议配置 token。软件列表里的搜索和筛选只作用于已添加项目，避免把本地管理台误当成 GitHub 全网搜索入口。
+- 安装器现在支持 `.tar.xz` archive；Windows `.exe/.msi` 和 Linux `.deb/.rpm` 进入安装计划时都会标记为需要用户确认。
 
 ## 下一阶段
 

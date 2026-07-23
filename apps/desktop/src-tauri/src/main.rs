@@ -53,6 +53,13 @@ struct ManagedAppView {
     uninstall_supported: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BulkRemoveResultView {
+    apps: Vec<ManagedAppView>,
+    removed_count: usize,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 enum UiOs {
@@ -85,6 +92,7 @@ async fn main() -> Result<()> {
             install_repo,
             uninstall_repo,
             remove_tracked_repo,
+            bulk_remove_tracked_repos,
             open_url
         ])
         .run(tauri::generate_context!())
@@ -160,6 +168,13 @@ async fn uninstall_repo(repo_input: String) -> Result<Vec<ManagedAppView>, Strin
 #[tauri::command]
 async fn remove_tracked_repo(repo_input: String) -> Result<Vec<ManagedAppView>, String> {
     remove_tracked_repo_from_tracking(&repo_input)
+        .await
+        .map_err(format_error)
+}
+
+#[tauri::command]
+async fn bulk_remove_tracked_repos(repo_inputs: Vec<String>) -> Result<BulkRemoveResultView, String> {
+    bulk_remove_tracked_repos_from_tracking(repo_inputs)
         .await
         .map_err(format_error)
 }
@@ -383,6 +398,27 @@ async fn remove_tracked_repo_from_tracking(repo_input: &str) -> Result<Vec<Manag
     build_dashboard().await
 }
 
+async fn bulk_remove_tracked_repos_from_tracking(
+    repo_inputs: Vec<String>,
+) -> Result<BulkRemoveResultView> {
+    let repo_ids = repo_inputs
+        .into_iter()
+        .map(|repo_input| RepoRef::parse(&repo_input).map(|repo| repo.id()))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+    let store = TrackedRepoStore::default()?;
+    let removed_ids = store.remove_many(&repo_ids)?;
+    if removed_ids.is_empty() {
+        anyhow::bail!("no tracked repos matched the provided selection");
+    }
+
+    let apps = build_dashboard().await?;
+    Ok(BulkRemoveResultView {
+        apps,
+        removed_count: removed_ids.len(),
+    })
+}
+
 fn open_url_in_system(url: &str) -> Result<()> {
     let parsed = url::Url::parse(url).context("failed to parse URL")?;
     validate_github_url(&parsed)?;
@@ -541,7 +577,7 @@ mod tests {
 
     #[test]
     fn allows_github_release_pages() {
-        let url = url::Url::parse("https://github.com/dongrencd/gh-release-manager/releases/tag/v0.1.0")
+        let url = url::Url::parse("https://github.com/dongrencd/gh-release-manager/releases/tag/v0.2.0")
             .expect("valid URL");
         assert!(validate_github_url(&url).is_ok());
     }

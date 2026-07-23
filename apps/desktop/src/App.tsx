@@ -2,18 +2,25 @@ import { useEffect, useState, type ReactNode } from "react";
 import {
   CheckCircle2,
   Clipboard,
+  CircleCheckBig,
+  CircleAlert,
+  ChevronDown,
+  ChevronUp,
   Download,
   ExternalLink,
   FolderOpen,
+  Layers3,
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
-  Settings,
+  Settings2,
   ShieldAlert,
   Trash2
 } from "lucide-react";
 import {
   addRepo,
+  bulkRemoveTrackedRepos,
   installRepo,
   loadConfig,
   loadDashboard,
@@ -26,8 +33,17 @@ import {
 } from "./backend";
 import {
   buildUpdateInbox,
+  getBulkRemoveAvailability,
+  getConfirmInstallAvailability,
+  getOpenReleaseAvailability,
+  getPrimaryActionAvailability,
+  getRemoveTrackedAvailability,
+  pruneSelection,
+  getUninstallAvailability,
   filterManagedApps,
   inboxFilters,
+  selectVisibleIds,
+  toggleSelection,
   type InboxFilter,
   type InboxItem,
   type ManagedApp
@@ -47,6 +63,7 @@ export function App() {
   const [filter, setFilter] = useState<InboxFilter>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [repoInput, setRepoInput] = useState("");
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [pendingInstall, setPendingInstall] = useState<InstallPlan | null>(null);
@@ -62,6 +79,8 @@ export function App() {
   const visibleApps = filterManagedApps(apps, filter, searchQuery);
   const inbox = buildUpdateInbox(visibleApps);
   const selected = inbox.find((item) => item.id === selectedId) ?? inbox[0] ?? null;
+  const hasGithubToken = configDraft.githubToken.trim().length > 0;
+  const bulkRemoveAvailability = getBulkRemoveAvailability(apps, selectedIds, busy);
 
   useEffect(() => {
     void refreshWorkspace();
@@ -70,6 +89,10 @@ export function App() {
   useEffect(() => {
     setPendingInstall(null);
   }, [selectedId]);
+
+  useEffect(() => {
+    setSelectedIds((current) => pruneSelection(current, apps));
+  }, [apps]);
 
   async function refreshDashboard() {
     setLoading(true);
@@ -258,8 +281,53 @@ export function App() {
     }
   }
 
+  async function handleBulkRemoveTracked() {
+    if (!bulkRemoveAvailability.enabled) {
+      setError(bulkRemoveAvailability.reason ?? "请选择至少一个可移除项");
+      setTaskStatus("批量移除失败");
+      return;
+    }
+
+    const targets = apps.filter((app) => selectedIds.includes(app.id) && app.status === "needsChoice");
+    if (targets.length === 0) {
+      setError("请选择至少一个未安装的跟踪项");
+      setTaskStatus("批量移除失败");
+      return;
+    }
+
+    setBusy(true);
+    setError(null);
+    setPendingInstall(null);
+    setTaskStatus(`正在批量移除 ${targets.length} 个跟踪项`);
+
+    try {
+      const result = await bulkRemoveTrackedRepos(targets.map((target) => target.id));
+      setApps(result.apps);
+      setTaskStatus(
+        result.removedCount < targets.length
+          ? `已移除 ${result.removedCount} 个跟踪项，${targets.length - result.removedCount} 个已失效`
+          : `已移除 ${result.removedCount} 个跟踪项`
+      );
+      setSelectedIds((current) => pruneSelection(current, result.apps));
+      setSelectedId((current) => {
+        if (current && result.apps.some((app) => app.id === current)) {
+          return current;
+        }
+        return result.apps[0]?.id ?? null;
+      });
+      setPendingInstall(null);
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setError(message);
+      setTaskStatus("批量移除失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleOpenRelease(item: InboxItem | null) {
     if (!item?.releaseUrl) {
+      setTaskStatus("当前没有可打开的 Release 链接");
       return;
     }
     try {
@@ -283,13 +351,11 @@ export function App() {
   return (
     <div className="shell">
       <aside className="sidebar" aria-label="主导航">
-        <div className="brand">
-          <div className="brandMark">GR</div>
-          <div>
-            <div className="brandName">GitHub Release</div>
-            <div className="brandSub">Manager</div>
-          </div>
-        </div>
+        <Tooltip label="GitHub Release Manager">
+          <button className="brand brandButton" type="button" aria-label="GitHub Release Manager">
+            <div className="brandMark">GR</div>
+          </button>
+        </Tooltip>
 
         <nav className="navList">
           <NavItem
@@ -299,72 +365,53 @@ export function App() {
             onClick={() => setActiveView("dashboard")}
           />
           <NavItem
-            icon={<Settings size={18} />}
+            icon={<Settings2 size={18} />}
             label="设置"
             active={activeView === "settings"}
             onClick={() => setActiveView("settings")}
           />
         </nav>
 
-        <div className="sourceTile">
+        <Tooltip label={DEFAULT_TRACKED_REPO_ID} className="sourceTooltip">
+          <button className="sourceTile sourceButton" type="button" aria-label={DEFAULT_TRACKED_REPO_ID}>
           <ExternalLink size={18} />
-          <div>
-            <strong>当前项目</strong>
-            <span>{DEFAULT_TRACKED_REPO_ID}</span>
-          </div>
-        </div>
+          </button>
+        </Tooltip>
       </aside>
 
       <main className="workspace">
         <header className="topbar">
           {activeView === "dashboard" ? (
             <>
-              <div className="searchBox">
-                <Search size={17} />
-                <input
-                  placeholder="搜索软件或仓库"
-                  aria-label="搜索软件"
-                  value={searchQuery}
-                  onChange={(event) => setSearchQuery(event.target.value)}
-                />
-              </div>
-              <div className="repoBox">
-                <Search size={17} />
-                <input
-                  placeholder="owner/repo 或 GitHub URL"
-                  aria-label="添加 GitHub 仓库"
-                  value={repoInput}
-                  onChange={(event) => setRepoInput(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      void handleAddRepo();
-                    }
-                  }}
-                />
-              </div>
-              <button className="ghostButton" type="button" onClick={() => void refreshDashboard()} disabled={busy}>
+              <Tooltip label={taskStatus} className="topbarTooltip">
+                <div className="topbarCopy">
+                  <Download size={16} />
+                  <span className="srOnly">{taskStatus}</span>
+                </div>
+              </Tooltip>
+              <Tooltip label={hasGithubToken ? "已配置 token" : "公开仓库可用"} className="topbarTooltip">
+                <div className={hasGithubToken ? "tokenState active" : "tokenState"} aria-label={hasGithubToken ? "已配置 token" : "公开仓库可用"}>
+                  <ShieldAlert size={14} />
+                </div>
+              </Tooltip>
+              <TooltipButton label="检查更新" onClick={() => void refreshDashboard()} disabled={busy}>
                 <RefreshCw size={17} />
-                检查更新
-              </button>
-              <button className="primaryButton" type="button" onClick={() => void handleAddRepo()} disabled={busy}>
-                <Plus size={17} />
-                添加
-              </button>
+              </TooltipButton>
             </>
           ) : (
             <>
-              <div className="settingsTopbarCopy">
-                <strong>设置</strong>
-                <span>统一保存 GitHub token、代理和安装根目录。</span>
-              </div>
-              <button className="ghostButton" type="button" onClick={() => void refreshConfig()} disabled={configSaving}>
+              <Tooltip label="统一保存 GitHub token、代理和安装根目录" className="topbarTooltip">
+                <div className="settingsTopbarCopy">
+                  <Settings2 size={16} />
+                  <span className="srOnly">统一保存 GitHub token、代理和安装根目录。</span>
+                </div>
+              </Tooltip>
+              <TooltipButton label="重新加载" onClick={() => void refreshConfig()} disabled={configSaving}>
                 <RefreshCw size={17} />
-                重新加载
-              </button>
-              <button className="primaryButton" type="button" onClick={() => void handleSaveConfig()} disabled={configSaving}>
+              </TooltipButton>
+              <TooltipButton label="保存设置" onClick={() => void handleSaveConfig()} disabled={configSaving} className="iconButton primaryIconButton">
                 <Plus size={17} />
-                保存设置
-              </button>
+              </TooltipButton>
             </>
           )}
         </header>
@@ -372,146 +419,219 @@ export function App() {
         {error ? <div className="errorBanner">{error}</div> : null}
 
         {activeView === "dashboard" ? (
-          <section className="contentGrid">
-            <section className="inboxPanel" aria-labelledby="inbox-title">
-              <div className="sectionHeader">
-                <div>
-                  <h1 id="inbox-title">待处理更新</h1>
-                  <p>加载本地清单，并根据 GitHub Release 实时刷新最新版本和 release note。</p>
+          <section className="dashboardView">
+            <section className="addRepoPanel" aria-label="添加 GitHub 仓库">
+              <TooltipButton label="添加 GitHub 仓库" className="iconButton addRepoIcon">
+                <Plus size={17} />
+              </TooltipButton>
+              <div className="repoControl">
+                <div className="repoBox">
+                  <Plus size={17} />
+                  <input
+                    placeholder="owner/repo"
+                    aria-label="添加 GitHub 仓库"
+                    value={repoInput}
+                    onChange={(event) => setRepoInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        void handleAddRepo();
+                      }
+                    }}
+                  />
                 </div>
-                <div className="updateCount">{inbox.filter((item) => item.status !== "current").length}</div>
-              </div>
-
-              <div className="filterRow" aria-label="状态筛选">
-                {inboxFilters.map((item) => (
-                  <button
-                    key={item.id}
-                    className={filter === item.id ? "filterPill active" : "filterPill"}
-                    type="button"
-                    onClick={() => setFilter(item.id)}
-                    aria-pressed={filter === item.id}
-                  >
-                    {item.label}
-                  </button>
-                ))}
-              </div>
-
-              <div className="appTable" role="table" aria-label="更新列表">
-                <div className="tableHead" role="row">
-                  <span>应用</span>
-                  <span>当前</span>
-                  <span>最新</span>
-                  <span>判断</span>
-                  <span>操作</span>
-                </div>
-                {loading ? (
-                  <div className="emptyState">正在同步 GitHub Release 数据...</div>
-                ) : inbox.length === 0 ? (
-                  <div className="emptyState">没有符合当前筛选条件的软件。</div>
-                ) : (
-                  inbox.map((item) => (
-                    <InboxRow
-                      key={item.id}
-                      item={item}
-                      selected={item.id === selected?.id}
-                      onSelect={() => setSelectedId(item.id)}
-                    />
-                  ))
-                )}
+                <TooltipButton label="添加仓库" onClick={() => void handleAddRepo()} disabled={busy} className="iconButton primaryIconButton">
+                  <Plus size={17} />
+                </TooltipButton>
               </div>
             </section>
 
-            <Inspector
-              item={selected}
-              busy={busy}
-              onCopyReleaseNote={handleCopyReleaseNote}
-              onOpenRelease={() => {
-                void handleOpenRelease(selected);
-              }}
-              onPrimaryAction={() => {
-                if (selected) {
-                  void handlePrimaryAction(selected);
-                }
-              }}
-              onConfirmInstall={() => {
-                if (selected) {
-                  void handleConfirmInstall(selected);
-                }
-              }}
-              onUninstall={() => {
-                void handleUninstall(selected);
-              }}
-              onRemoveTracked={() => {
-                void handleRemoveTracked(selected);
-              }}
-              pendingInstall={pendingInstall}
-              onCancelInstall={() => setPendingInstall(null)}
-            />
+            <section className="contentGrid">
+              <section className="inboxPanel" aria-label="已管理软件">
+                <div className="sectionHeader">
+                  <Tooltip label="已管理软件" className="sectionGlyph">
+                    <div>
+                      <Layers3 size={16} />
+                    </div>
+                  </Tooltip>
+                  <Tooltip label="需要处理的项目数量" className="updateCount">
+                    <div>{inbox.filter((item) => item.status !== "current").length}</div>
+                  </Tooltip>
+                </div>
+
+                <div className="listTools">
+                  <div className="listToolsPrimary">
+                    <div className="searchBox">
+                      <Search size={17} />
+                      <input
+                        placeholder="搜索"
+                        aria-label="筛选已添加的软件"
+                        value={searchQuery}
+                        onChange={(event) => setSearchQuery(event.target.value)}
+                      />
+                    </div>
+                  </div>
+                  <div className="listToolsActions">
+                    <div className="filterRow" aria-label="状态筛选">
+                      {inboxFilters.map((item) => (
+                        <TooltipButton
+                          key={item.id}
+                          label={filterLabel(item.id)}
+                          onClick={() => setFilter(item.id)}
+                          active={filter === item.id}
+                          className={filter === item.id ? "filterPill active" : "filterPill"}
+                        >
+                          <FilterIcon status={item.id} />
+                        </TooltipButton>
+                      ))}
+                    </div>
+                    <div className="bulkActions">
+                      <TooltipButton
+                        type="button"
+                        label="全选当前列表"
+                        onClick={() => setSelectedIds(selectVisibleIds(inbox))}
+                        disabled={visibleApps.length === 0 || busy}
+                        className="iconButton"
+                      >
+                        <CheckCircle2 size={17} />
+                      </TooltipButton>
+                      <TooltipButton
+                        type="button"
+                        label="清空选择"
+                        onClick={() => setSelectedIds([])}
+                        disabled={selectedIds.length === 0 || busy}
+                        className="iconButton"
+                      >
+                        <RotateCcw size={17} />
+                      </TooltipButton>
+                      <TooltipButton
+                        type="button"
+                        label={bulkRemoveAvailability.reason ?? "批量移除"}
+                        onClick={() => void handleBulkRemoveTracked()}
+                        disabled={!bulkRemoveAvailability.enabled}
+                        className="iconButton primaryIconButton"
+                      >
+                        <Trash2 size={17} />
+                      </TooltipButton>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="appTable" role="table" aria-label="更新列表">
+                  {loading ? (
+                    <div className="emptyState">正在同步 GitHub Release 数据...</div>
+                  ) : apps.length === 0 ? (
+                    <div className="emptyState">还没有添加软件。先在上方输入 GitHub 仓库。</div>
+                  ) : inbox.length === 0 ? (
+                    <div className="emptyState">没有匹配的软件。筛选只会查找已添加的软件，不会搜索 GitHub 全网。</div>
+                  ) : (
+                    inbox.map((item) => (
+                      <InboxRow
+                        key={item.id}
+                        item={item}
+                        selected={item.id === selected?.id}
+                        checked={selectedIds.includes(item.id)}
+                        onSelect={() => setSelectedId(item.id)}
+                        onToggleSelection={() => {
+                          setSelectedIds((current) => toggleSelection(current, item.id));
+                        }}
+                      />
+                    ))
+                  )}
+                </div>
+              </section>
+
+              <Inspector
+                item={selected}
+                busy={busy}
+                onCopyReleaseNote={handleCopyReleaseNote}
+                onOpenRelease={() => {
+                  void handleOpenRelease(selected);
+                }}
+                onPrimaryAction={() => {
+                  if (selected) {
+                    void handlePrimaryAction(selected);
+                  }
+                }}
+                onConfirmInstall={() => {
+                  if (selected) {
+                    void handleConfirmInstall(selected);
+                  }
+                }}
+                onUninstall={() => {
+                  void handleUninstall(selected);
+                }}
+                onRemoveTracked={() => {
+                  void handleRemoveTracked(selected);
+                }}
+                pendingInstall={pendingInstall}
+                onCancelInstall={() => setPendingInstall(null)}
+              />
+            </section>
           </section>
         ) : (
-          <section className="settingsPanel" aria-labelledby="settings-title">
-              <div className="sectionHeader">
+          <section className="settingsPanel" aria-label="设置">
+            <div className="sectionHeader">
+              <Tooltip label="设置" className="sectionGlyph">
                 <div>
-                  <h1 id="settings-title">设置</h1>
-                  <p>保存当前机器的 GitHub token、代理和默认安装根目录，CLI 和桌面端共用同一份配置。</p>
+                  <Settings2 size={16} />
                 </div>
-              <div className="updateCount">{configSaving ? "…" : "3"}</div>
-              </div>
+              </Tooltip>
+              <Tooltip label="设置项数量" className="updateCount">
+                <div>{configSaving ? "…" : "3"}</div>
+              </Tooltip>
+            </div>
 
             <div className="settingsForm">
               <label className="fieldRow">
-                <span>GitHub Token</span>
+                <span className="srOnly">GitHub Token</span>
                 <input
                   value={configDraft.githubToken}
                   onChange={(event) => setConfigDraft((current) => ({ ...current, githubToken: event.target.value }))}
-                  placeholder="ghp_..."
+                  placeholder="token"
                   autoComplete="off"
                 />
-                <small>留空时使用环境变量或未认证请求。</small>
               </label>
 
               <label className="fieldRow">
-                <span>代理地址</span>
+                <span className="srOnly">代理地址</span>
                 <input
                   value={configDraft.proxyUrl}
                   onChange={(event) => setConfigDraft((current) => ({ ...current, proxyUrl: event.target.value }))}
-                  placeholder="http://127.0.0.1:7890"
+                  placeholder="proxy"
                   autoComplete="off"
                 />
-                <small>留空时不启用代理。</small>
               </label>
 
               <label className="fieldRow wide">
-                <span>安装根目录</span>
+                <span className="srOnly">安装根目录</span>
                 <input
                   value={configDraft.installRoot}
                   onChange={(event) => setConfigDraft((current) => ({ ...current, installRoot: event.target.value }))}
-                  placeholder="/data/ghrm"
+                  placeholder="root"
                   autoComplete="off"
                 />
-                <small>留空时使用清单所在目录或默认数据目录。</small>
               </label>
             </div>
 
             <div className="settingsActions">
-              <button className="ghostButton" type="button" onClick={() => void refreshConfig()} disabled={configSaving}>
-                重新载入
-              </button>
-              <button className="primaryButton" type="button" onClick={() => void handleSaveConfig()} disabled={configSaving}>
-                保存设置
-              </button>
+              <TooltipButton label="重新载入" onClick={() => void refreshConfig()} disabled={configSaving}>
+                <RefreshCw size={17} />
+              </TooltipButton>
+              <TooltipButton label="保存设置" onClick={() => void handleSaveConfig()} disabled={configSaving} className="iconButton primaryIconButton">
+                <Plus size={17} />
+              </TooltipButton>
             </div>
           </section>
         )}
 
         <footer className="taskBar">
-          <span className="taskLabel">{taskStatus}</span>
+          <span className="taskLabel" aria-label={taskStatus}>{taskStatus}</span>
           <div className={busy ? "progressTrack busy" : "progressTrack"} aria-label="运行状态">
             <div className="progressValue" />
           </div>
-          <button className="linkButton" type="button" onClick={() => void refreshDashboard()} disabled={busy}>
-            重新检查
-          </button>
+          <TooltipButton label="重新检查" onClick={() => void refreshDashboard()} disabled={busy}>
+            <RefreshCw size={17} />
+          </TooltipButton>
         </footer>
       </main>
     </div>
@@ -530,36 +650,69 @@ function NavItem({
   onClick: () => void;
 }) {
   return (
-    <button className={active ? "navItem active" : "navItem"} type="button" onClick={onClick}>
+    <TooltipButton label={label} onClick={onClick} active={active} className={active ? "navItem active" : "navItem"}>
       {icon}
-      <span>{label}</span>
-    </button>
+    </TooltipButton>
   );
 }
 
 function InboxRow({
   item,
   selected,
-  onSelect
+  checked,
+  onSelect,
+  onToggleSelection
 }: {
   item: InboxItem;
   selected: boolean;
+  checked: boolean;
   onSelect: () => void;
+  onToggleSelection: () => void;
 }) {
   return (
-    <button className={selected ? "tableRow selected" : "tableRow"} type="button" onClick={onSelect}>
+    <div
+      className={selected ? "tableRow selected" : "tableRow"}
+      role="row"
+      aria-selected={selected}
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect();
+        }
+      }}
+    >
+      <label className="rowCheckbox" onClick={(event) => event.stopPropagation()}>
+        <input
+          type="checkbox"
+          checked={checked}
+          aria-label={`选择 ${item.name}`}
+          onClick={(event) => event.stopPropagation()}
+          onChange={onToggleSelection}
+        />
+      </label>
       <span className="appName">
         <StatusIcon status={item.status} />
-        <span>
-          <strong>{item.name}</strong>
-          <small>{item.id}</small>
+        <span className="appNameCopy">
+          <Tooltip label={item.id}>
+            <strong>{item.name}</strong>
+          </Tooltip>
         </span>
       </span>
       <span className="mono">{item.currentVersion}</span>
       <span className="mono">{item.latestVersion}</span>
-      <span className={`statusBadge ${item.status}`}>{statusLabel(item.status)}</span>
-      <span className="rowAction">{item.actionLabel}</span>
-    </button>
+      <Tooltip label={statusLabel(item.status)}>
+        <span className={`statusBadge ${item.status}`} aria-label={statusLabel(item.status)}>
+          <StatusGlyph status={item.status} />
+        </span>
+      </Tooltip>
+      <Tooltip label={item.actionLabel}>
+        <span className="rowAction" aria-label={item.actionLabel}>
+          <RowActionGlyph status={item.status} />
+        </span>
+      </Tooltip>
+    </div>
   );
 }
 
@@ -586,6 +739,13 @@ function Inspector({
   onCancelInstall: () => void;
   pendingInstall: InstallPlan | null;
 }) {
+  const openReleaseAvailability = getOpenReleaseAvailability(item, busy);
+  const primaryActionAvailability = getPrimaryActionAvailability(item, busy);
+  const confirmInstallAvailability = getConfirmInstallAvailability(item, busy);
+  const uninstallAvailability = getUninstallAvailability(item, busy);
+  const removeTrackedAvailability = getRemoveTrackedAvailability(item, busy);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+
   if (!item) {
     return (
       <aside className="inspector" aria-label="详情检查器">
@@ -606,64 +766,109 @@ function Inspector({
             {item.currentVersion} → {item.latestVersion}
           </p>
         </div>
-        <button className="iconButton" type="button" aria-label="打开 GitHub" onClick={onOpenRelease} disabled={!item.releaseUrl}>
+        <TooltipButton
+          type="button"
+          label={openReleaseAvailability.reason ?? "打开 Release 页面"}
+          onClick={onOpenRelease}
+          disabled={!openReleaseAvailability.enabled}
+          className="iconButton"
+          placement="left"
+        >
           <FolderOpen size={18} />
-        </button>
+        </TooltipButton>
       </div>
 
       <div className="inspectorBlock accent">
-        <div className="blockTitle">
-          <ExternalLink size={16} />
-          Release 信息
-        </div>
+        <Tooltip label="Release 信息" className="blockTitle">
+          <div>
+            <ExternalLink size={16} />
+          </div>
+        </Tooltip>
         <p>{item.releaseTitle ?? item.latestVersion}</p>
         <p className="mutedText">{formatPublishedAt(item.publishedAt)}</p>
       </div>
 
       <div className="releaseNoteBlock">
         <div className="releaseNoteHeader">
-          <div className="blockTitle">Release note</div>
-          <button className="copyButton" type="button" onClick={() => onCopyReleaseNote(item.releaseNote)} disabled={!item.releaseNote}>
+          <Tooltip label="Release note" className="blockTitle">
+            <div>
+              <Clipboard size={15} />
+            </div>
+          </Tooltip>
+          <TooltipButton
+            label="复制 release note"
+            onClick={() => onCopyReleaseNote(item.releaseNote)}
+            disabled={!item.releaseNote}
+            className="iconButton copyButton"
+            placement="left"
+          >
             <Clipboard size={15} />
-            复制
+          </TooltipButton>
+        </div>
+        <pre className={detailsOpen ? "releaseNotePreview expanded" : "releaseNotePreview"}>
+          {item.releaseNote?.trim() || "这个 release 没有填写 release note。"}
+        </pre>
+        <div className="noteFooter">
+          <span className="mutedText">{detailsOpen ? "完整内容已展开" : "默认显示摘要，查看更多字段后可继续展开"}</span>
+          <button
+            type="button"
+            className="ghostButton detailToggleButton"
+            onClick={() => setDetailsOpen((current) => !current)}
+          >
+            {detailsOpen ? "收起字段" : "更多字段"}
+            {detailsOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
           </button>
         </div>
-        <pre>{item.releaseNote?.trim() || "这个 release 没有填写 release note。"}</pre>
       </div>
 
-      <dl className="detailList">
-        <div>
-          <dt>资产文件</dt>
-          <dd className="mono">{item.assetName ?? "暂无可用资产"}</dd>
-        </div>
-        <div>
-          <dt>安装路径</dt>
-          <dd className="mono">{item.installPath}</dd>
-        </div>
-        <div>
-          <dt>安装类型</dt>
-          <dd>{installTypeLabel(item.installType ?? "Unknown")}</dd>
-        </div>
-        <div>
-          <dt>记录类型</dt>
-          <dd>{installPathKindLabel(item.installPathKind ?? "Unknown")}</dd>
-        </div>
-        <div>
-          <dt>卸载能力</dt>
-          <dd>{item.uninstallSupported === false ? "需系统卸载" : "可自动卸载"}</dd>
-        </div>
-        <div>
-          <dt>来源</dt>
-          <dd>{item.source}</dd>
-        </div>
-      </dl>
+      {detailsOpen ? (
+        <dl className="detailList">
+          <div>
+            <dt>
+              <Download size={14} />
+            </dt>
+            <dd className="mono wrapText">{item.assetName ?? "暂无可用资产"}</dd>
+          </div>
+          <div>
+            <dt>
+              <FolderOpen size={14} />
+            </dt>
+            <dd className="mono wrapText">{item.installPath}</dd>
+          </div>
+          <div>
+            <dt>
+              <Layers3 size={14} />
+            </dt>
+            <dd>{installTypeLabel(item.installType ?? "Unknown")}</dd>
+          </div>
+          <div>
+            <dt>
+              <Settings2 size={14} />
+            </dt>
+            <dd>{installPathKindLabel(item.installPathKind ?? "Unknown")}</dd>
+          </div>
+          <div>
+            <dt>
+              <Trash2 size={14} />
+            </dt>
+            <dd>{item.uninstallSupported === false ? "需系统卸载" : "可自动卸载"}</dd>
+          </div>
+          <div>
+            <dt>
+              <ExternalLink size={14} />
+            </dt>
+            <dd>{item.source}</dd>
+          </div>
+        </dl>
+      ) : null}
 
       {pendingInstall ? (
         <div className="installPreview">
-          <div className="blockTitle">
-            <Download size={16} />
-            安装预览
-          </div>
+          <Tooltip label="安装预览" className="blockTitle">
+            <div>
+              <Download size={16} />
+            </div>
+          </Tooltip>
           <p className="previewLine">
             {pendingInstall.asset_name} · {installTypeLabel(pendingInstall.install_type)}
           </p>
@@ -678,41 +883,79 @@ function Inspector({
             <p className="mutedText">这个安装包需要在系统权限确认后继续执行。</p>
           ) : null}
           <div className="previewActions">
-            <button className="ghostButton" type="button" onClick={onCancelInstall} disabled={busy}>
-              取消
+            <button type="button" className="ghostButton actionButton" onClick={onCancelInstall} disabled={busy}>
+              <RotateCcw size={16} />
+              <span>取消</span>
             </button>
-            <button className="primaryButton" type="button" onClick={onConfirmInstall} disabled={busy}>
-              <Download size={17} />
-              确认安装
+            <button
+              type="button"
+              className="primaryButton actionButton"
+              onClick={onConfirmInstall}
+              disabled={!confirmInstallAvailability.enabled}
+              aria-label={confirmInstallAvailability.reason ?? "确认安装"}
+            >
+              <Download size={16} />
+              <span>确认安装</span>
             </button>
           </div>
         </div>
       ) : null}
 
-      <button className="ghostButton wide" type="button" onClick={onOpenRelease} disabled={!item.releaseUrl || busy}>
-        <ExternalLink size={17} />
-        打开 Release 页面
-      </button>
-      <button className="primaryButton wide" type="button" onClick={onPrimaryAction} disabled={busy}>
-        <Download size={17} />
-        {item.actionLabel}
-      </button>
-      {item.status === "needsChoice" ? (
-        <button className="ghostButton wide" type="button" onClick={onRemoveTracked} disabled={busy}>
-          <Trash2 size={17} />
-          移除跟踪
+      <div className="inspectorActions" aria-label="软件操作">
+        <button
+          type="button"
+          className="ghostButton actionButton wide"
+          onClick={onOpenRelease}
+          disabled={!openReleaseAvailability.enabled}
+          aria-label={openReleaseAvailability.reason ?? "打开 Release 页面"}
+        >
+          <ExternalLink size={16} />
+          <span>打开 Release</span>
         </button>
-      ) : item.uninstallSupported === false ? (
-        <button className="ghostButton wide" type="button" disabled>
-          <Trash2 size={17} />
-          需系统卸载
+        <button
+          type="button"
+          className="primaryButton actionButton wide"
+          onClick={onPrimaryAction}
+          disabled={!primaryActionAvailability.enabled}
+          aria-label={primaryActionAvailability.reason ?? item.actionLabel}
+        >
+          <Download size={16} />
+          <span>{item.actionLabel}</span>
         </button>
-      ) : (
-        <button className="ghostButton wide" type="button" onClick={onUninstall} disabled={busy}>
-          <Trash2 size={17} />
-          卸载
-        </button>
-      )}
+        {item.status === "needsChoice" ? (
+          <button
+            type="button"
+            className="ghostButton actionButton wide"
+            onClick={onRemoveTracked}
+            disabled={!removeTrackedAvailability.enabled}
+            aria-label={removeTrackedAvailability.reason ?? "移除跟踪"}
+          >
+            <Trash2 size={16} />
+            <span>移除跟踪</span>
+          </button>
+        ) : item.uninstallSupported === false ? (
+          <button
+            type="button"
+            className="ghostButton actionButton wide"
+            disabled
+            aria-label={uninstallAvailability.reason ?? "需系统卸载"}
+          >
+            <Trash2 size={16} />
+            <span>需系统卸载</span>
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="ghostButton actionButton wide"
+            onClick={onUninstall}
+            disabled={!uninstallAvailability.enabled}
+            aria-label={uninstallAvailability.reason ?? "卸载"}
+          >
+            <Trash2 size={16} />
+            <span>卸载</span>
+          </button>
+        )}
+      </div>
     </aside>
   );
 }
@@ -750,6 +993,119 @@ function statusLabel(status: InboxItem["status"]) {
       return "最新";
   }
 }
+
+function filterLabel(status: InboxFilter) {
+  switch (status) {
+    case "all":
+      return "全部";
+    case "updateAvailable":
+      return "有更新";
+    case "needsChoice":
+      return "需确认";
+    case "failed":
+      return "失败";
+    case "current":
+      return "最新";
+  }
+}
+
+function FilterIcon({ status }: { status: InboxFilter }) {
+  switch (status) {
+    case "all":
+      return <Layers3 size={15} />;
+    case "updateAvailable":
+      return <Download size={15} />;
+    case "needsChoice":
+      return <ShieldAlert size={15} />;
+    case "failed":
+      return <CircleAlert size={15} />;
+    case "current":
+      return <CircleCheckBig size={15} />;
+  }
+}
+
+function StatusGlyph({ status }: { status: InboxItem["status"] }) {
+  switch (status) {
+    case "updateAvailable":
+      return <Download size={13} />;
+    case "needsChoice":
+      return <ShieldAlert size={13} />;
+    case "failed":
+      return <CircleAlert size={13} />;
+    case "current":
+      return <CircleCheckBig size={13} />;
+  }
+}
+
+function RowActionGlyph({ status }: { status: InboxItem["status"] }) {
+  switch (status) {
+    case "updateAvailable":
+      return <Download size={14} />;
+    case "needsChoice":
+      return <FolderOpen size={14} />;
+    case "failed":
+      return <RefreshCw size={14} />;
+    case "current":
+      return <ExternalLink size={14} />;
+  }
+}
+
+function Tooltip({
+  label,
+  className,
+  placement = "right",
+  children
+}: {
+  label: string;
+  className?: string;
+  placement?: TooltipPlacement;
+  children: ReactNode;
+}) {
+  return (
+    <span className={className ? `tooltipWrap ${className}` : "tooltipWrap"} data-placement={placement} aria-label={label}>
+      {children}
+      <span className="tooltipBubble" role="tooltip">
+        {label}
+      </span>
+    </span>
+  );
+}
+
+function TooltipButton({
+  label,
+  className = "iconButton",
+  children,
+  onClick,
+  disabled = false,
+  type = "button",
+  active = false,
+  placement = "right"
+}: {
+  label: string;
+  className?: string;
+  children: ReactNode;
+  onClick?: () => void;
+  disabled?: boolean;
+  type?: "button" | "submit" | "reset";
+  active?: boolean;
+  placement?: TooltipPlacement;
+}) {
+  return (
+    <Tooltip label={label} className="tooltipButton" placement={placement}>
+      <button
+        className={active ? `${className} active` : className}
+        type={type}
+        onClick={onClick}
+        disabled={disabled}
+        aria-label={label}
+      >
+        {children}
+      </button>
+    </Tooltip>
+  );
+}
+
+type TooltipPlacement = "right" | "left" | "bottom";
 
 function installTypeLabel(value: InstallPlan["install_type"]) {
   switch (value) {

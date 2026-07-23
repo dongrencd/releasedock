@@ -291,3 +291,40 @@ fn info_outputs_release_note_from_fixture() {
         .stdout(contains("Fix crash and improve startup."))
         .stdout(contains("demo-windows-x64.exe"));
 }
+
+#[test]
+fn doctor_reports_config_state_without_leaking_token() {
+    let temp = tempfile::tempdir().unwrap();
+    let config_path = temp.path().join("config.json");
+    let secret = "ghp_super_secret_value";
+    fs::write(
+        &config_path,
+        format!(
+            r#"{{
+  "githubToken": "{}",
+  "proxyUrl": "http://127.0.0.1:7890",
+  "installRoot": "{}"
+}}"#,
+            secret,
+            temp.path().join("apps").display()
+        ),
+    )
+    .unwrap();
+
+    let output = Command::cargo_bin("ghrm")
+        .unwrap()
+        .env("GHRM_CONFIG_PATH", &config_path)
+        .args(["doctor"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).unwrap();
+    assert!(stdout.contains("ghrm doctor: core CLI is available"));
+    assert!(stdout.contains("github token: 已配置"));
+    assert!(stdout.contains("proxy: 已配置"));
+    assert!(stdout.contains("install root: "));
+    assert!(!stdout.contains(secret));
+}

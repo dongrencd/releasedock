@@ -10,6 +10,7 @@ GitHub Release Manager 管理从 GitHub Releases 安装的软件。它面向手�
 - CLI：`install` 可基于真实 GitHub latest release 或 fixture 执行安装，`--json` 可只输出安装计划，`--yes` 可跳过交互确认，`config` 可统一管理 GitHub token、代理和安装根目录，`check` 会对已安装软件逐个比对 latest release，`list` 可读取 manifest，`update`/`uninstall` 已接真实执行路径，系统安装器记录会明确标记为需系统卸载。
 - Desktop GUI：Tauri 2 + React 管理台，已接真实 manifest 读取、GitHub release 刷新、release note 查看、安装预览和确认、安装执行以及卸载/移除跟踪，并提供设置页管理 GitHub token、代理和安装根目录。
 - Desktop GUI 首次启动会默认跟踪当前项目 `dongrencd/gh-release-manager`，方便直接查看本仓库的 release。
+- Desktop GUI 首页区分“添加 GitHub 仓库”和“筛选已添加的软件”；公开仓库可不配置 token，私有仓库和高频刷新建议配置 token。
 - 文档：实现方案、桌面 UI、release note、安全边界、asset 匹配规则。
 
 ## 技术栈
@@ -55,13 +56,22 @@ cargo check --manifest-path src-tauri/Cargo.toml
 npm run tauri dev
 ```
 
+Linux 本地脚本：
+
+```bash
+bash scripts/linux/build-cli.sh
+bash scripts/linux/build-desktop.sh
+```
+
+`build-desktop.sh` 默认只生成桌面可执行文件 `apps/desktop/src-tauri/target/release/ghrm`。如果需要额外打包，可以再传 `--bundles`。
+
 ## Releases 下载
 
 推送 `v*.*.*` tag 后，GitHub Actions 会创建同名 GitHub Release，并上传 Linux CLI、Windows 桌面 exe、NSIS 安装包和 MSI。
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 ## 安全边界

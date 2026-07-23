@@ -3,6 +3,7 @@ use std::{fs, path::PathBuf};
 use anyhow::{Context, Result};
 use ghrm_core::manifest::ManifestStore;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TrackedRepo {
@@ -74,6 +75,30 @@ impl TrackedRepoStore {
         Ok(true)
     }
 
+    pub fn remove_many(&self, repo_ids: &[String]) -> Result<Vec<String>> {
+        let wanted: HashSet<&str> = repo_ids.iter().map(|repo_id| repo_id.as_str()).collect();
+        if wanted.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut repos = self.load()?;
+        let mut removed = Vec::new();
+        repos.retain(|repo| {
+            if wanted.contains(repo.repo_id.as_str()) {
+                removed.push(repo.repo_id.clone());
+                false
+            } else {
+                true
+            }
+        });
+
+        if !removed.is_empty() {
+            self.save(&repos)?;
+        }
+
+        Ok(removed)
+    }
+
     fn save(&self, repos: &[TrackedRepo]) -> Result<()> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent).with_context(|| {
@@ -118,5 +143,25 @@ mod tests {
         let repos = store.load().unwrap();
         assert_eq!(repos.len(), 1);
         assert_eq!(repos[0].repo_id, "owner/project");
+    }
+
+    #[test]
+    fn removes_many_tracked_repos_in_one_pass() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = TrackedRepoStore {
+            path: temp.path().join("tracked.json"),
+        };
+
+        store
+            .seed_if_missing(&["owner/one", "owner/two", "owner/three"])
+            .unwrap();
+        let removed = store
+            .remove_many(&["owner/one".to_string(), "owner/three".to_string()])
+            .unwrap();
+
+        assert_eq!(removed, vec!["owner/one".to_string(), "owner/three".to_string()]);
+        let repos = store.load().unwrap();
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].repo_id, "owner/two");
     }
 }

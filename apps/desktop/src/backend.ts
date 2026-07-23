@@ -22,6 +22,11 @@ export type DesktopConfig = {
   installRoot: string | null;
 };
 
+export type BulkRemoveResult = {
+  apps: ManagedApp[];
+  removedCount: number;
+};
+
 export async function loadDashboard(): Promise<ManagedApp[]> {
   return invoke<ManagedApp[]>("load_dashboard");
 }
@@ -52,6 +57,10 @@ export async function uninstallRepo(repoInput: string): Promise<ManagedApp[]> {
 
 export async function removeTrackedRepo(repoInput: string): Promise<ManagedApp[]> {
   return invoke<ManagedApp[]>("remove_tracked_repo", { repoInput });
+}
+
+export async function bulkRemoveTrackedRepos(repoInputs: string[]): Promise<BulkRemoveResult> {
+  return invoke<BulkRemoveResult>("bulk_remove_tracked_repos", { repoInputs });
 }
 
 export async function openUrl(url: string): Promise<void> {
