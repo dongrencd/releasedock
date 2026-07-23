@@ -1,42 +1,42 @@
-# Implementation
+# Implementation Notes
 
-## 目标
+## Goal
 
-第一版实现一个跨平台 GitHub Release 软件管理器。用户输入 `owner/repo` 或 GitHub URL，工具读取 latest release，按当前平台和 CPU 架构选择合适 asset，生成安装计划并执行可支持的安装，最后记录到本地 manifest。
+Build a cross-platform GitHub Release manager. The user provides an `owner/repo` string or a GitHub URL, the tool reads the latest release, selects the right asset for the current platform and CPU architecture, builds an install plan, executes supported installs, and stores the result in a local manifest.
 
-## 架构
+## Architecture
 
-项目采用 Rust workspace 管理 core 和 CLI；Tauri 桌面 crate 独立构建，避免 `cargo test --workspace` 在干净 clone 上依赖前端 `dist`。
+The repository uses a Rust workspace for the shared core and CLI. The Tauri desktop crate is built separately so a clean clone does not depend on frontend `dist` artifacts during workspace-level checks.
 
-- `crates/core`：所有业务规则。CLI 和 GUI 必须复用这里的接口。
-- `crates/cli`：命令行入口，负责参数解析和结果输出。
-- `apps/desktop`：Tauri 2 + React 桌面管理台。
+- `crates/core`: shared business rules used by both the CLI and the GUI.
+- `crates/cli`: command-line entry point for argument parsing and output.
+- `apps/desktop`: Tauri 2 + React desktop manager.
 
-core 中的主要模块：
+Core modules:
 
-- `repo`：解析 `owner/repo` 和 GitHub URL。
-- `release`：GitHub release 数据结构和 latest release client。
-- `asset_matcher`：确定性 asset 打分。
-- `install_plan`：把 release + asset 转成可确认的安装计划。
-- `config`：本地运行时配置，统一保存 GitHub token、代理和安装根目录。
-- `manifest`：JSON manifest 读写。
-- `installer`：下载 asset、解包 archive/AppImage、写入 manifest、卸载本地安装；系统安装器会保守执行并保留可追踪状态。
+- `repo`: parse `owner/repo` strings and GitHub URLs.
+- `release`: release data models and latest-release client logic.
+- `asset_matcher`: deterministic asset scoring.
+- `install_plan`: turn a release and matching asset into a confirmation-ready install plan.
+- `config`: runtime configuration for the GitHub token, proxy, UI language, and install root.
+- `manifest`: JSON manifest read and write support.
+- `installer`: download assets, unpack archives and AppImage files, write manifests, and uninstall local installs. System installers are handled conservatively and kept traceable.
 
-## 当前实现范围
+## Current Scope
 
-- 已实现 release 解析、release note 字段、asset 匹配、manifest 读写和安装计划生成。
-- manifest 已升级到 v2，安装记录会区分本地托管路径和系统安装器记录，并标记是否支持自动卸载。
-- CLI `install` 支持真实 GitHub 请求，也支持 `--release-fixture` 和 `--artifact-fixture` 做离线测试；`--json` 仅输出安装计划，`--yes` 可跳过交互确认。
-- CLI `config` 可以读取、设置和清除 GitHub token、代理和安装根目录。
-- CLI `info` 支持查看 latest release 的 release note 和 asset 列表。
-- CLI `doctor` 会输出配置文件位置、token/proxy 是否已配置和安装根目录，不泄露 token 明文。
-- CLI `list`、`check`、`update`、`uninstall` 支持默认 manifest 和 `--manifest` 覆盖路径；`check` 会逐个对已安装软件比对 latest release，并输出更新状态。
-- GUI 已接入真实 manifest 读取和 GitHub release 刷新，不再依赖静态 demo 数据；首次启动会默认跟踪当前项目 `dongrencd/gh-release-manager`，首页采用添加仓库、已管理软件列表、详情和操作三段式工作台布局，默认以图标承载低频动作、以文本承载重要判断，按钮说明与字段说明通过 hover 和辅助属性补充，右侧详情保留 release note 摘要与版本信息，更多字段默认折叠，列表支持按本地清单过滤、逐项勾选和一次性批量移除未安装的跟踪项，安装流程先生成预览，再由用户确认后执行，设置页可编辑 GitHub token、代理和安装根目录，外部 GitHub 链接通过 Tauri 后端命令打开，并限制为 https://github.com 域名。
-- GUI 的列表筛选只过滤本地已管理软件，不做 GitHub 全网搜索；公开仓库不需要 token，私有仓库和高频刷新建议配置 token。软件列表里的搜索和筛选只作用于已添加项目，避免把本地管理台误当成 GitHub 全网搜索入口。
-- 安装器现在支持 `.tar.xz` archive；Windows `.exe/.msi` 和 Linux `.deb/.rpm` 进入安装计划时都会标记为需要用户确认。
+- Release parsing, release note handling, asset matching, manifest persistence, and install plan generation are implemented.
+- Manifest format v2 distinguishes between managed local installs and system installer records, and tracks whether automatic uninstall is available.
+- CLI `install` supports live GitHub requests as well as `--release-fixture` and `--artifact-fixture` for offline testing. `--json` prints only the install plan, and `--yes` skips confirmation prompts.
+- CLI `config` reads, updates, and clears the GitHub token, proxy, and install root. The desktop settings page also exposes language switching and defaults to English.
+- CLI `info` shows the latest release note and asset list.
+- CLI `doctor` prints config file location, token/proxy state, and the install root without leaking token values.
+- CLI `list`, `check`, `update`, and `uninstall` support the default manifest path and a `--manifest` override. `check` compares each installed app with the latest release and reports status.
+- The GUI reads the real manifest and refreshes live GitHub release data. On first launch it seeds `dongrencd/releasedock`, uses a three-pane workbench layout, shows the important decisions directly, displays release note summaries, install paths, and uninstall capability in the detail pane, supports local list filtering and bulk removal of uninstalled tracked items, and runs install flows through a preview-and-confirm step.
+- The install root is the local workspace base directory. Download caches go under `downloads/`, and managed installs go under `apps/<owner>-<repo>`. The settings page label "install root" refers to this base directory.
+- GUI filtering only applies to the local managed list. It does not search GitHub globally. Public repositories do not require a token, while private repositories and frequent refreshes should use one.
+- The installer supports `.tar.xz` archives. Windows `.exe` / `.msi` and Linux `.deb` / `.rpm` assets are marked as requiring user confirmation before installation.
 
-## 下一阶段
+## Next Steps
 
-- 增加更细的安装进度和失败回显。
-- 让更新/卸载在桌面端有更明确的动作反馈和历史记录。
-- 继续收紧系统级卸载与权限确认策略。
+- Tighten system-level uninstall and permission confirmation flow.
+- Add install history and more detailed failure feedback if needed.

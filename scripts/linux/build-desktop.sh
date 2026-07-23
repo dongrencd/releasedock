@@ -41,7 +41,7 @@ cargo check --manifest-path src-tauri/Cargo.toml
 echo "[desktop] cargo build --manifest-path src-tauri/Cargo.toml --release"
 cargo build --manifest-path src-tauri/Cargo.toml --release
 
-echo "[desktop] built desktop binary: $DESKTOP_DIR/src-tauri/target/release/ghrm"
+echo "[desktop] built desktop binary: $DESKTOP_DIR/src-tauri/target/release/releasedock"
 
 if [ -n "$BUILD_BUNDLES" ]; then
   echo "[desktop] npm run tauri build -- --bundles $BUILD_BUNDLES"

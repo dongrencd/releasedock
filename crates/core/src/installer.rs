@@ -2,22 +2,26 @@ use std::{
     fs, io,
     path::{Path, PathBuf},
     process::Command,
+    sync::Arc,
 };
 
 use anyhow::{Context, Result};
 use flate2::read::GzDecoder;
+use serde::Serialize;
 use tar::Archive as TarArchive;
 use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
 use crate::{
     asset_matcher::InstallType,
-    config::Config,
+    config::{Config, Language},
     install_plan::InstallPlan,
     manifest::{InstallPathKind, InstalledApp, ManifestStore},
     release::ReleaseClient,
     repo::RepoRef,
 };
+
+pub type ProgressReporter = Arc<dyn Fn(TaskProgress) + Send + Sync>;
 
 #[derive(Debug, Clone)]
 pub struct InstallOutcome {
@@ -29,14 +33,66 @@ pub struct InstallOutcome {
     pub uninstall_supported: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TaskAction {
+    Install,
+    Uninstall,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TaskStage {
+    Preparing,
+    Downloading,
+    CopyingAsset,
+    ExtractingArchive,
+    RunningSystemInstaller,
+    UpdatingManifest,
+    LocatingRecord,
+    RemovingFiles,
+    Finished,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskProgress {
+    pub repo_id: String,
+    pub action: TaskAction,
+    pub stage: TaskStage,
+    pub message: String,
+    pub percent: Option<u8>,
+}
+
 pub async fn install_from_plan(
     plan: &InstallPlan,
     manifest_store: &ManifestStore,
     asset_fixture: Option<&Path>,
     runtime_config: Option<&Config>,
+    language: Language,
+    progress: Option<ProgressReporter>,
 ) -> Result<InstallOutcome> {
     let repo = RepoRef::parse(&plan.repo_url)?;
-    let download_path = download_asset(plan, manifest_store, asset_fixture, runtime_config).await?;
+    report_progress(
+        progress.as_ref(),
+        TaskProgress {
+            repo_id: repo.id(),
+            action: TaskAction::Install,
+            stage: TaskStage::Preparing,
+            message: format!("{} {}", tr(language, "Preparing to install", "正在准备安装"), repo.name),
+            percent: Some(0),
+        },
+    );
+    let download_path = download_asset(
+        plan,
+        manifest_store,
+        asset_fixture,
+        runtime_config,
+        language,
+        progress.clone(),
+        &repo,
+    )
+    .await?;
     let (install_path, install_path_kind, uninstall_supported) = match plan.install_type {
         InstallType::AppImage => (
             install_appimage(
@@ -45,6 +101,8 @@ pub async fn install_from_plan(
                 manifest_store,
                 &plan.asset_name,
                 runtime_config,
+                language,
+                progress.as_ref(),
             )?,
             InstallPathKind::ManagedPath,
             true,
@@ -56,6 +114,8 @@ pub async fn install_from_plan(
                 manifest_store,
                 &plan.asset_name,
                 runtime_config,
+                language,
+                progress.as_ref(),
             )?,
             InstallPathKind::ManagedPath,
             true,
@@ -67,6 +127,8 @@ pub async fn install_from_plan(
                 manifest_store,
                 &plan.asset_name,
                 runtime_config,
+                language,
+                progress.as_ref(),
             )?,
             InstallPathKind::SystemInstaller,
             false,
@@ -78,6 +140,8 @@ pub async fn install_from_plan(
                 manifest_store,
                 &plan.asset_name,
                 runtime_config,
+                language,
+                progress.as_ref(),
             )?,
             InstallPathKind::SystemInstaller,
             false,
@@ -99,6 +163,26 @@ pub async fn install_from_plan(
         uninstall_supported,
     );
     manifest_store.upsert_app(app.clone())?;
+    report_progress(
+        progress.as_ref(),
+        TaskProgress {
+            repo_id: repo.id(),
+            action: TaskAction::Install,
+            stage: TaskStage::UpdatingManifest,
+            message: format!("{} {}", tr(language, "Updating install record for", "正在更新安装记录："), repo.name),
+            percent: Some(95),
+        },
+    );
+    report_progress(
+        progress.as_ref(),
+        TaskProgress {
+            repo_id: repo.id(),
+            action: TaskAction::Install,
+            stage: TaskStage::Finished,
+            message: format!("{} {}", tr(language, "Finished installing", "已完成安装"), repo.name),
+            percent: Some(100),
+        },
+    );
 
     Ok(InstallOutcome {
         app,
@@ -113,16 +197,34 @@ pub async fn install_from_plan(
 pub fn uninstall_repo(
     manifest_store: &ManifestStore,
     repo_id: &str,
+    language: Language,
+    progress: Option<ProgressReporter>,
 ) -> Result<Option<InstalledApp>> {
     let manifest = manifest_store.load()?;
     let Some(app) = manifest.apps.into_iter().find(|app| app.id == repo_id) else {
         return Ok(None);
     };
 
+    report_progress(
+        progress.as_ref(),
+        TaskProgress {
+            repo_id: app.id.clone(),
+            action: TaskAction::Uninstall,
+            stage: TaskStage::LocatingRecord,
+            message: format!("{} {}", tr(language, "Locating install record for", "正在定位安装记录："), app.name),
+            percent: Some(10),
+        },
+    );
+
     if !app.uninstall_supported {
         anyhow::bail!(
-            "{} was installed by a system installer and must be removed from the system package manager",
-            app.id
+            "{} {}",
+            app.id,
+            tr(
+                language,
+                "was installed by a system installer and must be removed from the system package manager",
+                "是由系统安装器安装的，必须通过系统卸载"
+            )
         );
     }
 
@@ -130,7 +232,27 @@ pub fn uninstall_repo(
         return Ok(None);
     };
 
+    report_progress(
+        progress.as_ref(),
+        TaskProgress {
+            repo_id: app.id.clone(),
+            action: TaskAction::Uninstall,
+            stage: TaskStage::RemovingFiles,
+            message: format!("{} {}", tr(language, "Removing install files for", "正在删除安装文件："), app.name),
+            percent: Some(70),
+        },
+    );
     remove_path(&app.install_path)?;
+    report_progress(
+        progress.as_ref(),
+        TaskProgress {
+            repo_id: app.id.clone(),
+            action: TaskAction::Uninstall,
+            stage: TaskStage::Finished,
+            message: format!("{} {}", tr(language, "Finished uninstalling", "已完成卸载"), app.name),
+            percent: Some(100),
+        },
+    );
     Ok(Some(app))
 }
 
@@ -139,14 +261,30 @@ async fn download_asset(
     manifest_store: &ManifestStore,
     asset_fixture: Option<&Path>,
     runtime_config: Option<&Config>,
+    language: Language,
+    progress: Option<ProgressReporter>,
+    repo: &RepoRef,
 ) -> Result<PathBuf> {
-    let repo = RepoRef::parse(&plan.repo_url)?;
     let download_dir = cache_dir(manifest_store, runtime_config).join(repo.id().replace('/', "_"));
     fs::create_dir_all(&download_dir)
         .with_context(|| format!("failed to create download cache {}", download_dir.display()))?;
 
     let download_path = download_dir.join(&plan.asset_name);
     if let Some(asset_fixture) = asset_fixture {
+        report_progress(
+            progress.as_ref(),
+            TaskProgress {
+                repo_id: repo.id(),
+                action: TaskAction::Install,
+                stage: TaskStage::CopyingAsset,
+                message: format!(
+                    "{} {}",
+                    tr(language, "Copying local fixture", "正在复制本地 fixture"),
+                    plan.asset_name
+                ),
+                percent: Some(30),
+            },
+        );
         fs::copy(asset_fixture, &download_path).with_context(|| {
             format!(
                 "failed to copy fixture asset {} to {}",
@@ -160,9 +298,39 @@ async fn download_asset(
     let token = runtime_config.and_then(|config| config.github_token.as_deref());
     let proxy = runtime_config.and_then(|config| config.proxy_url.as_deref());
     let client = ReleaseClient::new(token, proxy)?;
-    let bytes = client.download_bytes(&plan.download_url).await?;
-    fs::write(&download_path, bytes)
-        .with_context(|| format!("failed to write download {}", download_path.display()))?;
+    report_progress(
+        progress.as_ref(),
+            TaskProgress {
+                repo_id: repo.id(),
+                action: TaskAction::Install,
+                stage: TaskStage::Downloading,
+                message: format!("{} {}", tr(language, "Downloading", "正在下载"), plan.asset_name),
+                percent: Some(0),
+            },
+        );
+    let repo_id = repo.id();
+    let asset_name = plan.asset_name.clone();
+    let progress_for_download = progress.clone();
+    client
+        .download_to_path(&plan.download_url, &download_path, move |downloaded, total| {
+            let percent = total.and_then(|total| {
+                if total == 0 {
+                    return None;
+                }
+                Some(((downloaded as f64 / total as f64) * 100.0).round().clamp(0.0, 100.0) as u8)
+            });
+            report_progress(
+                progress_for_download.as_ref(),
+                TaskProgress {
+                    repo_id: repo_id.clone(),
+                    action: TaskAction::Install,
+                    stage: TaskStage::Downloading,
+                    message: format!("{} {}", tr(language, "Downloading", "正在下载"), asset_name),
+                    percent,
+                },
+            );
+        })
+        .await?;
     Ok(download_path)
 }
 
@@ -172,6 +340,8 @@ fn install_appimage(
     manifest_store: &ManifestStore,
     asset_name: &str,
     runtime_config: Option<&Config>,
+    language: Language,
+    progress: Option<&ProgressReporter>,
 ) -> Result<PathBuf> {
     let install_dir = install_dir(manifest_store, repo, runtime_config);
     fs::create_dir_all(&install_dir).with_context(|| {
@@ -182,6 +352,16 @@ fn install_appimage(
     })?;
 
     let install_path = install_dir.join(asset_name);
+    report_progress(
+        progress,
+        TaskProgress {
+            repo_id: repo.id(),
+            action: TaskAction::Install,
+            stage: TaskStage::CopyingAsset,
+            message: format!("{} {}", tr(language, "Copying", "正在复制"), asset_name),
+            percent: Some(75),
+        },
+    );
     fs::copy(downloaded, &install_path).with_context(|| {
         format!(
             "failed to copy AppImage from {} to {}",
@@ -199,6 +379,8 @@ fn extract_archive(
     manifest_store: &ManifestStore,
     asset_name: &str,
     runtime_config: Option<&Config>,
+    language: Language,
+    progress: Option<&ProgressReporter>,
 ) -> Result<PathBuf> {
     let install_dir = install_dir(manifest_store, repo, runtime_config);
     fs::create_dir_all(&install_dir).with_context(|| {
@@ -208,6 +390,16 @@ fn extract_archive(
         )
     })?;
 
+    report_progress(
+        progress,
+        TaskProgress {
+            repo_id: repo.id(),
+            action: TaskAction::Install,
+            stage: TaskStage::ExtractingArchive,
+            message: format!("{} {}", tr(language, "Extracting", "正在解压"), asset_name),
+            percent: Some(75),
+        },
+    );
     if asset_name.ends_with(".zip") {
         extract_zip(downloaded, &install_dir)?;
     } else if asset_name.ends_with(".tar.gz") || asset_name.ends_with(".tgz") {
@@ -273,6 +465,8 @@ fn install_windows_installer(
     manifest_store: &ManifestStore,
     asset_name: &str,
     runtime_config: Option<&Config>,
+    language: Language,
+    progress: Option<&ProgressReporter>,
 ) -> Result<PathBuf> {
     let install_dir = install_dir(manifest_store, repo, runtime_config);
     fs::create_dir_all(&install_dir).with_context(|| {
@@ -283,6 +477,16 @@ fn install_windows_installer(
     })?;
 
     let target_path = install_dir.join(asset_name);
+    report_progress(
+        progress,
+        TaskProgress {
+            repo_id: repo.id(),
+            action: TaskAction::Install,
+            stage: TaskStage::RunningSystemInstaller,
+            message: format!("{} {}", tr(language, "Running system installer", "正在执行系统安装器"), asset_name),
+            percent: Some(85),
+        },
+    );
     fs::copy(downloaded, &target_path).with_context(|| {
         format!(
             "failed to copy Windows installer from {} to {}",
@@ -309,6 +513,8 @@ fn install_linux_package(
     manifest_store: &ManifestStore,
     asset_name: &str,
     runtime_config: Option<&Config>,
+    language: Language,
+    progress: Option<&ProgressReporter>,
 ) -> Result<PathBuf> {
     let install_dir = install_dir(manifest_store, repo, runtime_config);
     fs::create_dir_all(&install_dir).with_context(|| {
@@ -319,6 +525,16 @@ fn install_linux_package(
     })?;
 
     let target_path = install_dir.join(asset_name);
+    report_progress(
+        progress,
+        TaskProgress {
+            repo_id: repo.id(),
+            action: TaskAction::Install,
+            stage: TaskStage::RunningSystemInstaller,
+            message: format!("{} {}", tr(language, "Running system installer", "正在执行系统安装器"), asset_name),
+            percent: Some(85),
+        },
+    );
     fs::copy(downloaded, &target_path).with_context(|| {
         format!(
             "failed to copy Linux package from {} to {}",
@@ -457,6 +673,19 @@ fn mark_executable(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn report_progress(progress: Option<&ProgressReporter>, event: TaskProgress) {
+    if let Some(progress) = progress {
+        progress(event);
+    }
+}
+
+fn tr(language: Language, english: &'static str, chinese: &'static str) -> &'static str {
+    match language {
+        Language::En => english,
+        Language::ZhCn => chinese,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -525,7 +754,14 @@ mod tests {
         write_tar_gz_fixture(&archive_path);
 
         let plan = sample_plan(InstallType::Archive, "fixture.tar.gz");
-        let outcome = install_from_plan(&plan, &manifest, Some(&archive_path), None)
+        let outcome = install_from_plan(
+            &plan,
+            &manifest,
+            Some(&archive_path),
+            None,
+            Language::En,
+            None,
+        )
             .await
             .expect("install should succeed");
 
@@ -536,7 +772,7 @@ mod tests {
         assert_eq!(stored.apps[0].id, "owner/project");
         assert_eq!(stored.apps[0].installed_version, "v1.2.3");
 
-        let removed = uninstall_repo(&manifest, "owner/project")
+        let removed = uninstall_repo(&manifest, "owner/project", Language::En, None)
             .expect("uninstall should succeed")
             .expect("installed app should be removed");
         assert_eq!(removed.id, "owner/project");
@@ -552,7 +788,14 @@ mod tests {
         write_tar_xz_fixture(&archive_path);
 
         let plan = sample_plan(InstallType::Archive, "fixture.tar.xz");
-        let outcome = install_from_plan(&plan, &manifest, Some(&archive_path), None)
+        let outcome = install_from_plan(
+            &plan,
+            &manifest,
+            Some(&archive_path),
+            None,
+            Language::En,
+            None,
+        )
             .await
             .expect("install should succeed");
 
@@ -574,7 +817,7 @@ mod tests {
             .select_best(&release)
             .unwrap();
 
-        let plan = InstallPlan::from_match(&repo, &release, &matched);
+        let plan = InstallPlan::from_match(&repo, &release, &matched, Language::En);
 
         assert!(plan.requires_user_confirmation);
         assert!(

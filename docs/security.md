@@ -1,22 +1,22 @@
 # Security
 
-## 威胁模型
+## Threat Model
 
-GitHub Release asset 不等于可信软件。项目可能被攻击，release asset 可能被替换，安装器可能执行任意代码。
+A GitHub Release asset is not automatically trustworthy. The project may be compromised, a release asset may be replaced, and an installer may execute arbitrary code.
 
-## 第一版策略
+## Initial Policy
 
-- Windows `.exe/.msi` 不静默执行。
-- 执行安装器前必须二次确认；CLI 提供 `--yes`，桌面端保留确认按钮。
-- 桌面端会先展示安装预览，再由用户确认后执行安装。
-- Linux `.deb/.rpm` 走系统安装器时只保留可追踪状态，不把本工具的缓存目录当作真实安装结果。
-- private token 只用于 GitHub API，配置会保存在本机数据目录，不回传仓库。
-- token 不写日志。
+- Windows `.exe` / `.msi` files are never executed silently.
+- Installers require a second confirmation step. The CLI exposes `--yes`, and the desktop app keeps an explicit confirm button.
+- The desktop app shows an install preview before running the install.
+- Linux `.deb` / `.rpm` installs through the system installer only keep traceable state. The local cache directory is not treated as the actual installed result.
+- Private tokens are only used for GitHub API requests, stay on the local machine, and are not sent back to the repository.
+- Tokens must not be written to logs.
 
-## 后续增强
+## Future Hardening
 
-- 支持 SHA256 校验。
-- 支持签名信息展示。
-- 支持下载前显示 release 作者和 tag 信息。
-- 支持更新前展示 release note 原文。
-- 支持更新失败回滚。
+- SHA256 verification
+- Signature display
+- Release author and tag display before download
+- Raw release note display before update
+- Rollback on failed updates

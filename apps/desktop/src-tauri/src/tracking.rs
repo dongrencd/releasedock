@@ -1,7 +1,7 @@
 use std::{fs, path::PathBuf};
 
 use anyhow::{Context, Result};
-use ghrm_core::manifest::ManifestStore;
+use releasedock_core::manifest::ManifestStore;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 

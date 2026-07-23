@@ -1,4 +1,4 @@
-//! Shared domain logic for the GitHub Release Manager.
+//! Shared domain logic for the ReleaseDock.
 //!
 //! The CLI and desktop app must call this crate instead of duplicating install
 //! decisions in two places.

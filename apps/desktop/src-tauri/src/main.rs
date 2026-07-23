@@ -2,27 +2,30 @@ use std::{
     collections::HashSet,
     env,
     fs,
-    process::Command,
     path::{Path, PathBuf},
+    process::Command,
+    sync::Arc,
 };
 
 use anyhow::{Context, Result};
-use ghrm_core::{
+use releasedock_core::{
     asset_matcher::{Architecture, AssetMatcher, OperatingSystem},
-    config::{Config, ConfigStore},
-    installer::install_from_plan,
+    config::{Config, ConfigStore, Language},
+    installer::{install_from_plan, uninstall_repo as core_uninstall_repo, ProgressReporter, TaskProgress},
     install_plan::InstallPlan,
     manifest::{InstallPathKind, ManifestStore},
     release::{Release, ReleaseClient},
     repo::RepoRef,
 };
 use serde::{Deserialize, Serialize};
+use tauri::Emitter;
 
 mod tracking;
 
 use tracking::TrackedRepoStore;
 
-const DEFAULT_TRACKED_REPO_ID: &str = "dongrencd/gh-release-manager";
+const DEFAULT_TRACKED_REPO_ID: &str = "dongrencd/releasedock";
+const TASK_PROGRESS_EVENT: &str = "task-progress";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -78,7 +81,7 @@ enum UiArch {
 #[tokio::main]
 async fn main() -> Result<()> {
     if should_run_cli() {
-        ghrm_cli::run_from_args(env::args_os()).await?;
+        releasedock_cli::run_from_args(env::args_os()).await?;
         return Ok(());
     }
 
@@ -93,10 +96,12 @@ async fn main() -> Result<()> {
             uninstall_repo,
             remove_tracked_repo,
             bulk_remove_tracked_repos,
-            open_url
+            open_url,
+            open_path,
+            open_system_uninstall_settings
         ])
         .run(tauri::generate_context!())
-        .expect("failed to run GitHub Release Manager desktop app");
+        .expect("failed to run ReleaseDock desktop app");
 
     Ok(())
 }
@@ -152,15 +157,15 @@ async fn preview_install(
 }
 
 #[tauri::command]
-async fn install_repo(repo_input: String) -> Result<Vec<ManagedAppView>, String> {
-    install_repo_to_tracking(&repo_input)
+async fn install_repo(app: tauri::AppHandle, repo_input: String) -> Result<Vec<ManagedAppView>, String> {
+    install_repo_to_tracking(&app, &repo_input)
         .await
         .map_err(format_error)
 }
 
 #[tauri::command]
-async fn uninstall_repo(repo_input: String) -> Result<Vec<ManagedAppView>, String> {
-    uninstall_repo_from_tracking(&repo_input)
+async fn uninstall_repo(app: tauri::AppHandle, repo_input: String) -> Result<Vec<ManagedAppView>, String> {
+    uninstall_repo_from_tracking(&app, &repo_input)
         .await
         .map_err(format_error)
 }
@@ -184,6 +189,16 @@ async fn open_url(url: String) -> Result<(), String> {
     open_url_in_system(&url).map_err(format_error)
 }
 
+#[tauri::command]
+async fn open_path(path: String) -> Result<(), String> {
+    open_path_in_system(&path).map_err(format_error)
+}
+
+#[tauri::command]
+async fn open_system_uninstall_settings() -> Result<(), String> {
+    open_system_uninstall_settings_in_system().map_err(format_error)
+}
+
 async fn build_dashboard() -> Result<Vec<ManagedAppView>> {
     let store = ManifestStore::default()?;
     let manifest = store.load()?;
@@ -192,32 +207,38 @@ async fn build_dashboard() -> Result<Vec<ManagedAppView>> {
     let tracked_repos = tracked_store.load()?;
     let installed_ids: HashSet<String> = manifest.apps.iter().map(|app| app.id.clone()).collect();
     let runtime_config = runtime_config()?;
+    let language = ui_language(&runtime_config);
     let client = release_client(Some(&runtime_config))?;
 
     let mut dashboard = Vec::with_capacity(manifest.apps.len() + tracked_repos.len());
     for app in manifest.apps {
-        dashboard.push(enrich_installed_app(&client, app).await);
+        dashboard.push(enrich_installed_app(&client, app, language).await);
     }
 
     for tracked_repo in tracked_repos {
         if installed_ids.contains(&tracked_repo.repo_id) {
             continue;
         }
-        dashboard.push(enrich_tracked_repo(&client, &tracked_repo.repo_id).await);
+        dashboard.push(enrich_tracked_repo(&client, &tracked_repo.repo_id, language).await);
     }
 
     Ok(dashboard)
 }
 
-async fn enrich_installed_app(client: &ReleaseClient, app: ghrm_core::manifest::InstalledApp) -> ManagedAppView {
+async fn enrich_installed_app(
+    client: &ReleaseClient,
+    app: releasedock_core::manifest::InstalledApp,
+    language: Language,
+) -> ManagedAppView {
     match RepoRef::parse(&app.repo_url) {
         Ok(repo) => match client.latest_release(&repo).await {
-            Ok(release) => render_app(app, repo, release),
+            Ok(release) => render_app(app, repo, release, language),
             Err(error) => build_failed_view(
                 app.id,
                 app.name,
                 Some(repo.github_url()),
                 Some(format!("failed to request latest release: {error}")),
+                language,
             ),
         },
         Err(error) => build_failed_view(
@@ -225,19 +246,21 @@ async fn enrich_installed_app(client: &ReleaseClient, app: ghrm_core::manifest::
             app.name,
             None,
             Some(format!("invalid repository URL: {error}")),
+            language,
         ),
     }
 }
 
-async fn enrich_tracked_repo(client: &ReleaseClient, repo_id: &str) -> ManagedAppView {
+async fn enrich_tracked_repo(client: &ReleaseClient, repo_id: &str, language: Language) -> ManagedAppView {
     match RepoRef::parse(repo_id) {
         Ok(repo) => match client.latest_release(&repo).await {
-            Ok(release) => render_tracked_repo(repo, release),
+            Ok(release) => render_tracked_repo(repo, release, language),
             Err(error) => build_failed_view(
                 repo.id(),
                 repo.name.clone(),
                 Some(repo.github_url()),
                 Some(format!("failed to request latest release: {error}")),
+                language,
             ),
         },
         Err(error) => build_failed_view(
@@ -245,14 +268,16 @@ async fn enrich_tracked_repo(client: &ReleaseClient, repo_id: &str) -> ManagedAp
             repo_id.to_string(),
             None,
             Some(format!("invalid repository URL: {error}")),
+            language,
         ),
     }
 }
 
 fn render_app(
-    app: ghrm_core::manifest::InstalledApp,
+    app: releasedock_core::manifest::InstalledApp,
     repo: RepoRef,
     release: Release,
+    language: Language,
 ) -> ManagedAppView {
     let matcher = AssetMatcher::current();
     match matcher.select_best(&release) {
@@ -274,7 +299,7 @@ fn render_app(
                 release_note: release
                     .release_note()
                     .map(|note| note.to_string())
-                    .or_else(|| Some("This release does not include a release note.".to_string())),
+                    .or_else(|| Some(tr_owned(language, "This release does not include a release note.", "这个 release 没有填写 release note。"))),
                 release_url: release.html_url.clone().or_else(|| Some(repo.github_url())),
                 published_at: release.published_at.as_ref().map(|value| value.to_rfc3339()),
                 asset_name: Some(matched.asset.name.clone()),
@@ -289,18 +314,19 @@ fn render_app(
             app.name,
             Some(repo.github_url()),
             Some(error.to_string()),
+            language,
         ),
     }
 }
 
-fn render_tracked_repo(repo: RepoRef, release: Release) -> ManagedAppView {
+fn render_tracked_repo(repo: RepoRef, release: Release, language: Language) -> ManagedAppView {
     let matcher = AssetMatcher::current();
     let matched = matcher.select_best(&release).ok();
     let install_path = default_install_path(&repo);
     ManagedAppView {
         id: repo.id(),
         name: repo.name.clone(),
-        current_version: "未安装".to_string(),
+        current_version: tr_owned(language, "Not installed", "未安装"),
         latest_version: release.tag_name.clone(),
         status: AppStatus::NeedsChoice,
         source: "GitHub".to_string(),
@@ -308,7 +334,7 @@ fn render_tracked_repo(repo: RepoRef, release: Release) -> ManagedAppView {
         release_note: release
             .release_note()
             .map(|note| note.to_string())
-            .or_else(|| Some("This release does not include a release note.".to_string())),
+            .or_else(|| Some(tr_owned(language, "This release does not include a release note.", "这个 release 没有填写 release note。"))),
         release_url: release.html_url.clone().or_else(|| Some(repo.github_url())),
         published_at: release.published_at.as_ref().map(|value| value.to_rfc3339()),
         asset_name: matched.map(|asset| asset.asset.name),
@@ -324,15 +350,16 @@ fn build_failed_view(
     name: String,
     release_url: Option<String>,
     reason: Option<String>,
+    language: Language,
 ) -> ManagedAppView {
     ManagedAppView {
         id,
         name,
-        current_version: "未知".to_string(),
-        latest_version: "未知".to_string(),
+        current_version: tr_owned(language, "Unknown", "未知"),
+        latest_version: tr_owned(language, "Unknown", "未知"),
         status: AppStatus::Failed,
         source: "GitHub".to_string(),
-        release_title: Some("Unable to load release".to_string()),
+        release_title: Some(tr_owned(language, "Unable to load release", "无法加载 release")),
         release_note: reason,
         release_url,
         published_at: None,
@@ -359,9 +386,10 @@ async fn add_repo_to_tracking(repo_input: &str) -> Result<Vec<ManagedAppView>> {
     build_dashboard().await
 }
 
-async fn install_repo_to_tracking(repo_input: &str) -> Result<Vec<ManagedAppView>> {
+async fn install_repo_to_tracking(app: &tauri::AppHandle, repo_input: &str) -> Result<Vec<ManagedAppView>> {
     let repo = RepoRef::parse(repo_input)?;
     let runtime_config = runtime_config()?;
+    let language = ui_language(&runtime_config);
     let client = release_client(Some(&runtime_config))?;
     let release = client
         .latest_release(&repo)
@@ -369,17 +397,21 @@ async fn install_repo_to_tracking(repo_input: &str) -> Result<Vec<ManagedAppView
         .with_context(|| format!("failed to fetch latest release for {}", repo.id()))?;
 
     let matched = AssetMatcher::current().select_best(&release)?;
-    let plan = InstallPlan::from_match(&repo, &release, &matched);
+    let plan = InstallPlan::from_match(&repo, &release, &matched, language);
     let store = ManifestStore::default()?;
-    install_from_plan(&plan, &store, None, Some(&runtime_config)).await?;
+    let reporter = task_progress_reporter(app);
+    install_from_plan(&plan, &store, None, Some(&runtime_config), language, reporter).await?;
 
     build_dashboard().await
 }
 
-async fn uninstall_repo_from_tracking(repo_input: &str) -> Result<Vec<ManagedAppView>> {
+async fn uninstall_repo_from_tracking(app: &tauri::AppHandle, repo_input: &str) -> Result<Vec<ManagedAppView>> {
     let repo = RepoRef::parse(repo_input)?;
+    let runtime_config = runtime_config()?;
+    let language = ui_language(&runtime_config);
     let store = ManifestStore::default()?;
-    let removed = ghrm_core::installer::uninstall_repo(&store, &repo.id())?;
+    let reporter = task_progress_reporter(app);
+    let removed = core_uninstall_repo(&store, &repo.id(), language, reporter)?;
     if removed.is_none() {
         anyhow::bail!("no managed app matched {}", repo.id());
     }
@@ -419,10 +451,44 @@ async fn bulk_remove_tracked_repos_from_tracking(
     })
 }
 
+fn task_progress_reporter(app: &tauri::AppHandle) -> Option<ProgressReporter> {
+    let app = app.clone();
+    Some(Arc::new(move |progress: TaskProgress| {
+        let _ = app.emit(TASK_PROGRESS_EVENT, progress);
+    }))
+}
+
+fn ui_language(config: &Config) -> Language {
+    match config.language.as_deref() {
+        Some("zh-CN") => Language::ZhCn,
+        _ => Language::En,
+    }
+}
+
 fn open_url_in_system(url: &str) -> Result<()> {
     let parsed = url::Url::parse(url).context("failed to parse URL")?;
     validate_github_url(&parsed)?;
-    open_url_with_platform(url)
+    open_target_with_platform(url)
+}
+
+fn open_path_in_system(path: &str) -> Result<()> {
+    open_target_with_platform(path)
+}
+
+fn open_system_uninstall_settings_in_system() -> Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("cmd")
+            .args(["/C", "start", "", "ms-settings:appsfeatures"])
+            .spawn()
+            .context("failed to open Windows uninstall settings")?;
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        anyhow::bail!("system uninstall settings are only available on Windows");
+    }
 }
 
 async fn build_install_plan(
@@ -433,6 +499,7 @@ async fn build_install_plan(
 ) -> Result<InstallPlan> {
     let repo = RepoRef::parse(repo_input)?;
     let runtime_config = runtime_config()?;
+    let language = ui_language(&runtime_config);
     let release = match release_fixture {
         Some(path) => read_fixture_release(&path)?,
         None => {
@@ -449,7 +516,7 @@ async fn build_install_plan(
         _ => AssetMatcher::current(),
     };
     let matched = matcher.select_best(&release)?;
-    Ok(InstallPlan::from_match(&repo, &release, &matched))
+    Ok(InstallPlan::from_match(&repo, &release, &matched, language))
 }
 
 fn default_install_path(repo: &RepoRef) -> PathBuf {
@@ -493,6 +560,7 @@ struct DesktopConfig {
     github_token: Option<String>,
     proxy_url: Option<String>,
     install_root: Option<PathBuf>,
+    language: Option<String>,
 }
 
 impl From<Config> for DesktopConfig {
@@ -501,6 +569,7 @@ impl From<Config> for DesktopConfig {
             github_token: value.github_token,
             proxy_url: value.proxy_url,
             install_root: value.install_root,
+            language: value.language,
         }
     }
 }
@@ -511,6 +580,7 @@ impl From<DesktopConfig> for Config {
             github_token: value.github_token,
             proxy_url: value.proxy_url,
             install_root: value.install_root,
+            language: value.language,
         }
     }
 }
@@ -526,31 +596,38 @@ fn validate_github_url(url: &url::Url) -> Result<()> {
     }
 }
 
-fn open_url_with_platform(url: &str) -> Result<()> {
+fn tr_owned(language: Language, english: &'static str, chinese: &'static str) -> String {
+    match language {
+        Language::En => english.to_string(),
+        Language::ZhCn => chinese.to_string(),
+    }
+}
+
+fn open_target_with_platform(target: &str) -> Result<()> {
     #[cfg(target_os = "windows")]
     {
         Command::new("cmd")
-            .args(["/C", "start", "", url])
+            .args(["/C", "start", "", target])
             .spawn()
-            .with_context(|| format!("failed to open {url}"))?;
+            .with_context(|| format!("failed to open {target}"))?;
         return Ok(());
     }
 
     #[cfg(target_os = "macos")]
     {
         Command::new("open")
-            .arg(url)
+            .arg(target)
             .spawn()
-            .with_context(|| format!("failed to open {url}"))?;
+            .with_context(|| format!("failed to open {target}"))?;
         return Ok(());
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         Command::new("xdg-open")
-            .arg(url)
+            .arg(target)
             .spawn()
-            .with_context(|| format!("failed to open {url}"))?;
+            .with_context(|| format!("failed to open {target}"))?;
         return Ok(());
     }
 
@@ -577,7 +654,7 @@ mod tests {
 
     #[test]
     fn allows_github_release_pages() {
-        let url = url::Url::parse("https://github.com/dongrencd/gh-release-manager/releases/tag/v0.2.0")
+        let url = url::Url::parse("https://github.com/dongrencd/releasedock/releases/tag/v0.2.0")
             .expect("valid URL");
         assert!(validate_github_url(&url).is_ok());
     }

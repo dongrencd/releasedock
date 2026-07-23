@@ -142,7 +142,7 @@ impl InstalledApp {
 
 impl ManifestStore {
     pub fn default_path() -> Result<PathBuf> {
-        let project_dirs = ProjectDirs::from("io", "ghrm", "GitHub Release Manager")
+        let project_dirs = ProjectDirs::from("io", "releasedock", "ReleaseDock")
             .context("failed to resolve platform data directory")?;
         Ok(project_dirs.data_local_dir().join("apps.json"))
     }

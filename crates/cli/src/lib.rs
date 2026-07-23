@@ -7,9 +7,9 @@ use std::{
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use ghrm_core::{
+use releasedock_core::{
     asset_matcher::{Architecture, AssetMatcher, OperatingSystem},
-    config::{Config, ConfigStore},
+    config::{Config, ConfigStore, Language},
     install_plan::InstallPlan,
     installer::{install_from_plan, uninstall_repo},
     manifest::ManifestStore,
@@ -19,7 +19,7 @@ use ghrm_core::{
 use serde::Serialize;
 
 #[derive(Debug, Parser)]
-#[command(name = "ghrm")]
+#[command(name = "releasedock")]
 #[command(about = "Manage applications installed from GitHub Releases")]
 struct Cli {
     #[command(subcommand)]
@@ -223,6 +223,8 @@ async fn install(args: InstallArgs) -> Result<()> {
         &store,
         artifact_fixture.as_deref(),
         Some(&runtime_config),
+        Language::En,
+        None,
     )
     .await?;
 
@@ -259,7 +261,7 @@ async fn build_install_plan(
         _ => AssetMatcher::current(),
     };
     let matched = matcher.select_best(&release)?;
-    Ok(InstallPlan::from_match(&repo, &release, &matched))
+    Ok(InstallPlan::from_match(&repo, &release, &matched, Language::En))
 }
 
 fn list(args: ManifestArgs) -> Result<()> {
@@ -331,6 +333,8 @@ async fn update(args: UpdateArgs) -> Result<()> {
                 &store,
                 artifact_fixture.as_deref(),
                 Some(&runtime_config),
+                Language::En,
+                None,
             )
             .await?;
             println!(
@@ -357,6 +361,8 @@ async fn update(args: UpdateArgs) -> Result<()> {
         &store,
         artifact_fixture.as_deref(),
         Some(&runtime_config),
+        Language::En,
+        None,
     )
     .await?;
     println!(
@@ -373,7 +379,7 @@ fn uninstall(args: UninstallArgs) -> Result<()> {
     let UninstallArgs { repo, manifest } = args;
     let store = manifest_store(manifest)?;
     let repo = RepoRef::parse(&repo)?;
-    match uninstall_repo(&store, &repo.id())? {
+    match uninstall_repo(&store, &repo.id(), Language::En, None)? {
         Some(app) => {
             println!("Uninstalled {} from {}", app.id, app.install_path.display());
         }
@@ -483,7 +489,7 @@ fn manifest_store(path: Option<PathBuf>) -> Result<ManifestStore> {
 }
 
 async fn build_check_report(
-    apps: &[ghrm_core::manifest::InstalledApp],
+    apps: &[releasedock_core::manifest::InstalledApp],
     release_fixture: Option<&PathBuf>,
 ) -> Result<CheckReport> {
     let matcher = AssetMatcher::current();
@@ -591,7 +597,7 @@ fn doctor() -> Result<()> {
     let store = config_store()?;
     let config = store.load()?;
 
-    println!("ghrm doctor: core CLI is available");
+    println!("releasedock doctor: core CLI is available");
     println!("config path: {}", store.path().display());
     println!(
         "github token: {}",
@@ -732,7 +738,7 @@ fn confirm_bulk_execution(action: &str, plans: &[(String, InstallPlan)], yes: bo
 }
 
 fn failed_check_entry(
-    app: &ghrm_core::manifest::InstalledApp,
+    app: &releasedock_core::manifest::InstalledApp,
     repo: &RepoRef,
     error: anyhow::Error,
 ) -> CheckEntry {
@@ -787,11 +793,11 @@ fn status_label(status: CheckStatus) -> &'static str {
     }
 }
 
-fn install_path_kind_label(kind: ghrm_core::manifest::InstallPathKind) -> &'static str {
+fn install_path_kind_label(kind: releasedock_core::manifest::InstallPathKind) -> &'static str {
     match kind {
-        ghrm_core::manifest::InstallPathKind::ManagedPath => "managedPath",
-        ghrm_core::manifest::InstallPathKind::SystemInstaller => "systemInstaller",
-        ghrm_core::manifest::InstallPathKind::Unknown => "unknown",
+        releasedock_core::manifest::InstallPathKind::ManagedPath => "managedPath",
+        releasedock_core::manifest::InstallPathKind::SystemInstaller => "systemInstaller",
+        releasedock_core::manifest::InstallPathKind::Unknown => "unknown",
     }
 }
 
@@ -824,11 +830,11 @@ impl From<CliArch> for Architecture {
 #[cfg(test)]
 mod tests {
     use super::{CheckStatus, failed_check_entry, status_label};
-    use ghrm_core::manifest::InstalledApp;
+    use releasedock_core::manifest::InstalledApp;
 
     #[test]
     fn formats_failed_check_entries_with_reason() {
-        let repo = ghrm_core::repo::RepoRef::parse("owner/project").unwrap();
+        let repo = releasedock_core::repo::RepoRef::parse("owner/project").unwrap();
         let app = InstalledApp::new(
             "owner/project",
             "project",

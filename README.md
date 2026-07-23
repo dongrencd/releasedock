@@ -1,19 +1,19 @@
-# GitHub Release Manager
+# ReleaseDock
 
-GitHub Release Manager 管理从 GitHub Releases 安装的软件。它面向手工下载 `.exe`、`.zip`、`.AppImage`、`.tar.gz` 后难以更新的场景，不替代 `winget`、`scoop`、`apt`、`flatpak` 或 Homebrew。
+ReleaseDock helps you manage software that you installed from GitHub Releases and later need to update, uninstall, or inspect again. It targets the common workflow where you download `.exe`, `.zip`, `.AppImage`, `.tar.gz`, `.deb`, or `.rpm` files by hand and then lose track of them. It is not a replacement for `winget`, `scoop`, `apt`, `flatpak`, or Homebrew.
 
-## 当前状态
+## Overview
 
-这是第一版可用实现，已经包含：
+The project is already usable in its first release:
 
-- Rust core：仓库解析、release 数据模型、release note、asset 匹配、安装计划、manifest、运行时配置。
-- CLI：`install` 可基于真实 GitHub latest release 或 fixture 执行安装，`--json` 可只输出安装计划，`--yes` 可跳过交互确认，`config` 可统一管理 GitHub token、代理和安装根目录，`check` 会对已安装软件逐个比对 latest release，`list` 可读取 manifest，`update`/`uninstall` 已接真实执行路径，系统安装器记录会明确标记为需系统卸载。
-- Desktop GUI：Tauri 2 + React 管理台，已接真实 manifest 读取、GitHub release 刷新、release note 查看、安装预览和确认、安装执行以及卸载/移除跟踪，并提供设置页管理 GitHub token、代理和安装根目录。
-- Desktop GUI 首次启动会默认跟踪当前项目 `dongrencd/gh-release-manager`，方便直接查看本仓库的 release。
-- Desktop GUI 首页区分“添加 GitHub 仓库”和“筛选已添加的软件”；公开仓库可不配置 token，私有仓库和高频刷新建议配置 token。
-- 文档：实现方案、桌面 UI、release note、安全边界、asset 匹配规则。
+- Rust core: repository parsing, release data models, release notes, asset matching, install plans, manifests, and runtime configuration.
+- CLI: `install` can use a live GitHub latest release or fixtures, `--json` prints the install plan only, `--yes` skips interactive confirmation, `config` manages the GitHub token, proxy, and install root, `check` compares installed apps with the latest release, `list` reads the manifest, and `update` / `uninstall` use the real execution path.
+- Desktop GUI: Tauri 2 + React dashboard with real manifest loading, GitHub release refresh, release note viewing, install preview and confirmation, install execution, uninstall and tracking removal, visible install progress, install-location shortcuts, and a settings page for token, proxy, language, and install root. The default UI language is English.
+- The desktop app seeds `dongrencd/releasedock` on first launch so the current project is visible immediately.
+- Public repositories do not require a token. Private repositories and frequent API calls should use one.
+- The install root stores downloaded installers in `downloads/` and managed software in `apps/`. Windows `.exe` / `.msi` installers are tracked as system installers, so the file is kept for reference while the actual install location is owned by the installer itself.
 
-## 技术栈
+## Technology
 
 - Core: Rust
 - CLI: Rust + `clap`
@@ -21,31 +21,18 @@ GitHub Release Manager 管理从 GitHub Releases 安装的软件。它面向手�
 - Frontend: React + TypeScript + Vite
 - Storage: JSON manifest v2
 
-## 常用命令
+## Usage
 
 ```bash
 cargo test
-cargo run -p ghrm-cli -- --help
-cargo run -p ghrm-cli -- list
-cargo run -p ghrm-cli -- check
-cargo run -p ghrm-cli -- install zyedidia/micro --json
-cargo run -p ghrm-cli -- config get
+cargo run -p releasedock-cli -- --help
+cargo run -p releasedock-cli -- list
+cargo run -p releasedock-cli -- check
+cargo run -p releasedock-cli -- install zyedidia/micro --json
+cargo run -p releasedock-cli -- config get
 ```
 
-## Actions 产物下载
-
-每次推送到 `main` 或手动触发 `CI Release Artifacts` workflow 后，可以在 GitHub Actions 页面下载构建产物：
-
-- `ghrm-linux-x64`：Linux CLI。
-- `ghrm-windows-x64-desktop`：Windows Tauri 桌面程序，可包含免安装 exe 和安装包。
-
-CLI 下载后可先验证：
-
-```bash
-./ghrm-linux-x64 --help
-```
-
-桌面端：
+### Desktop
 
 ```bash
 cd apps/desktop
@@ -56,26 +43,49 @@ cargo check --manifest-path src-tauri/Cargo.toml
 npm run tauri dev
 ```
 
-Linux 本地脚本：
+### Linux local builds
 
 ```bash
 bash scripts/linux/build-cli.sh
 bash scripts/linux/build-desktop.sh
 ```
 
-`build-desktop.sh` 默认只生成桌面可执行文件 `apps/desktop/src-tauri/target/release/ghrm`。如果需要额外打包，可以再传 `--bundles`。
+`build-desktop.sh` builds the desktop executable at `apps/desktop/src-tauri/target/release/releasedock` by default. Pass `--bundles` only when you want to try packaging.
 
-## Releases 下载
+### GitHub Actions artifacts
 
-推送 `v*.*.*` tag 后，GitHub Actions 会创建同名 GitHub Release，并上传 Linux CLI、Windows 桌面 exe、NSIS 安装包和 MSI。
+Pushes to `main` and manual `CI Release Artifacts` runs publish download artifacts in GitHub Actions:
+
+- `releasedock-linux-x64`: Linux CLI.
+- `releasedock-windows-x64-desktop`: Windows desktop build, including the app bundle and installers when available.
+
+After downloading the CLI artifact, verify it with:
+
+```bash
+./releasedock-linux-x64 --help
+```
+
+### GitHub Releases
+
+Tags that match `v*.*.*` create a GitHub Release with the same version and upload the Linux CLI, Windows desktop executable, NSIS installer, and MSI.
 
 ```bash
 git tag v0.2.0
 git push origin v0.2.0
 ```
 
-## 安全边界
+## Documentation
 
-- 当前安装器支持 archive、AppImage，以及在对应平台上的 Windows `.exe/.msi` 和 Linux `.deb/.rpm` 执行；系统级卸载仍保守处理。
-- `GITHUB_TOKEN` 只用于 GitHub API，不应写入日志。
-- 本工具第一版只管理自己安装的软件，不接管系统已有软件。
+- [Implementation notes](docs/implementation.md)
+- [Release note behavior](docs/release-notes.md)
+- [Windows UI notes](docs/windows-ui.md)
+- [Asset matching rules](docs/asset-matching.md)
+- [Build artifacts](docs/release-builds.md)
+- [Security notes](docs/security.md)
+- [Linux build scripts](scripts/linux/README.md)
+
+## Security
+
+- Windows `.exe` / `.msi` and Linux `.deb` / `.rpm` installers require explicit confirmation.
+- `GITHUB_TOKEN` is only used for GitHub API requests and should never be written to logs.
+- This first release only manages software installed by the tool itself or explicitly tracked by the user. It does not take over system-installed software.

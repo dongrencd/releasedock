@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     asset_matcher::{InstallType, MatchedAsset},
+    config::Language,
     release::Release,
     repo::RepoRef,
 };
@@ -19,7 +20,12 @@ pub struct InstallPlan {
 }
 
 impl InstallPlan {
-    pub fn from_match(repo: &RepoRef, release: &Release, matched: &MatchedAsset) -> Self {
+    pub fn from_match(
+        repo: &RepoRef,
+        release: &Release,
+        matched: &MatchedAsset,
+        language: Language,
+    ) -> Self {
         let requires_user_confirmation = matches!(
             matched.install_type,
             InstallType::WindowsInstaller | InstallType::LinuxPackage
@@ -28,14 +34,24 @@ impl InstallPlan {
 
         if requires_user_confirmation {
             notes.push(match matched.install_type {
-                InstallType::WindowsInstaller => {
-                    "Windows .exe/.msi installers are downloaded first and must be confirmed before execution."
-                        .to_string()
-                }
-                InstallType::LinuxPackage => {
-                    "Linux .deb/.rpm packages are downloaded first and must be confirmed before system installation."
-                        .to_string()
-                }
+                InstallType::WindowsInstaller => match language {
+                    Language::En => {
+                        "Windows .exe/.msi installers are downloaded first and must be confirmed before execution."
+                            .to_string()
+                    }
+                    Language::ZhCn => {
+                        "Windows .exe/.msi 安装包会先下载，确认后才会执行。".to_string()
+                    }
+                },
+                InstallType::LinuxPackage => match language {
+                    Language::En => {
+                        "Linux .deb/.rpm packages are downloaded first and must be confirmed before system installation."
+                            .to_string()
+                    }
+                    Language::ZhCn => {
+                        "Linux .deb/.rpm 安装包会先下载，确认后才会执行系统安装。".to_string()
+                    }
+                },
                 _ => unreachable!(),
             });
         }

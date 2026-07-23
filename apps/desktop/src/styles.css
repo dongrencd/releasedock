@@ -24,17 +24,54 @@ input {
 
 .shell {
   display: grid;
-  grid-template-columns: 76px minmax(0, 1fr);
+  grid-template-columns: 208px minmax(0, 1fr);
   min-height: 100vh;
 }
 
 .sidebar {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 12px 10px;
+  gap: 16px;
+  padding: 18px 14px;
   color: #d9e6e4;
-  background: #123534;
+  background: linear-gradient(180deg, #102d2c 0%, #163c3a 100%);
+  border-right: 1px solid #1f3d3b;
+}
+
+.brandBlock {
+  display: grid;
+  gap: 10px;
+}
+
+.brandCopy {
+  display: grid;
+  gap: 2px;
+}
+
+.brandCopy strong {
+  color: #ffffff;
+  font-size: 15px;
+  line-height: 1.25;
+}
+
+.brandCopy span,
+.sidebarLabel {
+  color: #b8cdca;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.sourceTileCopy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.sourceTileCopy strong {
+  color: #ffffff;
+  font-size: 13px;
+  line-height: 1.35;
+  word-break: break-word;
 }
 
 .brand {
@@ -45,11 +82,11 @@ input {
 
 .brandMark {
   display: grid;
-  width: 42px;
-  height: 42px;
+  width: 52px;
+  height: 52px;
   place-items: center;
   border: 1px solid #3f6966;
-  border-radius: 8px;
+  border-radius: 12px;
   color: #ecfdf5;
   background: #0f766e;
   font-weight: 700;
@@ -69,8 +106,13 @@ input {
 
 .sourceButton {
   display: grid;
-  place-items: center;
-  min-height: 46px;
+  justify-items: start;
+  gap: 10px;
+  min-height: 92px;
+  margin-top: auto;
+  padding: 12px 14px;
+  text-align: left;
+  align-content: start;
   margin-top: auto;
   border: 1px solid #2f5f5b;
   border-radius: 8px;
@@ -80,21 +122,23 @@ input {
 
 .navList {
   display: grid;
-  gap: 6px;
+  gap: 8px;
 }
 
 .navItem {
   display: flex;
   align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
   width: 100%;
   min-height: 46px;
-  justify-content: center;
-  padding: 0;
+  padding: 0 14px;
   border: 0;
   border-radius: 7px;
   color: #bdd2cf;
   background: transparent;
   cursor: pointer;
+  font-weight: 600;
 }
 
 .navItem.active,
@@ -103,47 +147,99 @@ input {
   background: #1c4b49;
 }
 
+.navItem span {
+  white-space: nowrap;
+}
+
 .workspace {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr);
   min-width: 0;
 }
 
 .topbar {
-  display: flex;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px 16px;
   align-items: center;
-  padding: 12px 18px;
+  padding: 16px 24px;
   border-bottom: 1px solid #d8dee8;
   background: #ffffff;
 }
 
 .topbarCopy {
   display: grid;
-  place-items: center;
-  width: 36px;
-  height: 36px;
-  border-radius: 8px;
-  color: #0f766e;
-  background: #ecfdf5;
+  gap: 4px;
+  min-width: 0;
 }
 
-.tokenState {
+.topbarCopy h1 {
+  font-size: 24px;
+  line-height: 1.15;
+}
+
+.eyebrow {
+  margin: 0;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.topbarMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.statePill {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  border: 1px solid #fde68a;
-  border-radius: 8px;
-  color: #92400e;
-  background: #fffbeb;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: #eff3f8;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
 }
 
-.tokenState.active {
-  color: #0f766e;
-  border-color: #99d4ce;
+.statePill.busy {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.statePill.success {
   background: #ecfdf5;
+  color: #0f766e;
+}
+
+.statePill.danger {
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.statePill.subtle {
+  background: #f8fafc;
+  color: #475569;
+}
+
+.topbarActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  grid-column: 2;
+}
+
+.topbarButton {
+  min-height: 36px;
+  padding: 0 14px;
+  white-space: nowrap;
 }
 
 .searchBox {
@@ -178,16 +274,6 @@ input {
   outline: 0;
   color: #18212f;
   background: transparent;
-}
-
-.settingsTopbarCopy {
-  display: grid;
-  place-items: center;
-  width: 36px;
-  height: 36px;
-  border-radius: 8px;
-  color: #0f766e;
-  background: #ecfdf5;
 }
 
 .searchBox input {
@@ -281,89 +367,15 @@ input {
   width: 100%;
 }
 
-.iconButton {
-  width: 38px;
-  border: 1px solid #d8dee8;
-  color: #243044;
-  background: #ffffff;
-}
-
 .linkButton {
   border: 0;
   color: #0f766e;
   background: transparent;
 }
 
-.tooltipWrap {
-  position: relative;
-  display: inline-flex;
-  max-width: 100%;
-  align-items: center;
-}
-
-.tooltipBubble {
-  position: absolute;
-  left: calc(100% + 8px);
-  top: 50%;
-  z-index: 30;
-  max-width: 280px;
-  padding: 6px 8px;
-  border: 1px solid #cbd5e1;
-  border-radius: 8px;
-  background: rgba(15, 23, 42, 0.95);
-  color: #ffffff;
-  font-size: 12px;
-  line-height: 1.45;
-  white-space: normal;
-  word-break: break-word;
-  opacity: 0;
-  pointer-events: none;
-  transform: translateX(-4px) translateY(-50%);
-  transition: opacity 120ms ease, transform 120ms ease;
-}
-
-.tooltipWrap[data-placement="left"] .tooltipBubble {
-  right: calc(100% + 8px);
-  left: auto;
-  transform: translateX(4px) translateY(-50%);
-}
-
-.tooltipWrap[data-placement="bottom"] .tooltipBubble {
-  top: calc(100% + 8px);
-  left: 50%;
-  transform: translateX(-50%) translateY(-4px);
-}
-
-.tooltipWrap:hover .tooltipBubble,
-.tooltipWrap:focus-within .tooltipBubble {
-  opacity: 1;
-  transform: translateX(0) translateY(-50%);
-}
-
-.tooltipWrap[data-placement="left"]:hover .tooltipBubble,
-.tooltipWrap[data-placement="left"]:focus-within .tooltipBubble {
-  transform: translateX(0) translateY(-50%);
-}
-
-.tooltipWrap[data-placement="bottom"]:hover .tooltipBubble,
-.tooltipWrap[data-placement="bottom"]:focus-within .tooltipBubble {
-  transform: translateX(-50%) translateY(0);
-}
-
-.tooltipButton {
-  display: inline-flex;
-  align-items: center;
-}
-
-.sidebar > .tooltipWrap,
-.sourceTooltip {
-  width: 100%;
-  justify-content: center;
-}
-
 .contentGrid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(340px, 390px);
+  grid-template-columns: minmax(0, 1fr) minmax(380px, 420px);
   gap: 18px;
   min-height: 0;
 }
@@ -373,37 +385,40 @@ input {
   grid-template-rows: auto minmax(0, 1fr);
   gap: 16px;
   min-height: 0;
-  padding: 18px 22px 20px;
+  padding: 18px 24px 20px;
 }
 
 .addRepoPanel {
   display: grid;
-  grid-template-columns: 42px minmax(0, 1fr);
-  gap: 12px;
-  align-items: center;
-  padding: 12px 14px;
+  gap: 14px;
+  padding: 16px 18px;
   border: 1px solid #d8dee8;
   border-radius: 8px;
   background: #ffffff;
 }
 
-.addRepoIcon {
-  border-color: #0f766e;
-  color: #0f766e;
-  background: #ecfdf5;
+.panelHeading {
+  display: grid;
+  gap: 4px;
 }
 
 .repoControl {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
-  align-items: center;
   min-width: 0;
+}
+
+.addRepoButton {
+  min-height: 40px;
+  padding: 0 14px;
+  white-space: nowrap;
 }
 
 .settingsPanel {
   display: grid;
   gap: 12px;
-  padding: 14px 18px 18px;
+  padding: 14px 24px 18px;
 }
 
 .settingsForm {
@@ -418,6 +433,63 @@ input {
 .fieldRow {
   display: grid;
   gap: 8px;
+}
+
+.fieldRow > span {
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.fieldRow small {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.fieldRow.primaryField {
+  padding: 12px;
+  border: 1px solid #b8d8d4;
+  border-radius: 8px;
+  background: #f0fdfa;
+}
+
+.fieldActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.languageSwitch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.languagePill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid #d8dee8;
+  border-radius: 999px;
+  color: #475569;
+  background: #ffffff;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.languagePill.active {
+  color: #0f766e;
+  border-color: #99d4ce;
+  background: #ecfdf5;
+}
+
+.fieldActionButton {
+  min-height: 32px;
+  padding: 0 10px;
+  white-space: nowrap;
 }
 
 .srOnly {
@@ -450,11 +522,11 @@ input {
   display: flex;
   gap: 10px;
   justify-content: flex-end;
-  padding: 0 22px 4px;
+  padding: 0 24px 4px;
 }
 
 .errorBanner {
-  margin: 0 22px;
+  margin: 0 24px;
   padding: 12px 14px;
   border: 1px solid #f5c2c7;
   border-radius: 8px;
@@ -479,7 +551,30 @@ input {
   display: flex;
   justify-content: space-between;
   gap: 16px;
+  align-items: flex-start;
+}
+
+.sectionTitle {
+  display: flex;
   align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.sectionTitle h2 {
+  font-size: 20px;
+  line-height: 1.2;
+}
+
+.sectionMeta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.sectionMeta .statePill {
+  white-space: nowrap;
 }
 
 .sectionGlyph {
@@ -512,17 +607,6 @@ h2 {
   color: #64748b;
 }
 
-.updateCount {
-  display: grid;
-  width: 36px;
-  height: 36px;
-  place-items: center;
-  border-radius: 8px;
-  color: #ffffff;
-  background: #b45309;
-  font-weight: 700;
-}
-
 .filterRow {
   display: flex;
   flex-wrap: wrap;
@@ -531,10 +615,10 @@ h2 {
 }
 
 .listTools {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
-  align-items: center;
+  align-items: start;
   margin: 14px 0 12px;
 }
 
@@ -546,12 +630,12 @@ h2 {
 }
 
 .listToolsPrimary {
-  flex: 1 1 340px;
+  min-width: 0;
 }
 
 .listToolsActions {
   justify-items: end;
-  flex: 1 1 420px;
+  align-content: start;
 }
 
 .selectionSummary {
@@ -568,15 +652,18 @@ h2 {
 }
 
 .filterPill {
-  display: grid;
-  place-items: center;
-  width: 34px;
-  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 12px;
+  width: auto;
   border: 1px solid #d8dee8;
-  border-radius: 8px;
+  border-radius: 999px;
   color: #475569;
   background: #ffffff;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .filterPill.active {
@@ -585,16 +672,22 @@ h2 {
   background: #ecfdf5;
 }
 
+.bulkButton {
+  min-height: 34px;
+  padding: 0 12px;
+  white-space: nowrap;
+}
+
 .appTable {
   display: grid;
-  gap: 6px;
+  gap: 8px;
   min-height: 220px;
 }
 
 .tableHead,
 .tableRow {
   display: grid;
-  grid-template-columns: 30px minmax(170px, 1fr) 84px 84px 34px 34px;
+  grid-template-columns: 30px minmax(220px, 1.4fr) 96px 96px 110px 92px;
   gap: 12px;
   align-items: center;
 }
@@ -607,9 +700,9 @@ h2 {
 }
 
 .tableRow {
-  min-height: 56px;
+  min-height: 58px;
   width: 100%;
-  padding: 6px 10px;
+  padding: 8px 12px;
   border: 1px solid transparent;
   border-radius: 8px;
   color: #18212f;
@@ -657,14 +750,19 @@ h2 {
   min-width: 0;
 }
 
-.appNameCopy .tooltipWrap {
-  width: 100%;
-  min-width: 0;
-}
-
 .appNameCopy strong {
   display: block;
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.appNameMeta {
+  display: block;
+  overflow: hidden;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -687,14 +785,15 @@ h2 {
 }
 
 .statusBadge {
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
+  display: inline-flex;
   align-items: center;
+  min-height: 30px;
+  padding: 0 10px;
   border-radius: 999px;
   font-size: 12px;
   font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .statusBadge.updateAvailable {
@@ -713,13 +812,17 @@ h2 {
 }
 
 .rowAction {
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 999px;
   color: #0f766e;
   background: #f0fdfa;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .emptyState,
@@ -744,8 +847,80 @@ h2 {
   display: grid;
   align-content: start;
   min-width: 0;
-  padding: 14px;
+  gap: 14px;
+  padding: 16px;
   overflow: auto;
+  position: sticky;
+  top: 16px;
+  max-height: calc(100vh - 176px);
+}
+
+.taskProgressPanel {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #99d4ce;
+  border-radius: 8px;
+  background: #f0fdfa;
+}
+
+.taskProgressPanel.failed {
+  border-color: #f5c2c7;
+  background: #fef2f2;
+}
+
+.taskProgressHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.taskProgressCopy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.taskProgressCopy strong {
+  color: #0f172a;
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.taskProgressMessage {
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.taskProgressTrack {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #dbe7e5;
+}
+
+.taskProgressValue {
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: #0f766e;
+  transition: width 180ms linear;
+}
+
+.taskProgressTrack.busy .taskProgressValue {
+  width: 36%;
+  animation: taskProgressShift 1.15s ease-in-out infinite alternate;
+}
+
+.taskProgressPanel.failed .taskProgressTrack {
+  background: #fde2e4;
+}
+
+.taskProgressPanel.failed .taskProgressValue {
+  background: #dc2626;
 }
 
 .inspectorHead {
@@ -758,6 +933,13 @@ h2 {
 .inspectorHead p {
   margin-top: 7px;
   color: #64748b;
+}
+
+.inspectorHead .iconButton,
+.inspectorHead .ghostButton {
+  width: auto;
+  padding: 0 12px;
+  white-space: nowrap;
 }
 
 .inspectorBlock {
@@ -777,14 +959,12 @@ h2 {
 .blockTitle {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
+  gap: 8px;
   margin-bottom: 8px;
   color: #0f766e;
   font-weight: 700;
-  border-radius: 8px;
-  background: #f0fdfa;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .mutedText {
@@ -826,23 +1006,7 @@ h2 {
 }
 
 .releaseNotePreview {
-  max-height: 132px;
-}
-
-.releaseNotePreview.expanded {
-  max-height: 240px;
-}
-
-.noteFooter {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.detailToggle {
-  display: flex;
-  justify-content: flex-end;
+  max-height: 160px;
 }
 
 .installPreview {
@@ -871,36 +1035,35 @@ h2 {
 }
 
 .previewActions {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
-  flex-wrap: wrap;
 }
 
 .previewActions .actionButton {
-  flex: 1 1 132px;
+  width: 100%;
 }
 
 .detailList {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  margin: 14px 0;
+  gap: 12px;
+  margin: 0;
 }
 
 .detailList div {
   display: grid;
-  gap: 4px;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
 }
 
 .detailList dt {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
-  color: #0f766e;
-  background: #f0fdfa;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .detailList dd {
@@ -929,50 +1092,12 @@ h2 {
 
 .blockTitle,
 .sectionGlyph,
-.updateCount,
 .topbarCopy,
-.settingsTopbarCopy,
 .sourceButton {
   position: relative;
 }
 
-.taskBar {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(160px, 360px) 44px;
-  gap: 12px;
-  align-items: center;
-  padding: 10px 18px;
-  border-top: 1px solid #d8dee8;
-  background: #ffffff;
-}
-
-.taskLabel {
-  color: #334155;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.progressTrack {
-  height: 8px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: #e2e8f0;
-}
-
-.progressValue {
-  width: 78%;
-  height: 100%;
-  border-radius: inherit;
-  background: #0f766e;
-}
-
-.progressTrack.busy .progressValue {
-  width: 36%;
-  animation: progressShift 1.2s ease-in-out infinite alternate;
-}
-
-@keyframes progressShift {
+@keyframes taskProgressShift {
   from {
     transform: translateX(0);
   }
@@ -984,23 +1109,50 @@ h2 {
 
 @media (max-width: 1180px) {
   .shell {
-    grid-template-columns: 72px minmax(0, 1fr);
+    grid-template-columns: 176px minmax(0, 1fr);
   }
 
   .contentGrid {
-    grid-template-columns: minmax(0, 1fr) minmax(320px, 360px);
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .topbar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .topbarActions {
+    grid-column: auto;
+    justify-content: flex-start;
+  }
+
+  .topbarMeta {
+    justify-content: flex-start;
   }
 
   .listTools {
-    flex-direction: column;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .listToolsActions {
-    justify-items: stretch;
+    justify-items: start;
     width: 100%;
   }
 
   .addRepoPanel {
-    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .repoControl {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tableHead,
+  .tableRow {
+    grid-template-columns: 30px minmax(180px, 1fr) 88px 88px 92px 82px;
+  }
+
+  .inspector {
+    position: static;
+    max-height: none;
   }
 }

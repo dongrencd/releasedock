@@ -8,7 +8,7 @@ members = [
 [workspace.package]
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/dongrencd/gh-release-manager"
+repository = "https://github.com/dongrencd/releasedock"
 
 [workspace.dependencies]
 anyhow = "1"

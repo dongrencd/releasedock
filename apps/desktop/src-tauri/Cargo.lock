@@ -1272,51 +1272,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ghrm"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "ghrm-cli",
- "ghrm-core",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tokio",
- "url",
-]
-
-[[package]]
-name = "ghrm-cli"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "clap",
- "ghrm-core",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "ghrm-core"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "chrono",
- "directories",
- "flate2",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tar",
- "thiserror 2.0.19",
- "url",
- "xz2",
- "zip",
-]
-
-[[package]]
 name = "gio"
 version = "0.18.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2839,6 +2794,52 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "releasedock"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "releasedock-cli",
+ "releasedock-core",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tempfile",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "releasedock-cli"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "releasedock-core",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "releasedock-core"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "directories",
+ "flate2",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tar",
+ "thiserror 2.0.19",
+ "url",
+ "xz2",
+ "zip",
+]
+
+[[package]]
 name = "reqwest"
 version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3771,6 +3772,19 @@ dependencies = [
  "dunce",
  "embed-resource",
  "toml 1.1.3+spec-1.1.0",
+]
+
+[[package]]
+name = "tempfile"
+version = "3.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
+dependencies = [
+ "fastrand",
+ "getrandom 0.4.3",
+ "once_cell",
+ "rustix",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

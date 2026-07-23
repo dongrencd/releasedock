@@ -7,6 +7,12 @@ use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Language {
+    En,
+    ZhCn,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Config {
@@ -16,6 +22,8 @@ pub struct Config {
     pub proxy_url: Option<String>,
     #[serde(default)]
     pub install_root: Option<PathBuf>,
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 pub struct ConfigStore {
@@ -24,7 +32,7 @@ pub struct ConfigStore {
 
 impl ConfigStore {
     pub fn default_path() -> Result<PathBuf> {
-        let project_dirs = ProjectDirs::from("io", "ghrm", "GitHub Release Manager")
+        let project_dirs = ProjectDirs::from("io", "releasedock", "ReleaseDock")
             .context("failed to resolve platform data directory")?;
         Ok(project_dirs.data_local_dir().join("config.json"))
     }

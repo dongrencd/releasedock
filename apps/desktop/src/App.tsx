@@ -1,11 +1,10 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { listen } from "@tauri-apps/api/event";
 import {
   CheckCircle2,
   Clipboard,
   CircleCheckBig,
   CircleAlert,
-  ChevronDown,
-  ChevronUp,
   Download,
   ExternalLink,
   FolderOpen,
@@ -25,11 +24,13 @@ import {
   loadConfig,
   loadDashboard,
   openUrl,
+  openPath,
   previewInstall,
   removeTrackedRepo,
   saveConfig,
   uninstallRepo,
-  DEFAULT_TRACKED_REPO_ID
+  DEFAULT_TRACKED_REPO_ID,
+  openSystemUninstallSettings
 } from "./backend";
 import {
   buildUpdateInbox,
@@ -48,12 +49,25 @@ import {
   type InboxItem,
   type ManagedApp
 } from "./appModel";
-import type { InstallPlan } from "./backend";
+import {
+  createUiText,
+  formatPublishedAt,
+  isWindowsPlatform,
+  languageOptions,
+  normalizeLanguage,
+  type Language
+} from "./i18n";
+import type { InstallPlan, TaskProgressEvent } from "./backend";
 
 type ConfigDraft = {
   githubToken: string;
   proxyUrl: string;
   installRoot: string;
+  language: Language;
+};
+
+type TaskProgressView = Omit<TaskProgressEvent, "stage"> & {
+  stage: TaskProgressEvent["stage"] | "failed";
 };
 
 export function App() {
@@ -67,20 +81,25 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [pendingInstall, setPendingInstall] = useState<InstallPlan | null>(null);
+  const [taskProgress, setTaskProgress] = useState<TaskProgressView | null>(null);
   const [configDraft, setConfigDraft] = useState<ConfigDraft>({
     githubToken: "",
     proxyUrl: "",
-    installRoot: ""
+    installRoot: "",
+    language: "en"
   });
   const [configSaving, setConfigSaving] = useState(false);
-  const [taskStatus, setTaskStatus] = useState("正在加载 GitHub Release 数据");
+  const [taskStatus, setTaskStatus] = useState("Loading GitHub Release data");
   const [error, setError] = useState<string | null>(null);
 
+  const language = normalizeLanguage(configDraft.language);
+  const ui = createUiText(language);
   const visibleApps = filterManagedApps(apps, filter, searchQuery);
-  const inbox = buildUpdateInbox(visibleApps);
+  const inbox = buildUpdateInbox(visibleApps, language);
   const selected = inbox.find((item) => item.id === selectedId) ?? inbox[0] ?? null;
   const hasGithubToken = configDraft.githubToken.trim().length > 0;
-  const bulkRemoveAvailability = getBulkRemoveAvailability(apps, selectedIds, busy);
+  const installRoot = configDraft.installRoot.trim();
+  const bulkRemoveAvailability = getBulkRemoveAvailability(apps, selectedIds, busy, language);
 
   useEffect(() => {
     void refreshWorkspace();
@@ -94,12 +113,44 @@ export function App() {
     setSelectedIds((current) => pruneSelection(current, apps));
   }, [apps]);
 
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<TaskProgressEvent>("task-progress", (event) => {
+      setTaskProgress(event.payload);
+    }).then((dispose) => {
+      unlisten = dispose;
+    });
+
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!taskProgress || taskProgress.stage !== "finished") {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setTaskProgress((current) => {
+        if (current?.repoId === taskProgress.repoId && current.stage === "finished") {
+          return null;
+        }
+        return current;
+      });
+    }, 1400);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [taskProgress]);
+
   async function refreshDashboard() {
     setLoading(true);
     setBusy(true);
     setError(null);
     setPendingInstall(null);
-    setTaskStatus("正在检查最新 Release");
+    setTaskStatus("Checking latest release");
     try {
       const data = await loadDashboard();
       setApps(data);
@@ -109,11 +160,11 @@ export function App() {
         }
         return data[0]?.id ?? null;
       });
-      setTaskStatus(data.length > 0 ? `已加载 ${data.length} 个软件` : "当前没有管理的软件");
+      setTaskStatus(data.length > 0 ? `Loaded ${data.length} apps` : "No managed apps yet");
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
-      setTaskStatus("检查更新失败");
+      setTaskStatus("Failed to refresh updates");
     } finally {
       setBusy(false);
       setLoading(false);
@@ -126,12 +177,13 @@ export function App() {
       setConfigDraft({
         githubToken: data.githubToken ?? "",
         proxyUrl: data.proxyUrl ?? "",
-        installRoot: data.installRoot ?? ""
+        installRoot: data.installRoot ?? "",
+        language: normalizeLanguage(data.language)
       });
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
-      setTaskStatus("读取配置失败");
+      setTaskStatus("Failed to load settings");
     }
   }
 
@@ -142,25 +194,25 @@ export function App() {
   async function handleAddRepo() {
     const trimmed = repoInput.trim();
     if (!trimmed) {
-      setError("请输入 owner/repo 或 GitHub URL");
-      setTaskStatus("添加失败");
+      setError("Enter owner/repo or a GitHub URL");
+      setTaskStatus("Failed to add repository");
       return;
     }
 
     setBusy(true);
     setError(null);
     setPendingInstall(null);
-    setTaskStatus(`正在添加 ${trimmed}`);
+    setTaskStatus(`Adding ${trimmed}`);
     try {
       const data = await addRepo(trimmed);
       setApps(data);
       setSelectedId(normalizeRepoId(trimmed));
       setRepoInput("");
-      setTaskStatus(`已添加 ${trimmed}`);
+      setTaskStatus(`Added ${trimmed}`);
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
-      setTaskStatus("添加失败");
+      setTaskStatus("Failed to add repository");
     } finally {
       setBusy(false);
     }
@@ -169,23 +221,25 @@ export function App() {
   async function handleSaveConfig() {
     setConfigSaving(true);
     setError(null);
-    setTaskStatus("正在保存设置");
+    setTaskStatus("Saving settings");
     try {
       const saved = await saveConfig({
         githubToken: configDraft.githubToken.trim() || null,
         proxyUrl: configDraft.proxyUrl.trim() || null,
-        installRoot: configDraft.installRoot.trim() || null
+        installRoot: configDraft.installRoot.trim() || null,
+        language: configDraft.language
       });
       setConfigDraft({
         githubToken: saved.githubToken ?? "",
         proxyUrl: saved.proxyUrl ?? "",
-        installRoot: saved.installRoot ?? ""
+        installRoot: saved.installRoot ?? "",
+        language: normalizeLanguage(saved.language)
       });
-      setTaskStatus("设置已保存");
+      setTaskStatus("Settings saved");
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
-      setTaskStatus("保存设置失败");
+      setTaskStatus("Failed to save settings");
     } finally {
       setConfigSaving(false);
     }
@@ -204,15 +258,15 @@ export function App() {
 
     setBusy(true);
     setError(null);
-    setTaskStatus(`正在生成 ${item.name} 的安装预览`);
+    setTaskStatus(`Generating install preview for ${item.name}`);
     try {
       const plan = await previewInstall(item.id);
       setPendingInstall(plan);
-      setTaskStatus(`已生成 ${item.name} 的安装预览`);
+      setTaskStatus(`Generated install preview for ${item.name}`);
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
-      setTaskStatus("安装预览失败");
+      setTaskStatus("Failed to build install preview");
     } finally {
       setBusy(false);
     }
@@ -221,17 +275,33 @@ export function App() {
   async function handleConfirmInstall(item: InboxItem) {
     setBusy(true);
     setError(null);
-    setTaskStatus(`正在安装 ${item.name}`);
+    setTaskStatus(`Installing ${item.name}`);
+    setTaskProgress({
+      repoId: item.id,
+      action: "install",
+      stage: "preparing",
+      message: `Preparing to install ${item.name}`,
+      percent: 0
+    });
     try {
       const data = await installRepo(item.id);
       setApps(data);
       setSelectedId(item.id);
       setPendingInstall(null);
-      setTaskStatus(`已安装或更新 ${item.name}`);
+      setTaskStatus(`Installed or updated ${item.name}`);
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
-      setTaskStatus("安装失败");
+      setTaskStatus("Install failed");
+      setTaskProgress((current) =>
+        current && current.repoId === item.id
+          ? {
+              ...current,
+              stage: "failed",
+              message
+            }
+          : current
+      );
     } finally {
       setBusy(false);
     }
@@ -244,16 +314,32 @@ export function App() {
 
     setBusy(true);
     setError(null);
+    setTaskProgress({
+      repoId: item.id,
+      action: "uninstall",
+      stage: "locatingRecord",
+      message: `Uninstalling ${item.name}`,
+      percent: 0
+    });
     try {
       const data = await uninstallRepo(item.id);
       setApps(data);
       setSelectedId(data.find((app) => app.id === item.id)?.id ?? data[0]?.id ?? null);
       setPendingInstall(null);
-      setTaskStatus(`已卸载 ${item.name}`);
+      setTaskStatus(`Uninstalled ${item.name}`);
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
-      setTaskStatus("卸载失败");
+      setTaskStatus("Uninstall failed");
+      setTaskProgress((current) =>
+        current && current.repoId === item.id
+          ? {
+              ...current,
+              stage: "failed",
+              message
+            }
+          : current
+      );
     } finally {
       setBusy(false);
     }
@@ -271,11 +357,11 @@ export function App() {
       setApps(data);
       setSelectedId(data.find((app) => app.id === item.id)?.id ?? data[0]?.id ?? null);
       setPendingInstall(null);
-      setTaskStatus(`已移除 ${item.name} 的跟踪`);
+      setTaskStatus(`Stopped tracking ${item.name}`);
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
-      setTaskStatus("移除失败");
+      setTaskStatus("Remove tracking failed");
     } finally {
       setBusy(false);
     }
@@ -283,30 +369,30 @@ export function App() {
 
   async function handleBulkRemoveTracked() {
     if (!bulkRemoveAvailability.enabled) {
-      setError(bulkRemoveAvailability.reason ?? "请选择至少一个可移除项");
-      setTaskStatus("批量移除失败");
+      setError(bulkRemoveAvailability.reason ?? "Select at least one removable item");
+      setTaskStatus("Bulk remove failed");
       return;
     }
 
     const targets = apps.filter((app) => selectedIds.includes(app.id) && app.status === "needsChoice");
     if (targets.length === 0) {
-      setError("请选择至少一个未安装的跟踪项");
-      setTaskStatus("批量移除失败");
+      setError("Select at least one uninstalled tracked item");
+      setTaskStatus("Bulk remove failed");
       return;
     }
 
     setBusy(true);
     setError(null);
     setPendingInstall(null);
-    setTaskStatus(`正在批量移除 ${targets.length} 个跟踪项`);
+    setTaskStatus(`Removing ${targets.length} tracked item(s)`);
 
     try {
       const result = await bulkRemoveTrackedRepos(targets.map((target) => target.id));
       setApps(result.apps);
       setTaskStatus(
         result.removedCount < targets.length
-          ? `已移除 ${result.removedCount} 个跟踪项，${targets.length - result.removedCount} 个已失效`
-          : `已移除 ${result.removedCount} 个跟踪项`
+          ? `Removed ${result.removedCount} tracked item(s), ${targets.length - result.removedCount} expired`
+          : `Removed ${result.removedCount} tracked item(s)`
       );
       setSelectedIds((current) => pruneSelection(current, result.apps));
       setSelectedId((current) => {
@@ -319,7 +405,7 @@ export function App() {
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
-      setTaskStatus("批量移除失败");
+      setTaskStatus("Bulk remove failed");
     } finally {
       setBusy(false);
     }
@@ -327,16 +413,48 @@ export function App() {
 
   async function handleOpenRelease(item: InboxItem | null) {
     if (!item?.releaseUrl) {
-      setTaskStatus("当前没有可打开的 Release 链接");
+      setTaskStatus("No release link available");
       return;
     }
     try {
       await openUrl(item.releaseUrl);
-      setTaskStatus(`已打开 ${item.name} 的 Release 页面`);
+      setTaskStatus(`Opened ${item.name} release page`);
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
-      setTaskStatus("打开失败");
+      setTaskStatus("Open failed");
+    }
+  }
+
+  async function handleOpenInstallPath(item: InboxItem | null) {
+    if (!item?.installPath || item.installPath === "unknown" || item.status === "needsChoice") {
+      setTaskStatus(item?.installPathKind === "SystemInstaller" ? "No installer file available" : "No install path available");
+      return;
+    }
+
+    try {
+      await openPath(item.installPath);
+      setTaskStatus(`Opened ${item.name} install location`);
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setError(message);
+      setTaskStatus("Open folder failed");
+    }
+  }
+
+  async function handleOpenInstallRoot() {
+    if (!installRoot) {
+      setTaskStatus("No install root selected");
+      return;
+    }
+
+    try {
+      await openPath(installRoot);
+      setTaskStatus("Opened install root");
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setError(message);
+      setTaskStatus("Open folder failed");
     }
   }
 
@@ -345,91 +463,81 @@ export function App() {
       return;
     }
     void navigator.clipboard.writeText(note);
-    setTaskStatus("已复制 release note");
+    setTaskStatus("Release note copied");
   }
 
   return (
     <div className="shell">
-      <aside className="sidebar" aria-label="主导航">
-        <Tooltip label="GitHub Release Manager">
-          <button className="brand brandButton" type="button" aria-label="GitHub Release Manager">
+      <aside className="sidebar" aria-label={ui.navUpdates}>
+        <div className="brandBlock">
+          <button className="brand brandButton" type="button" aria-label={ui.appName}>
             <div className="brandMark">GR</div>
           </button>
-        </Tooltip>
+          <div className="brandCopy">
+            <strong>{ui.appName}</strong>
+            <span>{ui.appSubtitle}</span>
+          </div>
+        </div>
 
         <nav className="navList">
           <NavItem
             icon={<Download size={18} />}
-            label="更新收件箱"
+            label={ui.navUpdates}
             active={activeView === "dashboard"}
             onClick={() => setActiveView("dashboard")}
           />
           <NavItem
             icon={<Settings2 size={18} />}
-            label="设置"
+            label={ui.navSettings}
             active={activeView === "settings"}
             onClick={() => setActiveView("settings")}
           />
         </nav>
 
-        <Tooltip label={DEFAULT_TRACKED_REPO_ID} className="sourceTooltip">
-          <button className="sourceTile sourceButton" type="button" aria-label={DEFAULT_TRACKED_REPO_ID}>
+        <button className="sourceTile sourceButton" type="button" aria-label={DEFAULT_TRACKED_REPO_ID} title={DEFAULT_TRACKED_REPO_ID}>
+          <span className="sourceTileCopy">
+            <span className="sidebarLabel">{ui.currentTracking}</span>
+            <strong>{DEFAULT_TRACKED_REPO_ID}</strong>
+          </span>
           <ExternalLink size={18} />
-          </button>
-        </Tooltip>
+        </button>
       </aside>
 
       <main className="workspace">
         <header className="topbar">
+          <div className="topbarCopy">
+            <p className="eyebrow">{activeView === "dashboard" ? ui.updatesEyebrow : ui.settingsEyebrow}</p>
+            <h1>{activeView === "dashboard" ? ui.updatesTitle : ui.settingsTitle}</h1>
+          </div>
+          <div className="topbarMeta">
+            <span className={busy ? "statePill busy" : "statePill"}>{taskStatus}</span>
+            <span className={hasGithubToken ? "statePill success" : "statePill"}>{hasGithubToken ? ui.configReady : ui.configPublic}</span>
+          </div>
           {activeView === "dashboard" ? (
-            <>
-              <Tooltip label={taskStatus} className="topbarTooltip">
-                <div className="topbarCopy">
-                  <Download size={16} />
-                  <span className="srOnly">{taskStatus}</span>
-                </div>
-              </Tooltip>
-              <Tooltip label={hasGithubToken ? "已配置 token" : "公开仓库可用"} className="topbarTooltip">
-                <div className={hasGithubToken ? "tokenState active" : "tokenState"} aria-label={hasGithubToken ? "已配置 token" : "公开仓库可用"}>
-                  <ShieldAlert size={14} />
-                </div>
-              </Tooltip>
-              <TooltipButton label="检查更新" onClick={() => void refreshDashboard()} disabled={busy}>
+            <div className="topbarActions">
+              <TooltipButton label={ui.checkUpdates} onClick={() => void refreshDashboard()} disabled={busy} className="ghostButton topbarButton">
                 <RefreshCw size={17} />
+                <span>{ui.checkUpdates}</span>
               </TooltipButton>
-            </>
-          ) : (
-            <>
-              <Tooltip label="统一保存 GitHub token、代理和安装根目录" className="topbarTooltip">
-                <div className="settingsTopbarCopy">
-                  <Settings2 size={16} />
-                  <span className="srOnly">统一保存 GitHub token、代理和安装根目录。</span>
-                </div>
-              </Tooltip>
-              <TooltipButton label="重新加载" onClick={() => void refreshConfig()} disabled={configSaving}>
-                <RefreshCw size={17} />
-              </TooltipButton>
-              <TooltipButton label="保存设置" onClick={() => void handleSaveConfig()} disabled={configSaving} className="iconButton primaryIconButton">
-                <Plus size={17} />
-              </TooltipButton>
-            </>
-          )}
+            </div>
+          ) : null}
         </header>
 
         {error ? <div className="errorBanner">{error}</div> : null}
 
         {activeView === "dashboard" ? (
           <section className="dashboardView">
-            <section className="addRepoPanel" aria-label="添加 GitHub 仓库">
-              <TooltipButton label="添加 GitHub 仓库" className="iconButton addRepoIcon">
-                <Plus size={17} />
-              </TooltipButton>
+            <section className="addRepoPanel" aria-label={ui.addRepoEyebrow}>
+              <div className="panelHeading">
+                <p className="eyebrow">{ui.addRepoEyebrow}</p>
+                <h2>{ui.addRepoTitle}</h2>
+              </div>
               <div className="repoControl">
                 <div className="repoBox">
                   <Plus size={17} />
                   <input
-                    placeholder="owner/repo"
-                    aria-label="添加 GitHub 仓库"
+                    placeholder={ui.addRepoPlaceholder}
+                    aria-label={ui.addRepoEyebrow}
                     value={repoInput}
                     onChange={(event) => setRepoInput(event.target.value)}
                     onKeyDown={(event) => {
@@ -439,23 +547,29 @@ export function App() {
                     }}
                   />
                 </div>
-                <TooltipButton label="添加仓库" onClick={() => void handleAddRepo()} disabled={busy} className="iconButton primaryIconButton">
+                <TooltipButton label={ui.addRepoButton} onClick={() => void handleAddRepo()} disabled={busy} className="primaryButton addRepoButton">
                   <Plus size={17} />
+                  <span>{ui.addRepoButton}</span>
                 </TooltipButton>
               </div>
             </section>
 
             <section className="contentGrid">
-              <section className="inboxPanel" aria-label="已管理软件">
+              <section className="inboxPanel" aria-label={ui.managedAppsTitle}>
                 <div className="sectionHeader">
-                  <Tooltip label="已管理软件" className="sectionGlyph">
-                    <div>
+                  <div className="sectionTitle">
+                    <div className="sectionGlyph">
                       <Layers3 size={16} />
                     </div>
-                  </Tooltip>
-                  <Tooltip label="需要处理的项目数量" className="updateCount">
-                    <div>{inbox.filter((item) => item.status !== "current").length}</div>
-                  </Tooltip>
+                    <div>
+                      <p className="eyebrow">{ui.managedAppsTitle}</p>
+                      <h2>{ui.managedAppsCount(inbox.length)}</h2>
+                    </div>
+                  </div>
+                  <div className="sectionMeta">
+                    <span className="statePill subtle">{ui.managedAppsPending(inbox.filter((item) => item.status !== "current").length)}</span>
+                    <span className="statePill subtle">{ui.filterPrefix}{filterLabel(filter, language)}</span>
+                  </div>
                 </div>
 
                 <div className="listTools">
@@ -463,71 +577,76 @@ export function App() {
                     <div className="searchBox">
                       <Search size={17} />
                       <input
-                        placeholder="搜索"
-                        aria-label="筛选已添加的软件"
+                        placeholder={ui.searchPlaceholder}
+                        aria-label={ui.searchPlaceholder}
                         value={searchQuery}
                         onChange={(event) => setSearchQuery(event.target.value)}
                       />
                     </div>
                   </div>
                   <div className="listToolsActions">
-                    <div className="filterRow" aria-label="状态筛选">
-                      {inboxFilters.map((item) => (
+                    <div className="filterRow" aria-label={ui.filterPrefix}>
+                      {inboxFilters(language).map((item) => (
                         <TooltipButton
                           key={item.id}
-                          label={filterLabel(item.id)}
+                          label={item.label}
                           onClick={() => setFilter(item.id)}
                           active={filter === item.id}
                           className={filter === item.id ? "filterPill active" : "filterPill"}
                         >
                           <FilterIcon status={item.id} />
+                          <span>{item.label}</span>
                         </TooltipButton>
                       ))}
                     </div>
                     <div className="bulkActions">
                       <TooltipButton
                         type="button"
-                        label="全选当前列表"
+                        label={ui.selectAll}
                         onClick={() => setSelectedIds(selectVisibleIds(inbox))}
                         disabled={visibleApps.length === 0 || busy}
-                        className="iconButton"
+                        className="ghostButton bulkButton"
                       >
                         <CheckCircle2 size={17} />
+                        <span>{ui.selectAll}</span>
                       </TooltipButton>
                       <TooltipButton
                         type="button"
-                        label="清空选择"
+                        label={ui.clearSelection}
                         onClick={() => setSelectedIds([])}
                         disabled={selectedIds.length === 0 || busy}
-                        className="iconButton"
+                        className="ghostButton bulkButton"
                       >
                         <RotateCcw size={17} />
+                        <span>{ui.clearSelection}</span>
                       </TooltipButton>
                       <TooltipButton
                         type="button"
-                        label={bulkRemoveAvailability.reason ?? "批量移除"}
+                        label={bulkRemoveAvailability.reason ?? ui.remove}
                         onClick={() => void handleBulkRemoveTracked()}
                         disabled={!bulkRemoveAvailability.enabled}
-                        className="iconButton primaryIconButton"
+                        className="primaryButton bulkButton"
                       >
                         <Trash2 size={17} />
+                        <span>{ui.remove}</span>
                       </TooltipButton>
                     </div>
                   </div>
                 </div>
 
-                <div className="appTable" role="table" aria-label="更新列表">
+                <div className="appTable" role="table" aria-label={ui.updatesTitle}>
                   {loading ? (
-                    <div className="emptyState">正在同步 GitHub Release 数据...</div>
+                    <div className="emptyState">{ui.loadingDashboard}</div>
                   ) : apps.length === 0 ? (
-                    <div className="emptyState">还没有添加软件。先在上方输入 GitHub 仓库。</div>
+                    <div className="emptyState">{ui.noApps}</div>
                   ) : inbox.length === 0 ? (
-                    <div className="emptyState">没有匹配的软件。筛选只会查找已添加的软件，不会搜索 GitHub 全网。</div>
+                    <div className="emptyState">{ui.noMatch}</div>
                   ) : (
                     inbox.map((item) => (
                       <InboxRow
                         key={item.id}
                         item={item}
+                        language={language}
                         selected={item.id === selected?.id}
                         checked={selectedIds.includes(item.id)}
                         onSelect={() => setSelectedId(item.id)}
@@ -543,6 +662,11 @@ export function App() {
               <Inspector
                 item={selected}
                 busy={busy}
+                language={language}
+                taskProgress={taskProgress}
+                onOpenInstallPath={() => {
+                  void handleOpenInstallPath(selected);
+                }}
                 onCopyReleaseNote={handleCopyReleaseNote}
                 onOpenRelease={() => {
                   void handleOpenRelease(selected);
@@ -569,70 +693,104 @@ export function App() {
             </section>
           </section>
         ) : (
-          <section className="settingsPanel" aria-label="设置">
+          <section className="settingsPanel" aria-label={ui.navSettings}>
             <div className="sectionHeader">
-              <Tooltip label="设置" className="sectionGlyph">
-                <div>
+              <div className="sectionTitle">
+                <div className="sectionGlyph">
                   <Settings2 size={16} />
                 </div>
-              </Tooltip>
-              <Tooltip label="设置项数量" className="updateCount">
-                <div>{configSaving ? "…" : "3"}</div>
-              </Tooltip>
+                <div>
+                  <p className="eyebrow">{ui.settingsEyebrow}</p>
+                  <h2>{ui.settingsTitleSmall}</h2>
+                </div>
+              </div>
             </div>
 
             <div className="settingsForm">
+              <label className="fieldRow wide primaryField">
+                <span>{ui.installRoot}</span>
+                <input
+                  value={configDraft.installRoot}
+                  onChange={(event) => setConfigDraft((current) => ({ ...current, installRoot: event.target.value }))}
+                  placeholder={ui.openInstallRoot}
+                  autoComplete="off"
+                />
+                <small>{ui.installRootHelp}</small>
+                <div className="fieldActions">
+                  <TooltipButton
+                    label={ui.restoreDefault}
+                    onClick={() => setConfigDraft((current) => ({ ...current, installRoot: "" }))}
+                    disabled={configSaving || installRoot.length === 0}
+                    className="ghostButton fieldActionButton"
+                  >
+                    <RotateCcw size={16} />
+                    <span>{ui.restoreDefault}</span>
+                  </TooltipButton>
+                  <TooltipButton
+                    label={ui.openInstallRoot}
+                    onClick={() => void handleOpenInstallRoot()}
+                    disabled={configSaving || installRoot.length === 0}
+                    className="ghostButton fieldActionButton"
+                  >
+                    <FolderOpen size={16} />
+                    <span>{ui.openInstallRoot}</span>
+                  </TooltipButton>
+                </div>
+              </label>
+
               <label className="fieldRow">
-                <span className="srOnly">GitHub Token</span>
+                <span>{ui.language}</span>
+                <div className="languageSwitch" role="group" aria-label={ui.language}>
+                  {languageOptions(language).map((option) => (
+                    <TooltipButton
+                      key={option.value}
+                      label={option.label}
+                      onClick={() => setConfigDraft((current) => ({ ...current, language: option.value }))}
+                      active={configDraft.language === option.value}
+                      className={configDraft.language === option.value ? "languagePill active" : "languagePill"}
+                    >
+                      <span>{option.label}</span>
+                    </TooltipButton>
+                  ))}
+                </div>
+              </label>
+
+              <label className="fieldRow">
+                <span>{ui.githubToken}</span>
                 <input
                   value={configDraft.githubToken}
                   onChange={(event) => setConfigDraft((current) => ({ ...current, githubToken: event.target.value }))}
                   placeholder="token"
                   autoComplete="off"
                 />
+                <small>{ui.githubTokenHelp}</small>
               </label>
 
               <label className="fieldRow">
-                <span className="srOnly">代理地址</span>
+                <span>{ui.proxyUrl}</span>
                 <input
                   value={configDraft.proxyUrl}
                   onChange={(event) => setConfigDraft((current) => ({ ...current, proxyUrl: event.target.value }))}
                   placeholder="proxy"
                   autoComplete="off"
                 />
-              </label>
-
-              <label className="fieldRow wide">
-                <span className="srOnly">安装根目录</span>
-                <input
-                  value={configDraft.installRoot}
-                  onChange={(event) => setConfigDraft((current) => ({ ...current, installRoot: event.target.value }))}
-                  placeholder="root"
-                  autoComplete="off"
-                />
+                <small>{ui.proxyUrlHelp}</small>
               </label>
             </div>
 
             <div className="settingsActions">
-              <TooltipButton label="重新载入" onClick={() => void refreshConfig()} disabled={configSaving}>
+              <TooltipButton label={ui.reloadSettings} onClick={() => void refreshConfig()} disabled={configSaving} className="ghostButton">
                 <RefreshCw size={17} />
+                <span>{ui.reloadSettings}</span>
               </TooltipButton>
-              <TooltipButton label="保存设置" onClick={() => void handleSaveConfig()} disabled={configSaving} className="iconButton primaryIconButton">
+              <TooltipButton label={ui.saveSettings} onClick={() => void handleSaveConfig()} disabled={configSaving} className="primaryButton">
                 <Plus size={17} />
+                <span>{ui.saveSettings}</span>
               </TooltipButton>
             </div>
           </section>
         )}
 
-        <footer className="taskBar">
-          <span className="taskLabel" aria-label={taskStatus}>{taskStatus}</span>
-          <div className={busy ? "progressTrack busy" : "progressTrack"} aria-label="运行状态">
-            <div className="progressValue" />
-          </div>
-          <TooltipButton label="重新检查" onClick={() => void refreshDashboard()} disabled={busy}>
-            <RefreshCw size={17} />
-          </TooltipButton>
-        </footer>
       </main>
     </div>
   );
@@ -652,18 +810,21 @@ function NavItem({
   return (
     <TooltipButton label={label} onClick={onClick} active={active} className={active ? "navItem active" : "navItem"}>
       {icon}
+      <span>{label}</span>
     </TooltipButton>
   );
 }
 
 function InboxRow({
   item,
+  language,
   selected,
   checked,
   onSelect,
   onToggleSelection
 }: {
   item: InboxItem;
+  language: Language;
   selected: boolean;
   checked: boolean;
   onSelect: () => void;
@@ -687,7 +848,7 @@ function InboxRow({
         <input
           type="checkbox"
           checked={checked}
-          aria-label={`选择 ${item.name}`}
+          aria-label={`Select ${item.name}`}
           onClick={(event) => event.stopPropagation()}
           onChange={onToggleSelection}
         />
@@ -695,23 +856,18 @@ function InboxRow({
       <span className="appName">
         <StatusIcon status={item.status} />
         <span className="appNameCopy">
-          <Tooltip label={item.id}>
-            <strong>{item.name}</strong>
-          </Tooltip>
+          <strong title={item.id}>{item.name}</strong>
+          <span className="appNameMeta">{item.id}</span>
         </span>
       </span>
       <span className="mono">{item.currentVersion}</span>
       <span className="mono">{item.latestVersion}</span>
-      <Tooltip label={statusLabel(item.status)}>
-        <span className={`statusBadge ${item.status}`} aria-label={statusLabel(item.status)}>
-          <StatusGlyph status={item.status} />
-        </span>
-      </Tooltip>
-      <Tooltip label={item.actionLabel}>
-        <span className="rowAction" aria-label={item.actionLabel}>
-          <RowActionGlyph status={item.status} />
-        </span>
-      </Tooltip>
+      <span className={`statusBadge ${item.status}`} aria-label={statusLabel(item.status, language)}>
+        {statusLabel(item.status, language)}
+      </span>
+      <span className="rowAction" aria-label={item.actionLabel}>
+        {item.actionLabel}
+      </span>
     </div>
   );
 }
@@ -719,6 +875,9 @@ function InboxRow({
 function Inspector({
   item,
   busy,
+  language,
+  taskProgress,
+  onOpenInstallPath,
   onOpenRelease,
   onCopyReleaseNote,
   onPrimaryAction,
@@ -730,6 +889,9 @@ function Inspector({
 }: {
   item: InboxItem | null;
   busy: boolean;
+  language: Language;
+  taskProgress: TaskProgressView | null;
+  onOpenInstallPath: () => void;
   onOpenRelease: () => void;
   onCopyReleaseNote: (note?: string) => void;
   onPrimaryAction: () => void;
@@ -739,26 +901,27 @@ function Inspector({
   onCancelInstall: () => void;
   pendingInstall: InstallPlan | null;
 }) {
-  const openReleaseAvailability = getOpenReleaseAvailability(item, busy);
-  const primaryActionAvailability = getPrimaryActionAvailability(item, busy);
-  const confirmInstallAvailability = getConfirmInstallAvailability(item, busy);
-  const uninstallAvailability = getUninstallAvailability(item, busy);
-  const removeTrackedAvailability = getRemoveTrackedAvailability(item, busy);
-  const [detailsOpen, setDetailsOpen] = useState(false);
+  const openReleaseAvailability = getOpenReleaseAvailability(item, busy, language);
+  const primaryActionAvailability = getPrimaryActionAvailability(item, busy, language);
+  const confirmInstallAvailability = getConfirmInstallAvailability(item, busy, language);
+  const uninstallAvailability = getUninstallAvailability(item, busy, language);
+  const removeTrackedAvailability = getRemoveTrackedAvailability(item, busy, language);
+  const ui = createUiText(language);
+  const canOpenSystemUninstall = item?.installPathKind === "SystemInstaller";
 
   if (!item) {
     return (
-      <aside className="inspector" aria-label="详情检查器">
+      <aside className="inspector" aria-label={ui.noSelection}>
         <div className="emptyInspector">
-          <strong>暂无可展示的软件</strong>
-          <span>添加一个 GitHub 仓库，或检查本地清单后再查看详情。</span>
+          <strong>{ui.noSelection}</strong>
+          <span>{ui.addRepoTitle}</span>
         </div>
       </aside>
     );
   }
 
   return (
-    <aside className="inspector" aria-label="详情检查器">
+    <aside className="inspector" aria-label={ui.managedAppsTitle}>
       <div className="inspectorHead">
         <div>
           <h2>{item.name}</h2>
@@ -768,109 +931,116 @@ function Inspector({
         </div>
         <TooltipButton
           type="button"
-          label={openReleaseAvailability.reason ?? "打开 Release 页面"}
+          label={openReleaseAvailability.reason ?? ui.openRelease}
           onClick={onOpenRelease}
           disabled={!openReleaseAvailability.enabled}
           className="iconButton"
-          placement="left"
         >
           <FolderOpen size={18} />
+          <span>{ui.openRelease}</span>
         </TooltipButton>
       </div>
 
-      <div className="inspectorBlock accent">
-        <Tooltip label="Release 信息" className="blockTitle">
-          <div>
-            <ExternalLink size={16} />
+      {taskProgress && taskProgress.repoId === item.id ? (
+        <section
+          className={taskProgress.stage === "failed" ? "taskProgressPanel failed" : "taskProgressPanel"}
+          aria-live="polite"
+        >
+          <div className="taskProgressHeader">
+            <div className="taskProgressCopy">
+              <p className="eyebrow">{taskActionLabel(taskProgress.action, language)}</p>
+              <strong>{taskStageLabel(taskProgress.stage, language)}</strong>
+            </div>
+            <span className={taskProgress.stage === "failed" ? "statePill danger" : "statePill subtle"}>
+              {taskProgress.percent == null
+                ? ui.processing
+                : taskProgress.stage === "failed"
+                  ? ui.status.failed
+                  : `${taskProgress.percent}%`}
+            </span>
           </div>
-        </Tooltip>
+          <p className="taskProgressMessage">{taskProgress.message}</p>
+          <div
+            className={taskProgress.percent == null ? "taskProgressTrack busy" : "taskProgressTrack"}
+            role="progressbar"
+            aria-label={taskProgress.message}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={taskProgress.percent ?? undefined}
+          >
+            <div
+              className={taskProgress.percent == null ? "taskProgressValue busy" : "taskProgressValue"}
+              style={taskProgress.percent == null ? undefined : { width: `${taskProgress.percent}%` }}
+            />
+          </div>
+        </section>
+      ) : null}
+
+      <div className="inspectorBlock accent">
+        <div className="blockTitle">
+          <ExternalLink size={16} />
+          <span>{ui.releaseInfo}</span>
+        </div>
         <p>{item.releaseTitle ?? item.latestVersion}</p>
-        <p className="mutedText">{formatPublishedAt(item.publishedAt)}</p>
+        <p className="mutedText">{formatPublishedAt(item.publishedAt, language)}</p>
       </div>
 
       <div className="releaseNoteBlock">
         <div className="releaseNoteHeader">
-          <Tooltip label="Release note" className="blockTitle">
-            <div>
-              <Clipboard size={15} />
-            </div>
-          </Tooltip>
+          <div className="blockTitle">
+            <Clipboard size={15} />
+            <span>{ui.releaseNote}</span>
+          </div>
           <TooltipButton
-            label="复制 release note"
+            label={ui.copyReleaseNote}
             onClick={() => onCopyReleaseNote(item.releaseNote)}
             disabled={!item.releaseNote}
-            className="iconButton copyButton"
-            placement="left"
+            className="ghostButton copyButton"
           >
             <Clipboard size={15} />
+            <span>{ui.copy}</span>
           </TooltipButton>
         </div>
-        <pre className={detailsOpen ? "releaseNotePreview expanded" : "releaseNotePreview"}>
-          {item.releaseNote?.trim() || "这个 release 没有填写 release note。"}
+        <pre className="releaseNotePreview">
+          {item.releaseNote?.trim() || ui.notes.noReleaseNote}
         </pre>
-        <div className="noteFooter">
-          <span className="mutedText">{detailsOpen ? "完整内容已展开" : "默认显示摘要，查看更多字段后可继续展开"}</span>
-          <button
-            type="button"
-            className="ghostButton detailToggleButton"
-            onClick={() => setDetailsOpen((current) => !current)}
-          >
-            {detailsOpen ? "收起字段" : "更多字段"}
-            {detailsOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-          </button>
-        </div>
       </div>
 
-      {detailsOpen ? (
-        <dl className="detailList">
-          <div>
-            <dt>
-              <Download size={14} />
-            </dt>
-            <dd className="mono wrapText">{item.assetName ?? "暂无可用资产"}</dd>
-          </div>
-          <div>
-            <dt>
-              <FolderOpen size={14} />
-            </dt>
-            <dd className="mono wrapText">{item.installPath}</dd>
-          </div>
-          <div>
-            <dt>
-              <Layers3 size={14} />
-            </dt>
-            <dd>{installTypeLabel(item.installType ?? "Unknown")}</dd>
-          </div>
-          <div>
-            <dt>
-              <Settings2 size={14} />
-            </dt>
-            <dd>{installPathKindLabel(item.installPathKind ?? "Unknown")}</dd>
-          </div>
-          <div>
-            <dt>
-              <Trash2 size={14} />
-            </dt>
-            <dd>{item.uninstallSupported === false ? "需系统卸载" : "可自动卸载"}</dd>
-          </div>
-          <div>
-            <dt>
-              <ExternalLink size={14} />
-            </dt>
-            <dd>{item.source}</dd>
-          </div>
-        </dl>
-      ) : null}
+      <dl className="detailList">
+        <div>
+          <dt>{ui.assetFile}</dt>
+          <dd className="mono wrapText">{item.assetName ?? ui.noAssetAvailable}</dd>
+        </div>
+        <div>
+          <dt>{item.installPathKind === "SystemInstaller" ? ui.installerFile : ui.installPath}</dt>
+          <dd className="mono wrapText">{item.installPath}</dd>
+        </div>
+        <div>
+          <dt>{ui.installTypeTitle}</dt>
+          <dd>{installTypeLabel(item.installType ?? "Unknown", language)}</dd>
+        </div>
+        <div>
+          <dt>{ui.recordType}</dt>
+          <dd>{installPathKindLabel(item.installPathKind ?? "Unknown", language)}</dd>
+        </div>
+        <div>
+          <dt>{ui.uninstallAbility}</dt>
+          <dd>{item.uninstallSupported === false ? ui.model.useSystemUninstall : ui.autoUninstall}</dd>
+        </div>
+        <div>
+          <dt>{ui.source}</dt>
+          <dd>{item.source}</dd>
+        </div>
+      </dl>
 
       {pendingInstall ? (
         <div className="installPreview">
-          <Tooltip label="安装预览" className="blockTitle">
-            <div>
-              <Download size={16} />
-            </div>
-          </Tooltip>
+          <div className="blockTitle">
+            <Download size={16} />
+            <span>{ui.installPreview}</span>
+          </div>
           <p className="previewLine">
-            {pendingInstall.asset_name} · {installTypeLabel(pendingInstall.install_type)}
+            {pendingInstall.asset_name} · {installTypeLabel(pendingInstall.install_type, language)}
           </p>
           {pendingInstall.notes.length > 0 ? (
             <ul className="previewNotes">
@@ -880,38 +1050,48 @@ function Inspector({
             </ul>
           ) : null}
           {pendingInstall.requires_user_confirmation ? (
-            <p className="mutedText">这个安装包需要在系统权限确认后继续执行。</p>
+            <p className="mutedText">{ui.installPreviewConfirmation}</p>
           ) : null}
           <div className="previewActions">
-            <button type="button" className="ghostButton actionButton" onClick={onCancelInstall} disabled={busy}>
+            <TooltipButton label={ui.cancel} onClick={onCancelInstall} disabled={busy} className="ghostButton actionButton">
               <RotateCcw size={16} />
-              <span>取消</span>
-            </button>
-            <button
-              type="button"
-              className="primaryButton actionButton"
+              <span>{ui.cancel}</span>
+            </TooltipButton>
+            <TooltipButton
+              label={confirmInstallAvailability.reason ?? ui.confirmInstall}
               onClick={onConfirmInstall}
               disabled={!confirmInstallAvailability.enabled}
-              aria-label={confirmInstallAvailability.reason ?? "确认安装"}
+              className="primaryButton actionButton"
             >
               <Download size={16} />
-              <span>确认安装</span>
-            </button>
+              <span>{ui.confirmInstall}</span>
+            </TooltipButton>
           </div>
         </div>
       ) : null}
 
-      <div className="inspectorActions" aria-label="软件操作">
+      <div className="inspectorActions" aria-label={ui.managedAppsTitle}>
         <button
           type="button"
           className="ghostButton actionButton wide"
           onClick={onOpenRelease}
           disabled={!openReleaseAvailability.enabled}
-          aria-label={openReleaseAvailability.reason ?? "打开 Release 页面"}
+          aria-label={openReleaseAvailability.reason ?? ui.openRelease}
         >
           <ExternalLink size={16} />
-          <span>打开 Release</span>
+          <span>{ui.openRelease}</span>
         </button>
+        {item.status !== "needsChoice" && item.installPath !== "unknown" ? (
+          <button
+            type="button"
+            className="ghostButton actionButton wide"
+            onClick={onOpenInstallPath}
+            aria-label={item.installPathKind === "SystemInstaller" ? ui.openInstallerFile : ui.openInstallLocation}
+          >
+            <FolderOpen size={16} />
+            <span>{item.installPathKind === "SystemInstaller" ? ui.openInstallerFile : ui.openInstallLocation}</span>
+          </button>
+        ) : null}
         <button
           type="button"
           className="primaryButton actionButton wide"
@@ -928,47 +1108,47 @@ function Inspector({
             className="ghostButton actionButton wide"
             onClick={onRemoveTracked}
             disabled={!removeTrackedAvailability.enabled}
-            aria-label={removeTrackedAvailability.reason ?? "移除跟踪"}
+            aria-label={removeTrackedAvailability.reason ?? ui.removeTracked}
           >
             <Trash2 size={16} />
-            <span>移除跟踪</span>
+            <span>{ui.removeTracked}</span>
           </button>
         ) : item.uninstallSupported === false ? (
-          <button
-            type="button"
-            className="ghostButton actionButton wide"
-            disabled
-            aria-label={uninstallAvailability.reason ?? "需系统卸载"}
-          >
-            <Trash2 size={16} />
-            <span>需系统卸载</span>
-          </button>
+          canOpenSystemUninstall && isWindowsPlatform() ? (
+            <TooltipButton
+              label={ui.openSystemUninstall}
+              onClick={() => void openSystemUninstallSettings()}
+              className="ghostButton actionButton wide"
+            >
+              <Trash2 size={16} />
+              <span>{ui.openSystemUninstall}</span>
+            </TooltipButton>
+          ) : (
+            <button
+              type="button"
+              className="ghostButton actionButton wide"
+              disabled
+              aria-label={uninstallAvailability.reason ?? ui.model.useSystemUninstall}
+            >
+              <Trash2 size={16} />
+              <span>{ui.model.useSystemUninstall}</span>
+            </button>
+          )
         ) : (
           <button
             type="button"
             className="ghostButton actionButton wide"
             onClick={onUninstall}
             disabled={!uninstallAvailability.enabled}
-            aria-label={uninstallAvailability.reason ?? "卸载"}
+            aria-label={uninstallAvailability.reason ?? ui.uninstallAbility}
           >
             <Trash2 size={16} />
-            <span>卸载</span>
+            <span>{ui.uninstallAbility}</span>
           </button>
         )}
       </div>
     </aside>
   );
-}
-
-function formatPublishedAt(value?: string) {
-  if (!value) {
-    return "发布时间未知";
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-  return `发布于 ${date.toLocaleString("zh-CN")}`;
 }
 
 function StatusIcon({ status }: { status: InboxItem["status"] }) {
@@ -981,31 +1161,69 @@ function StatusIcon({ status }: { status: InboxItem["status"] }) {
   return <RefreshCw className="statusIcon updateAvailable" size={18} />;
 }
 
-function statusLabel(status: InboxItem["status"]) {
+function statusLabel(status: InboxItem["status"], language: Language) {
+  const ui = createUiText(language);
   switch (status) {
     case "updateAvailable":
-      return "建议更新";
+      return ui.status.updateAvailable;
     case "needsChoice":
-      return "需确认";
+      return ui.status.needsChoice;
     case "failed":
-      return "失败";
+      return ui.status.failed;
     case "current":
-      return "最新";
+      return ui.status.current;
   }
 }
 
-function filterLabel(status: InboxFilter) {
+function taskActionLabel(action: TaskProgressView["action"], language: Language) {
+  const ui = createUiText(language);
+  switch (action) {
+    case "install":
+      return ui.task.install;
+    case "uninstall":
+      return ui.task.uninstall;
+  }
+}
+
+function taskStageLabel(stage: TaskProgressView["stage"], language: Language) {
+  const ui = createUiText(language);
+  switch (stage) {
+    case "preparing":
+      return ui.stage.preparing;
+    case "downloading":
+      return ui.stage.downloading;
+    case "copyingAsset":
+      return ui.stage.copyingAsset;
+    case "extractingArchive":
+      return ui.stage.extractingArchive;
+    case "runningSystemInstaller":
+      return ui.stage.runningSystemInstaller;
+    case "updatingManifest":
+      return ui.stage.updatingManifest;
+    case "locatingRecord":
+      return ui.stage.locatingRecord;
+    case "removingFiles":
+      return ui.stage.removingFiles;
+    case "finished":
+      return ui.stage.finished;
+    case "failed":
+      return ui.stage.failed;
+  }
+}
+
+function filterLabel(status: InboxFilter, language: Language) {
+  const ui = createUiText(language);
   switch (status) {
     case "all":
-      return "全部";
+      return ui.all;
     case "updateAvailable":
-      return "有更新";
+      return ui.updateAvailable;
     case "needsChoice":
-      return "需确认";
+      return ui.needsChoice;
     case "failed":
-      return "失败";
+      return ui.failed;
     case "current":
-      return "最新";
+      return ui.current;
   }
 }
 
@@ -1024,53 +1242,6 @@ function FilterIcon({ status }: { status: InboxFilter }) {
   }
 }
 
-function StatusGlyph({ status }: { status: InboxItem["status"] }) {
-  switch (status) {
-    case "updateAvailable":
-      return <Download size={13} />;
-    case "needsChoice":
-      return <ShieldAlert size={13} />;
-    case "failed":
-      return <CircleAlert size={13} />;
-    case "current":
-      return <CircleCheckBig size={13} />;
-  }
-}
-
-function RowActionGlyph({ status }: { status: InboxItem["status"] }) {
-  switch (status) {
-    case "updateAvailable":
-      return <Download size={14} />;
-    case "needsChoice":
-      return <FolderOpen size={14} />;
-    case "failed":
-      return <RefreshCw size={14} />;
-    case "current":
-      return <ExternalLink size={14} />;
-  }
-}
-
-function Tooltip({
-  label,
-  className,
-  placement = "right",
-  children
-}: {
-  label: string;
-  className?: string;
-  placement?: TooltipPlacement;
-  children: ReactNode;
-}) {
-  return (
-    <span className={className ? `tooltipWrap ${className}` : "tooltipWrap"} data-placement={placement} aria-label={label}>
-      {children}
-      <span className="tooltipBubble" role="tooltip">
-        {label}
-      </span>
-    </span>
-  );
-}
-
 function TooltipButton({
   label,
   className = "iconButton",
@@ -1078,8 +1249,7 @@ function TooltipButton({
   onClick,
   disabled = false,
   type = "button",
-  active = false,
-  placement = "right"
+  active = false
 }: {
   label: string;
   className?: string;
@@ -1088,51 +1258,42 @@ function TooltipButton({
   disabled?: boolean;
   type?: "button" | "submit" | "reset";
   active?: boolean;
-  placement?: TooltipPlacement;
 }) {
   return (
-    <Tooltip label={label} className="tooltipButton" placement={placement}>
-      <button
-        className={active ? `${className} active` : className}
-        type={type}
-        onClick={onClick}
-        disabled={disabled}
-        aria-label={label}
-      >
-        {children}
-      </button>
-    </Tooltip>
+    <button className={active ? `${className} active` : className} type={type} onClick={onClick} disabled={disabled} aria-label={label} title={label}>
+      {children}
+    </button>
   );
 }
 
-type TooltipPlacement = "right" | "left" | "bottom";
-
-function installTypeLabel(value: InstallPlan["install_type"]) {
+function installTypeLabel(value: InstallPlan["install_type"], language: Language) {
+  const ui = createUiText(language);
   switch (value) {
     case "WindowsInstaller":
-      return "Windows 安装包";
+      return ui.installType.WindowsInstaller;
     case "PortableArchive":
-      return "便携压缩包";
+      return ui.installType.PortableArchive;
     case "AppImage":
-      return "AppImage";
+      return ui.installType.AppImage;
     case "LinuxPackage":
-      return "Linux 安装包";
+      return ui.installType.LinuxPackage;
     case "Archive":
-      return "归档包";
+      return ui.installType.Archive;
     case "Unknown":
-      return "未知";
+      return ui.installType.Unknown;
   }
 }
 
-function installPathKindLabel(value: ManagedApp["installPathKind"]) {
+function installPathKindLabel(value: ManagedApp["installPathKind"], language: Language) {
+  const ui = createUiText(language);
   switch (value) {
     case "ManagedPath":
-      return "本地托管";
+      return ui.installPathKind.ManagedPath;
     case "SystemInstaller":
-      return "系统安装器";
+      return ui.installPathKind.SystemInstaller;
     case "Unknown":
     default:
-      return "未知";
+      return ui.installPathKind.Unknown;
   }
 }
 

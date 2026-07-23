@@ -1,3 +1,5 @@
+import { createUiText, type Language } from "./i18n";
+
 export type AppStatus = "updateAvailable" | "current" | "needsChoice" | "failed";
 
 export type ManagedApp = {
@@ -19,7 +21,7 @@ export type ManagedApp = {
 };
 
 export type InboxItem = ManagedApp & {
-  actionLabel: "更新" | "查看" | "打开" | "重试";
+  actionLabel: string;
   priority: number;
 };
 
@@ -37,95 +39,123 @@ export type BulkRemoveAvailability = {
 
 export type InboxFilter = "all" | "updateAvailable" | "needsChoice" | "failed" | "current";
 
-export const inboxFilters: Array<{ id: InboxFilter; label: string }> = [
-  { id: "all", label: "全部" },
-  { id: "updateAvailable", label: "有更新" },
-  { id: "needsChoice", label: "需确认" },
-  { id: "failed", label: "失败" },
-  { id: "current", label: "最新" }
-];
+export function inboxFilters(language: Language): Array<{ id: InboxFilter; label: string }> {
+  const ui = createUiText(language);
+  return [
+    { id: "all", label: ui.all },
+    { id: "updateAvailable", label: ui.updateAvailable },
+    { id: "needsChoice", label: ui.needsChoice },
+    { id: "failed", label: ui.failed },
+    { id: "current", label: ui.current }
+  ];
+}
 
-export function buildUpdateInbox(apps: ManagedApp[]): InboxItem[] {
+export function buildUpdateInbox(apps: ManagedApp[], language: Language): InboxItem[] {
   return apps
     .map((app) => ({
       ...app,
-      actionLabel: actionForStatus(app.status),
+      actionLabel: actionForStatus(app.status, language),
       priority: priorityForStatus(app.status)
     }))
     .sort((left, right) => left.priority - right.priority || left.name.localeCompare(right.name));
 }
 
-export function getOpenReleaseAvailability(item: ManagedApp | null, busy: boolean): ActionAvailability {
+export function getOpenReleaseAvailability(
+  item: ManagedApp | null,
+  busy: boolean,
+  language: Language
+): ActionAvailability {
+  const ui = createUiText(language);
   if (busy) {
-    return { enabled: false, reason: "当前有任务在执行" };
+    return { enabled: false, reason: ui.model.busy };
   }
 
   if (!item?.releaseUrl) {
-    return { enabled: false, reason: "当前没有可打开的 Release 链接" };
+    return { enabled: false, reason: ui.model.noRelease };
   }
 
   return { enabled: true };
 }
 
-export function getPrimaryActionAvailability(item: InboxItem | null, busy: boolean): ActionAvailability {
+export function getPrimaryActionAvailability(
+  item: InboxItem | null,
+  busy: boolean,
+  language: Language
+): ActionAvailability {
+  const ui = createUiText(language);
   if (busy) {
-    return { enabled: false, reason: "当前有任务在执行" };
+    return { enabled: false, reason: ui.model.busy };
   }
 
   if (!item) {
-    return { enabled: false, reason: "请先选择一个软件" };
+    return { enabled: false, reason: ui.model.selectApp };
   }
 
   if (item.status === "current") {
-    return getOpenReleaseAvailability(item, busy);
+    return getOpenReleaseAvailability(item, busy, language);
   }
 
   return { enabled: true };
 }
 
-export function getConfirmInstallAvailability(item: InboxItem | null, busy: boolean): ActionAvailability {
+export function getConfirmInstallAvailability(
+  item: InboxItem | null,
+  busy: boolean,
+  language: Language
+): ActionAvailability {
+  const ui = createUiText(language);
   if (busy) {
-    return { enabled: false, reason: "当前有任务在执行" };
+    return { enabled: false, reason: ui.model.busy };
   }
 
   if (!item) {
-    return { enabled: false, reason: "请先选择一个软件" };
+    return { enabled: false, reason: ui.model.selectApp };
   }
 
   return { enabled: true };
 }
 
-export function getUninstallAvailability(item: InboxItem | null, busy: boolean): ActionAvailability {
+export function getUninstallAvailability(
+  item: InboxItem | null,
+  busy: boolean,
+  language: Language
+): ActionAvailability {
+  const ui = createUiText(language);
   if (busy) {
-    return { enabled: false, reason: "当前有任务在执行" };
+    return { enabled: false, reason: ui.model.busy };
   }
 
   if (!item) {
-    return { enabled: false, reason: "请先选择一个软件" };
+    return { enabled: false, reason: ui.model.selectApp };
   }
 
   if (item.status === "needsChoice") {
-    return { enabled: false, reason: "先选择资产后才能卸载" };
+    return { enabled: false, reason: ui.model.selectAssetBeforeUninstall };
   }
 
   if (item.uninstallSupported === false) {
-    return { enabled: false, reason: "需使用系统卸载" };
+    return { enabled: false, reason: ui.model.useSystemUninstall };
   }
 
   return { enabled: true };
 }
 
-export function getRemoveTrackedAvailability(item: InboxItem | null, busy: boolean): ActionAvailability {
+export function getRemoveTrackedAvailability(
+  item: InboxItem | null,
+  busy: boolean,
+  language: Language
+): ActionAvailability {
+  const ui = createUiText(language);
   if (busy) {
-    return { enabled: false, reason: "当前有任务在执行" };
+    return { enabled: false, reason: ui.model.busy };
   }
 
   if (!item) {
-    return { enabled: false, reason: "请先选择一个软件" };
+    return { enabled: false, reason: ui.model.selectApp };
   }
 
   if (item.status !== "needsChoice") {
-    return { enabled: false, reason: "只有未安装的跟踪项可以移除" };
+    return { enabled: false, reason: ui.model.onlyUntracked };
   }
 
   return { enabled: true };
@@ -151,10 +181,12 @@ export function pruneSelection(selectedIds: string[], apps: ManagedApp[]): strin
 export function getBulkRemoveAvailability(
   apps: ManagedApp[],
   selectedIds: string[],
-  busy: boolean
+  busy: boolean,
+  language: Language
 ): BulkRemoveAvailability {
+  const ui = createUiText(language);
   if (busy) {
-    return { enabled: false, candidateCount: 0, skippedCount: 0, reason: "当前有任务在执行" };
+    return { enabled: false, candidateCount: 0, skippedCount: 0, reason: ui.model.busy };
   }
 
   const selectedSet = new Set(selectedIds);
@@ -167,7 +199,7 @@ export function getBulkRemoveAvailability(
       enabled: false,
       candidateCount: 0,
       skippedCount,
-      reason: "选择至少一个未安装的跟踪项"
+      reason: ui.model.selectAtLeastOne
     };
   }
 
@@ -175,7 +207,7 @@ export function getBulkRemoveAvailability(
     enabled: true,
     candidateCount: candidates.length,
     skippedCount,
-    reason: skippedCount > 0 ? `将跳过 ${skippedCount} 个不可移除项` : undefined
+    reason: skippedCount > 0 ? ui.model.skippedCount(skippedCount) : undefined
   };
 }
 
@@ -190,8 +222,8 @@ export function filterManagedApps(apps: ManagedApp[], filter: InboxFilter, query
       return true;
     }
 
-    // 这里是“已管理软件列表”的本地筛选，不是 GitHub 全网搜索。
-    // 只匹配列表和详情里直接展示的核心字段，避免隐藏 URL 让用户误判搜索范围。
+    // Local filtering only. This is not a GitHub-wide search.
+    // Match only the core fields already visible in the list and details pane.
     const haystack = [
       app.id,
       app.name,
@@ -208,16 +240,17 @@ export function filterManagedApps(apps: ManagedApp[], filter: InboxFilter, query
   });
 }
 
-function actionForStatus(status: AppStatus): InboxItem["actionLabel"] {
+function actionForStatus(status: AppStatus, language: Language): InboxItem["actionLabel"] {
+  const ui = createUiText(language);
   switch (status) {
     case "updateAvailable":
-      return "更新";
+      return ui.action.update;
     case "needsChoice":
-      return "查看";
+      return ui.action.view;
     case "failed":
-      return "重试";
+      return ui.action.retry;
     case "current":
-      return "打开";
+      return ui.action.open;
   }
 }
 

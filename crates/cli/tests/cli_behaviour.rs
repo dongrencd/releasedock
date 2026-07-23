@@ -2,7 +2,7 @@ use assert_cmd::Command;
 use predicates::str::contains;
 use std::fs;
 
-use ghrm_core::{
+use releasedock_core::{
     asset_matcher::InstallType,
     manifest::{InstallPathKind, InstalledApp, ManifestStore},
 };
@@ -12,7 +12,7 @@ fn list_reports_empty_manifest() {
     let temp = tempfile::tempdir().unwrap();
     let manifest = temp.path().join("apps.json");
 
-    Command::cargo_bin("ghrm")
+    Command::cargo_bin("releasedock")
         .unwrap()
         .args(["list", "--manifest", manifest.to_str().unwrap()])
         .assert()
@@ -27,7 +27,7 @@ fn install_outputs_json_plan_from_fixture() {
         "/tests/fixtures/release_windows.json"
     );
 
-    Command::cargo_bin("ghrm")
+    Command::cargo_bin("releasedock")
         .unwrap()
         .args([
             "install",
@@ -55,7 +55,7 @@ fn install_requires_yes_in_non_interactive_mode() {
     let temp = tempfile::tempdir().unwrap();
     let manifest = temp.path().join("apps.json");
 
-    Command::cargo_bin("ghrm")
+    Command::cargo_bin("releasedock")
         .unwrap()
         .env("GHRM_CONFIG_PATH", temp.path().join("config.json"))
         .args([
@@ -82,7 +82,7 @@ fn install_installs_appimage_from_fixture() {
     let artifact = temp.path().join("demo-linux-x86_64.AppImage");
     fs::write(&artifact, b"fake appimage payload").unwrap();
 
-    Command::cargo_bin("ghrm")
+    Command::cargo_bin("releasedock")
         .unwrap()
         .args([
             "install",
@@ -102,7 +102,7 @@ fn install_installs_appimage_from_fixture() {
     let manifest_json = fs::read_to_string(&manifest).unwrap();
     assert!(manifest_json.contains("owner/project"));
 
-    Command::cargo_bin("ghrm")
+    Command::cargo_bin("releasedock")
         .unwrap()
         .args([
             "uninstall",
@@ -123,7 +123,7 @@ fn config_commands_round_trip_through_temp_path() {
     let temp = tempfile::tempdir().unwrap();
     let config_path = temp.path().join("config.json");
 
-    Command::cargo_bin("ghrm")
+    Command::cargo_bin("releasedock")
         .unwrap()
         .env("GHRM_CONFIG_PATH", &config_path)
         .args(["config", "set", "github-token", "ghp_testtoken"])
@@ -133,7 +133,7 @@ fn config_commands_round_trip_through_temp_path() {
     let config_json = fs::read_to_string(&config_path).unwrap();
     assert!(config_json.contains("ghp_testtoken"));
 
-    Command::cargo_bin("ghrm")
+    Command::cargo_bin("releasedock")
         .unwrap()
         .env("GHRM_CONFIG_PATH", &config_path)
         .args(["config", "get"])
@@ -141,7 +141,7 @@ fn config_commands_round_trip_through_temp_path() {
         .success()
         .stdout(contains("ghp_testtoken"));
 
-    Command::cargo_bin("ghrm")
+    Command::cargo_bin("releasedock")
         .unwrap()
         .env("GHRM_CONFIG_PATH", &config_path)
         .args(["config", "clear", "github-token"])
@@ -170,7 +170,7 @@ fn uninstall_rejects_system_installer_records() {
         )])
         .unwrap();
 
-    Command::cargo_bin("ghrm")
+    Command::cargo_bin("releasedock")
         .unwrap()
         .args([
             "uninstall",
@@ -214,7 +214,7 @@ fn check_reports_current_and_update_statuses_from_fixture() {
         ])
         .unwrap();
 
-    Command::cargo_bin("ghrm")
+    Command::cargo_bin("releasedock")
         .unwrap()
         .args([
             "check",
@@ -260,7 +260,7 @@ fn check_reports_missing_assets_from_fixture() {
     )
     .unwrap();
 
-    Command::cargo_bin("ghrm")
+    Command::cargo_bin("releasedock")
         .unwrap()
         .args([
             "check",
@@ -282,7 +282,7 @@ fn info_outputs_release_note_from_fixture() {
         "/tests/fixtures/release_windows.json"
     );
 
-    Command::cargo_bin("ghrm")
+    Command::cargo_bin("releasedock")
         .unwrap()
         .args(["info", "owner/project", "--release-fixture", fixture])
         .assert()
@@ -311,7 +311,7 @@ fn doctor_reports_config_state_without_leaking_token() {
     )
     .unwrap();
 
-    let output = Command::cargo_bin("ghrm")
+    let output = Command::cargo_bin("releasedock")
         .unwrap()
         .env("GHRM_CONFIG_PATH", &config_path)
         .args(["doctor"])
@@ -322,7 +322,7 @@ fn doctor_reports_config_state_without_leaking_token() {
         .clone();
 
     let stdout = String::from_utf8(output).unwrap();
-    assert!(stdout.contains("ghrm doctor: core CLI is available"));
+    assert!(stdout.contains("releasedock doctor: core CLI is available"));
     assert!(stdout.contains("github token: 已配置"));
     assert!(stdout.contains("proxy: 已配置"));
     assert!(stdout.contains("install root: "));

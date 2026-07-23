@@ -1,3 +1,5 @@
+use std::{fs, io::Write, path::Path};
+
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use reqwest::{
@@ -77,7 +79,7 @@ pub struct ReleaseClient {
 impl ReleaseClient {
     pub fn new(github_token: Option<&str>, proxy_url: Option<&str>) -> Result<Self> {
         let mut headers = HeaderMap::new();
-        headers.insert(USER_AGENT, HeaderValue::from_static("gh-release-manager"));
+        headers.insert(USER_AGENT, HeaderValue::from_static("releasedock"));
         headers.insert(
             ACCEPT,
             HeaderValue::from_static("application/vnd.github+json"),
@@ -144,5 +146,47 @@ impl ReleaseClient {
             .await
             .map(|bytes| bytes.to_vec())
             .context("failed to read GitHub asset body")
+    }
+
+    pub async fn download_to_path<F>(&self, url: &str, path: &Path, mut on_progress: F) -> Result<()>
+    where
+        F: FnMut(u64, Option<u64>),
+    {
+        let mut response = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .context("failed to request GitHub asset")?;
+
+        if !response.status().is_success() {
+            anyhow::bail!("GitHub asset request failed with {}", response.status());
+        }
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create download directory {}", parent.display()))?;
+        }
+
+        let mut file = fs::File::create(path)
+            .with_context(|| format!("failed to create download {}", path.display()))?;
+        let total = response.content_length();
+        let mut downloaded = 0u64;
+        on_progress(downloaded, total);
+
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .context("failed to read GitHub asset body")?
+        {
+            file.write_all(&chunk)
+                .with_context(|| format!("failed to write download {}", path.display()))?;
+            downloaded += chunk.len() as u64;
+            on_progress(downloaded, total);
+        }
+
+        file.flush()
+            .with_context(|| format!("failed to flush download {}", path.display()))?;
+        Ok(())
     }
 }

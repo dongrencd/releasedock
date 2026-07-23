@@ -12,9 +12,11 @@ bash scripts/linux/build-cli.sh
 bash scripts/linux/build-desktop.sh
 ```
 
-Desktop 脚本默认只构建桌面可执行文件 `apps/desktop/src-tauri/target/release/ghrm`，这样本地开发不会被 AppImage 打包工具卡住。
-如果需要额外尝试桌面打包，可以显式传 `--bundles`，例如：
+The desktop script builds only the desktop executable at `apps/desktop/src-tauri/target/release/releasedock` by default so local development does not get stuck in the AppImage packaging toolchain.
+If you want to try desktop packaging, pass `--bundles`, for example:
 
 ```bash
 bash scripts/linux/build-desktop.sh --bundles deb,rpm
 ```
+
+The CLI artifact lands in `target/release/releasedock`, and the desktop artifact lands in `apps/desktop/src-tauri/target/release/releasedock`.

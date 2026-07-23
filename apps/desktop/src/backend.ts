@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ManagedApp } from "./appModel";
 
-export const DEFAULT_TRACKED_REPO_ID = "dongrencd/gh-release-manager";
+export const DEFAULT_TRACKED_REPO_ID = "dongrencd/releasedock";
 
 export type InstallPlan = {
   repo_id: string;
@@ -20,11 +20,33 @@ export type DesktopConfig = {
   githubToken: string | null;
   proxyUrl: string | null;
   installRoot: string | null;
+  language: "en" | "zh-CN" | null;
 };
 
 export type BulkRemoveResult = {
   apps: ManagedApp[];
   removedCount: number;
+};
+
+export type TaskAction = "install" | "uninstall";
+
+export type TaskStage =
+  | "preparing"
+  | "downloading"
+  | "copyingAsset"
+  | "extractingArchive"
+  | "runningSystemInstaller"
+  | "updatingManifest"
+  | "locatingRecord"
+  | "removingFiles"
+  | "finished";
+
+export type TaskProgressEvent = {
+  repoId: string;
+  action: TaskAction;
+  stage: TaskStage;
+  message: string;
+  percent?: number | null;
 };
 
 export async function loadDashboard(): Promise<ManagedApp[]> {
@@ -65,4 +87,12 @@ export async function bulkRemoveTrackedRepos(repoInputs: string[]): Promise<Bulk
 
 export async function openUrl(url: string): Promise<void> {
   await invoke("open_url", { url });
+}
+
+export async function openPath(path: string): Promise<void> {
+  await invoke("open_path", { path });
+}
+
+export async function openSystemUninstallSettings(): Promise<void> {
+  await invoke("open_system_uninstall_settings");
 }

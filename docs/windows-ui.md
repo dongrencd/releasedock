@@ -1,46 +1,47 @@
 # Windows UI
 
-## 设计目标
+## Design Goal
 
-Windows 首屏是紧凑管理台，不是欢迎页。默认保留最重要的判断信息可读，说明文字放到按钮、字段旁和鼠标悬停里，核心任务是快速判断哪些 GitHub Release 软件需要更新，并在更新前直接看到 release note 摘要。
+The Windows first screen is a compact workbench, not a welcome page. Keep the most important decisions visible, move explanatory copy into buttons, fields, and hover text, and make it easy to judge which GitHub Release apps need attention before opening release notes or starting a task. The default UI language is English, and the settings page offers an English / Simplified Chinese switch.
 
-## 布局
+## Layout
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────────┐
-│  [状态]                      token  [刷新]                                  │
+│  status                     token  refresh                                 │
 ├───────────┬───────────────────────────────────────────────┬────────────────┤
-│  图标栏   │  [ + ] [搜索] [筛选] [全选] [清空] [移除]          │  详情面板       │
-│          │  ☐ LosslessCut    3.64    3.65    状态    动作      │  release note    │
-│          │  ☐ micro          2.0.14  2.0.14   状态    动作     │  资产 / 路径     │
+│  rail     │  add   search  filter  select  clear  remove   │  details       │
+│           │  ☐ LosslessCut    3.64    3.65    state   action│  release note  │
+│           │  ☐ micro          2.0.14  2.0.14   state   action│  more info     │
 ├───────────┴───────────────────────────────────────────────┴────────────────┤
-│  状态  █████████░░                                                     [↻] │
+│  progress  █████████░░                                               refresh│
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## 页面
+## Pages
 
-- 更新收件箱：默认首页，只显示需要处理的更新、失败和需要选择资产的软件。
-- 添加 GitHub 仓库：输入 `owner/repo` 或 GitHub URL 后加入管理。
-- 筛选已添加的软件：只过滤当前本地清单，不搜索 GitHub 全网。
-- 批量操作：列表支持逐项勾选、全选当前结果和批量移除未安装的跟踪项。
-- 当前项目：首次启动会默认跟踪当前仓库，方便直接查看本项目的 Release。
-- 设置：GitHub token、安装目录、代理。
-- GitHub token：公开仓库可不配置；私有仓库和高频刷新建议配置。
-- 文字策略：默认界面尽量只显示数据和状态，但更新判断信息要直接可读；按钮说明、字段说明和次要详情通过鼠标悬停显示，release note 摘要默认可见，更多字段再展开。
-- 悬浮说明：图标按钮默认向右显示说明，位于右侧边界的控件向左显示，避免向上弹出遮挡上下文或被窗口裁剪。
-- 系统安装器：Windows `.exe/.msi` 和 Linux `.deb/.rpm` 都保留显式确认，不混入普通的一键动作。
+- Update manager: the default view. Show only items that need attention, failed items, and items that need asset selection.
+- Add GitHub repository: accept an `owner/repo` string or GitHub URL and add it to the tracked list.
+- Filter tracked software: filter the local list only; do not search GitHub globally.
+- Bulk actions: support row selection, select-all for the current result set, and bulk removal of uninstalled tracked items.
+- Current project: seed the current repository on first launch so the project release is visible immediately.
+- Settings: GitHub token, install root, proxy, and language.
+- GitHub token: optional for public repositories; recommended for private repositories and frequent refreshes.
+- Copy strategy: show data and state directly, keep button and field explanations in hover text, show the release note summary by default, and display asset, install path, and uninstall capability directly.
+- Hover placement: icon button help text should open to the right by default and flip left near the right edge, so the tooltip does not cover the relevant panel.
+- Install locations: the detail panel should expose open-folder actions, Windows system installers should expose a system-uninstall action, and settings should expose open-root and restore-default actions.
+- System installers: Windows `.exe` / `.msi` and Linux `.deb` / `.rpm` files require explicit confirmation and must not be treated like one-click installs.
 
-## 视觉
+## Visuals
 
-- 背景：`#F5F7FA`
-- 面板：`#FFFFFF`
-- 主色：`#0F766E`
-- 待确认色：`#B45309`
-- 失败色：`#B91C1C`
-- 字体：`Segoe UI`
-- 版本号、路径、asset 名：`Cascadia Mono`
+- Background: `#F5F7FA`
+- Panels: `#FFFFFF`
+- Primary: `#0F766E`
+- Confirmation: `#B45309`
+- Failure: `#B91C1C`
+- Font: `Segoe UI`
+- Version, path, and asset labels: `Cascadia Mono`
 
-布局偏桌面管理工具，使用表格和详情检查器，避免营销卡片式首页。
-右侧详情面板需要给长 asset 名和安装路径留出稳定宽度，底部状态栏的进度条限制最大宽度，避免宽屏下挤占操作按钮。
-右侧详情默认保留 release note 摘要与版本信息，展开后再显示资产、安装路径和卸载能力等字段，避免首屏文字过密，同时不牺牲判断效率。
+The layout should feel like a desktop operations tool, using a table and a detail inspector instead of a marketing-style card grid.
+The right-hand inspector needs enough width for long asset names and install paths. Task progress belongs in the inspector, not in a bottom status bar.
+The right-hand inspector should keep release note summary, version information, asset, path, and uninstall capability visible without making the first screen too dense.

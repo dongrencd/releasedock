@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { type Language } from "./i18n";
 import {
   buildUpdateInbox,
   getBulkRemoveAvailability,
@@ -12,6 +13,8 @@ import {
   selectVisibleIds,
   toggleSelection
 } from "./appModel";
+
+const language: Language = "en";
 
 describe("buildUpdateInbox", () => {
   it("keeps actionable updates before current apps", () => {
@@ -34,11 +37,11 @@ describe("buildUpdateInbox", () => {
         source: "GitHub",
         installPath: "/tmp/update"
       }
-    ]);
+    ], language);
 
     expect(inbox[0].id).toBe("owner/update");
-    expect(inbox[0].actionLabel).toBe("更新");
-    expect(inbox[1].actionLabel).toBe("打开");
+    expect(inbox[0].actionLabel).toBe("Update");
+    expect(inbox[1].actionLabel).toBe("Open");
   });
 
   it("preserves original release note for detail view", () => {
@@ -53,7 +56,7 @@ describe("buildUpdateInbox", () => {
         installPath: "/tmp/update",
         releaseNote: "Fix crash\n\n- Keep original markdown-like text"
       }
-    ]);
+    ], language);
 
     expect(inbox[0].releaseNote).toContain("Keep original markdown-like text");
     expect("summary" in inbox[0]).toBe(false);
@@ -118,19 +121,19 @@ describe("buildUpdateInbox", () => {
         installPath: "/tmp/update",
         releaseUrl: "https://github.com/owner/update/releases/tag/v1.1.0"
       }
-    ])[0];
+    ], language)[0];
 
-    expect(getOpenReleaseAvailability(app, false)).toEqual({ enabled: true });
-    expect(getOpenReleaseAvailability(app, true)).toEqual({
+    expect(getOpenReleaseAvailability(app, false, language)).toEqual({ enabled: true });
+    expect(getOpenReleaseAvailability(app, true, language)).toEqual({
       enabled: false,
-      reason: "当前有任务在执行"
+      reason: "A task is already running"
     });
-    expect(getPrimaryActionAvailability(app, false)).toEqual({ enabled: true });
-    expect(getConfirmInstallAvailability(app, false)).toEqual({ enabled: true });
-    expect(getUninstallAvailability(app, false)).toEqual({ enabled: true });
-    expect(getRemoveTrackedAvailability(app, false)).toEqual({
+    expect(getPrimaryActionAvailability(app, false, language)).toEqual({ enabled: true });
+    expect(getConfirmInstallAvailability(app, false, language)).toEqual({ enabled: true });
+    expect(getUninstallAvailability(app, false, language)).toEqual({ enabled: true });
+    expect(getRemoveTrackedAvailability(app, false, language)).toEqual({
       enabled: false,
-      reason: "只有未安装的跟踪项可以移除"
+      reason: "Only uninstalled tracked items can be removed"
     });
   });
 
@@ -154,7 +157,7 @@ describe("buildUpdateInbox", () => {
         source: "GitHub",
         installPath: "/tmp/choice"
       }
-    ]);
+    ], language);
 
     expect(toggleSelection([], "owner/update")).toEqual(["owner/update"]);
     expect(toggleSelection(["owner/update"], "owner/update")).toEqual([]);
@@ -179,17 +182,17 @@ describe("buildUpdateInbox", () => {
       }
     ])).toEqual(["owner/update", "owner/choice"]);
     expect(pruneSelection(["owner/update", "missing"], apps)).toEqual(["owner/update"]);
-    expect(getBulkRemoveAvailability(apps, ["owner/update", "owner/choice"], false)).toEqual({
+    expect(getBulkRemoveAvailability(apps, ["owner/update", "owner/choice"], false, language)).toEqual({
       enabled: true,
       candidateCount: 1,
       skippedCount: 1,
-      reason: "将跳过 1 个不可移除项"
+      reason: "Skipping 1 non-removable item(s)"
     });
-    expect(getBulkRemoveAvailability(apps, ["owner/update"], false)).toEqual({
+    expect(getBulkRemoveAvailability(apps, ["owner/update"], false, language)).toEqual({
       enabled: false,
       candidateCount: 0,
       skippedCount: 1,
-      reason: "选择至少一个未安装的跟踪项"
+      reason: "Select at least one uninstalled tracked item"
     });
   });
 });

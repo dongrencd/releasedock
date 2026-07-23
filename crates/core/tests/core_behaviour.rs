@@ -1,5 +1,6 @@
-use ghrm_core::{
+use releasedock_core::{
     asset_matcher::{Architecture, AssetMatcher, OperatingSystem},
+    config::Language,
     install_plan::InstallPlan,
     manifest::{InstallPathKind, InstalledApp, ManifestStore},
     release::{Release, ReleaseAsset},
@@ -145,7 +146,7 @@ fn upgrades_legacy_manifest_entries_to_current_install_metadata() {
     assert!(!manifest.apps[0].uninstall_supported);
     assert_eq!(
         manifest.apps[0].install_path_kind,
-        ghrm_core::manifest::InstallPathKind::SystemInstaller
+        releasedock_core::manifest::InstallPathKind::SystemInstaller
     );
 }
 
@@ -160,13 +161,14 @@ fn rejects_uninstall_for_system_installer_entries() {
             "v1.0.0",
             "project-windows-x64.exe",
             temp.path().join("project/project-windows-x64.exe"),
-            ghrm_core::asset_matcher::InstallType::WindowsInstaller,
+            releasedock_core::asset_matcher::InstallType::WindowsInstaller,
             InstallPathKind::SystemInstaller,
             false,
         )])
         .unwrap();
 
-    let error = ghrm_core::installer::uninstall_repo(&store, "owner/project").unwrap_err();
+    let error = releasedock_core::installer::uninstall_repo(&store, "owner/project", Language::En, None)
+        .unwrap_err();
     assert!(error.to_string().contains("system installer"));
     assert_eq!(store.load().unwrap().apps.len(), 1);
 }
@@ -182,7 +184,7 @@ fn creates_install_plan_without_executing_installer() {
         .select_best(&release)
         .unwrap();
 
-    let plan = InstallPlan::from_match(&repo, &release, &matched);
+    let plan = InstallPlan::from_match(&repo, &release, &matched, Language::En);
 
     assert_eq!(plan.repo_id, "owner/project");
     assert_eq!(plan.version, "v1.0.0");
@@ -201,7 +203,7 @@ fn linux_package_install_plan_requires_confirmation() {
         .select_best(&release)
         .unwrap();
 
-    let plan = InstallPlan::from_match(&repo, &release, &matched);
+    let plan = InstallPlan::from_match(&repo, &release, &matched, Language::En);
 
     assert!(plan.requires_user_confirmation);
     assert!(

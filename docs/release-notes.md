@@ -1,49 +1,49 @@
 # Release Notes
 
-## 目标
+## Goal
 
-用户在更新 GitHub Release 软件前，需要直接看到这个版本改了什么。第一版展示 GitHub Release `body` 原文，不做 AI 摘要、不改写、不翻译。
+Before updating software from a GitHub Release, the user should be able to see what changed in that release. The first version shows the raw GitHub Release `body` without AI summarization, rewriting, or translation.
 
-## 数据来源
+## Data Source
 
-GitHub Releases API 返回：
+The GitHub Releases API returns:
 
-- `name`：release 标题。
-- `tag_name`：版本 tag。
-- `body`：release note 原文。
-- `html_url`：GitHub release 页面。
-- `published_at`：发布时间。
-- `assets`：发布资产列表。
+- `name`: release title
+- `tag_name`: version tag
+- `body`: raw release note text
+- `html_url`: GitHub release page
+- `published_at`: publish time
+- `assets`: release asset list
 
-## CLI 行为
+## CLI Behavior
 
-`info owner/repo` 展示：
+`info owner/repo` shows:
 
-- 仓库 URL。
-- release title 和 tag。
-- 发布时间。
-- release 页面 URL。
-- release note 原文。
-- asset 列表。
+- repository URL
+- release title and tag
+- publish time
+- release page URL
+- raw release note text
+- asset list
 
-如果 release note 为空，显示：
+If the release note is empty, show:
 
 ```text
 This release does not include a release note.
 ```
 
-## GUI 行为
+## GUI Behavior
 
-更新收件箱中点击软件后，右侧详情检查器展示：
+When the user selects an app in the update manager, the right-hand inspector shows:
 
-- release title。
-- 当前版本到最新版本。
-- 发布时间。
-- release note 原文。
-- 安装预览，包含选择到的 asset、安装类型和确认提示。
-- asset 文件。
-- 安装路径。
-- 打开 Release 页面。
-- 复制 Release Note。
+- release title
+- current version and latest version
+- publish time
+- raw release note text
+- install preview with the selected asset, install type, and confirmation prompt
+- asset file
+- install path or installer file, depending on install type
+- open release page action
+- copy release note action
 
-长 release note 必须在详情检查器内部滚动，不能撑破布局。
+Long release notes must scroll inside the inspector and must not break the layout.

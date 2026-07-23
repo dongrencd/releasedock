@@ -1,5 +1,5 @@
 [package]
-name = "ghrm-core"
+name = "releasedock-core"
 version = "0.2.0"
 edition.workspace = true
 

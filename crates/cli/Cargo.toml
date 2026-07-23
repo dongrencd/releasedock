@@ -1,16 +1,16 @@
 [package]
-name = "ghrm-cli"
+name = "releasedock-cli"
 version = "0.2.0"
 edition.workspace = true
 
 [[bin]]
-name = "ghrm"
+name = "releasedock"
 path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-ghrm-core = { path = "../core" }
+releasedock-core = { path = "../core" }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
