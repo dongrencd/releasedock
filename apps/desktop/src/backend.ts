@@ -18,12 +18,26 @@ export type DesktopConfig = {
   githubToken: string | null;
   proxyUrl: string | null;
   installRoot: string | null;
+  effectiveInstallRoot: string | null;
   language: "en" | "zh-CN" | null;
 };
 
 export type BulkRemoveResult = {
   apps: ManagedApp[];
   removedCount: number;
+};
+
+export type DashboardItemEvent = {
+  refreshId: number;
+  index: number;
+  total: number;
+  item: ManagedApp;
+};
+
+export type DashboardProgressEvent = {
+  refreshId: number;
+  total: number;
+  completed: number;
 };
 
 export type TaskAction = "install" | "uninstall";
@@ -47,8 +61,8 @@ export type TaskProgressEvent = {
   percent?: number | null;
 };
 
-export async function loadDashboard(): Promise<ManagedApp[]> {
-  return invoke<ManagedApp[]>("load_dashboard");
+export async function loadDashboard(refreshId: number): Promise<ManagedApp[]> {
+  return invoke<ManagedApp[]>("load_dashboard", { refreshId });
 }
 
 export async function loadConfig(): Promise<DesktopConfig> {

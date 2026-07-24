@@ -1,9 +1,8 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   CheckCircle2,
   Clipboard,
-  CircleCheckBig,
   CircleAlert,
   Download,
   ExternalLink,
@@ -21,6 +20,8 @@ import {
 } from "lucide-react";
 import {
   addRepo,
+  type DashboardItemEvent,
+  type DashboardProgressEvent,
   bulkRemoveTrackedRepos,
   installRepo,
   loadConfig,
@@ -34,12 +35,14 @@ import {
   openSystemUninstallSettings
 } from "./backend";
 import {
+  buildStatusDockPresentation,
   buildUpdateInbox,
   getBulkRemoveAvailability,
   getConfirmInstallAvailability,
   getOpenReleaseAvailability,
   getPrimaryActionAvailability,
   getRemoveTrackedAvailability,
+  parseReleaseNote,
   pruneSelection,
   getUninstallAvailability,
   filterManagedApps,
@@ -64,12 +67,18 @@ type ConfigDraft = {
   githubToken: string;
   proxyUrl: string;
   installRoot: string;
+  effectiveInstallRoot: string;
   language: Language;
 };
 
 type TaskProgressView = Omit<TaskProgressEvent, "stage"> & {
   stage: TaskProgressEvent["stage"] | "failed";
 };
+
+type TaskProgressContext = {
+  repoId: string;
+  action: TaskProgressView["action"];
+} | null;
 
 export function App() {
   const [apps, setApps] = useState<ManagedApp[]>([]);
@@ -87,12 +96,20 @@ export function App() {
     githubToken: "",
     proxyUrl: "",
     installRoot: "",
+    effectiveInstallRoot: "",
     language: "en"
   });
+  const currentConfigKey = useRef(configDraftKey(configDraft));
+  const lastSavedConfigKey = useRef("");
+  const pendingConfigSaves = useRef(0);
   const [showGithubToken, setShowGithubToken] = useState(false);
+  const [configLoaded, setConfigLoaded] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
   const [taskStatus, setTaskStatus] = useState("Loading GitHub Release data");
   const [error, setError] = useState<string | null>(null);
+  const activeTaskProgress = useRef<TaskProgressContext>(null);
+  const dashboardRefreshId = useRef(0);
+  const dashboardOrder = useRef<Map<string, number>>(new Map());
 
   const language = normalizeLanguage(configDraft.language);
   const ui = createUiText(language);
@@ -101,10 +118,28 @@ export function App() {
   const selected = inbox.find((item) => item.id === selectedId) ?? inbox[0] ?? null;
   const hasGithubToken = configDraft.githubToken.trim().length > 0;
   const installRoot = configDraft.installRoot.trim();
+  const effectiveInstallRoot = configDraft.effectiveInstallRoot.trim();
+  const displayInstallRoot = installRoot || effectiveInstallRoot;
+  const usingDefaultInstallRoot = installRoot.length === 0 && effectiveInstallRoot.length > 0;
   const bulkRemoveAvailability = getBulkRemoveAvailability(apps, selectedIds, busy, language);
 
+  function sortAppsByDashboardOrder(nextApps: ManagedApp[]) {
+    const order = dashboardOrder.current;
+    return [...nextApps].sort((left, right) => {
+      const leftIndex = order.get(left.id) ?? Number.MAX_SAFE_INTEGER;
+      const rightIndex = order.get(right.id) ?? Number.MAX_SAFE_INTEGER;
+      return leftIndex - rightIndex || left.name.localeCompare(right.name);
+    });
+  }
+
   useEffect(() => {
-    void refreshWorkspace();
+    const timer = window.setTimeout(() => {
+      void refreshWorkspace();
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
   }, []);
 
   useEffect(() => {
@@ -112,12 +147,27 @@ export function App() {
   }, [selectedId]);
 
   useEffect(() => {
+    if (loading) {
+      return;
+    }
+
     setSelectedIds((current) => pruneSelection(current, apps));
-  }, [apps]);
+  }, [apps, loading]);
+
+  useEffect(() => {
+    currentConfigKey.current = configDraftKey(configDraft);
+  }, [configDraft]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     void listen<TaskProgressEvent>("task-progress", (event) => {
+      const currentTask = activeTaskProgress.current;
+      if (!currentTask) {
+        return;
+      }
+      if (currentTask.repoId !== event.payload.repoId || currentTask.action !== event.payload.action) {
+        return;
+      }
       setTaskProgress(event.payload);
     }).then((dispose) => {
       unlisten = dispose;
@@ -129,6 +179,43 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    let unlistenItem: (() => void) | undefined;
+    let unlistenProgress: (() => void) | undefined;
+
+    void listen<DashboardItemEvent>("dashboard-item-updated", (event) => {
+      if (event.payload.refreshId !== dashboardRefreshId.current) {
+        return;
+      }
+
+      dashboardOrder.current.set(event.payload.item.id, event.payload.index);
+      setApps((current) => {
+        const next = current.some((app) => app.id === event.payload.item.id)
+          ? current.map((app) => (app.id === event.payload.item.id ? event.payload.item : app))
+          : [...current, event.payload.item];
+        return sortAppsByDashboardOrder(next);
+      });
+      setSelectedId((current) => current ?? event.payload.item.id);
+    }).then((dispose) => {
+      unlistenItem = dispose;
+    });
+
+    void listen<DashboardProgressEvent>("dashboard-progress", (event) => {
+      if (event.payload.refreshId !== dashboardRefreshId.current || activeTaskProgress.current) {
+        return;
+      }
+
+      setTaskStatus(`Checking latest release (${event.payload.completed}/${event.payload.total})`);
+    }).then((dispose) => {
+      unlistenProgress = dispose;
+    });
+
+    return () => {
+      unlistenItem?.();
+      unlistenProgress?.();
+    };
+  }, []);
+
+  useEffect(() => {
     if (!taskProgress || taskProgress.stage !== "finished") {
       return;
     }
@@ -136,6 +223,7 @@ export function App() {
     const timer = window.setTimeout(() => {
       setTaskProgress((current) => {
         if (current?.repoId === taskProgress.repoId && current.stage === "finished") {
+          activeTaskProgress.current = null;
           return null;
         }
         return current;
@@ -147,41 +235,98 @@ export function App() {
     };
   }, [taskProgress]);
 
+  useEffect(() => {
+    if (!taskProgress || taskProgress.stage !== "failed") {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setTaskProgress((current) => {
+        if (current?.repoId === taskProgress.repoId && current.stage === "failed") {
+          activeTaskProgress.current = null;
+          return null;
+        }
+        return current;
+      });
+    }, 4000);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [taskProgress]);
+
+  useEffect(() => {
+    if (!configLoaded) {
+      return;
+    }
+
+    const currentKey = configDraftKey(configDraft);
+    if (currentKey === lastSavedConfigKey.current) {
+      return;
+    }
+
+    // Debounce disk writes so typing a token or proxy URL saves once after input settles.
+    const timer = window.setTimeout(() => {
+      void handleSaveConfig(configDraft, "auto");
+    }, 650);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [configDraft, configLoaded]);
+
+  function clearTaskProgress() {
+    activeTaskProgress.current = null;
+    setTaskProgress(null);
+  }
+
   async function refreshDashboard() {
+    clearTaskProgress();
+    const refreshId = dashboardRefreshId.current + 1;
+    dashboardRefreshId.current = refreshId;
+    dashboardOrder.current = new Map(apps.map((app, index) => [app.id, index]));
     setLoading(true);
-    setBusy(true);
     setError(null);
     setPendingInstall(null);
     setTaskStatus("Checking latest release");
     try {
-      const data = await loadDashboard();
+      const data = await loadDashboard(refreshId);
+      if (dashboardRefreshId.current !== refreshId) {
+        return;
+      }
+      dashboardOrder.current = new Map(data.map((app, index) => [app.id, index]));
       setApps(data);
-      setSelectedId((current) => {
-        if (current && data.some((item) => item.id === current)) {
-          return current;
-        }
-        return data[0]?.id ?? null;
-      });
+      setSelectedId((current) => (current && data.some((item) => item.id === current) ? current : data[0]?.id ?? null));
       setTaskStatus(data.length > 0 ? `Loaded ${data.length} apps` : "No managed apps yet");
     } catch (caught) {
+      if (dashboardRefreshId.current !== refreshId) {
+        return;
+      }
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
       setTaskStatus("Failed to refresh updates");
     } finally {
-      setBusy(false);
-      setLoading(false);
+      if (dashboardRefreshId.current === refreshId) {
+        setLoading(false);
+      }
     }
   }
 
   async function refreshConfig() {
+    clearTaskProgress();
+    setConfigLoaded(false);
     try {
       const data = await loadConfig();
-      setConfigDraft({
+      const draft = {
         githubToken: data.githubToken ?? "",
         proxyUrl: data.proxyUrl ?? "",
         installRoot: data.installRoot ?? "",
+        effectiveInstallRoot: data.effectiveInstallRoot ?? data.installRoot ?? "",
         language: normalizeLanguage(data.language)
-      });
+      };
+      lastSavedConfigKey.current = configDraftKey(draft);
+      setConfigDraft(draft);
+      setConfigLoaded(true);
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
@@ -196,11 +341,13 @@ export function App() {
   async function handleAddRepo() {
     const trimmed = repoInput.trim();
     if (!trimmed) {
+      clearTaskProgress();
       setError("Enter owner/repo or a GitHub URL");
       setTaskStatus("Failed to add repository");
       return;
     }
 
+    clearTaskProgress();
     setBusy(true);
     setError(null);
     setPendingInstall(null);
@@ -220,35 +367,51 @@ export function App() {
     }
   }
 
-  async function handleSaveConfig() {
+  async function handleSaveConfig(draft: ConfigDraft = configDraft, mode: "auto" | "manual" = "manual") {
+    const draftKey = configDraftKey(draft);
+    if (draftKey === lastSavedConfigKey.current) {
+      return;
+    }
+
+    clearTaskProgress();
+    pendingConfigSaves.current += 1;
     setConfigSaving(true);
     setError(null);
-    setTaskStatus("Saving settings");
+    setTaskStatus(mode === "auto" ? "Auto-saving settings" : "Saving settings");
     try {
       const saved = await saveConfig({
-        githubToken: configDraft.githubToken.trim() || null,
-        proxyUrl: configDraft.proxyUrl.trim() || null,
-        installRoot: configDraft.installRoot.trim() || null,
-        language: configDraft.language
+        githubToken: draft.githubToken.trim() || null,
+        proxyUrl: draft.proxyUrl.trim() || null,
+        installRoot: draft.installRoot.trim() || null,
+        effectiveInstallRoot: draft.effectiveInstallRoot.trim() || null,
+        language: draft.language
       });
-      setConfigDraft({
+      const savedDraft = {
         githubToken: saved.githubToken ?? "",
         proxyUrl: saved.proxyUrl ?? "",
         installRoot: saved.installRoot ?? "",
+        effectiveInstallRoot: saved.effectiveInstallRoot ?? saved.installRoot ?? "",
         language: normalizeLanguage(saved.language)
-      });
-      setTaskStatus("Settings saved");
+      };
+      lastSavedConfigKey.current = configDraftKey(savedDraft);
+      if (currentConfigKey.current === draftKey) {
+        setConfigDraft(savedDraft);
+        setTaskStatus("Settings saved");
+      }
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
       setTaskStatus("Failed to save settings");
     } finally {
-      setConfigSaving(false);
+      pendingConfigSaves.current = Math.max(0, pendingConfigSaves.current - 1);
+      if (pendingConfigSaves.current === 0) {
+        setConfigSaving(false);
+      }
     }
   }
 
   async function handlePrimaryAction(item: InboxItem) {
-    if (item.status === "current") {
+    if (item.status === "current" || item.status === "noRelease") {
       await handleOpenRelease(item);
       return;
     }
@@ -258,6 +421,7 @@ export function App() {
       return;
     }
 
+    clearTaskProgress();
     setBusy(true);
     setError(null);
     setTaskStatus(`Generating install preview for ${item.name}`);
@@ -275,6 +439,7 @@ export function App() {
   }
 
   async function handleConfirmInstall(item: InboxItem) {
+    activeTaskProgress.current = { repoId: item.id, action: "install" };
     setBusy(true);
     setError(null);
     setTaskStatus(`Installing ${item.name}`);
@@ -290,6 +455,13 @@ export function App() {
       setApps(data);
       setSelectedId(item.id);
       setPendingInstall(null);
+      setTaskProgress({
+        repoId: item.id,
+        action: "install",
+        stage: "finished",
+        message: `Finished installing ${item.name}`,
+        percent: 100
+      });
       setTaskStatus(`Installed or updated ${item.name}`);
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
@@ -314,6 +486,7 @@ export function App() {
       return;
     }
 
+    activeTaskProgress.current = { repoId: item.id, action: "uninstall" };
     setBusy(true);
     setError(null);
     setTaskProgress({
@@ -328,6 +501,13 @@ export function App() {
       setApps(data);
       setSelectedId(data.find((app) => app.id === item.id)?.id ?? data[0]?.id ?? null);
       setPendingInstall(null);
+      setTaskProgress({
+        repoId: item.id,
+        action: "uninstall",
+        stage: "finished",
+        message: `Finished uninstalling ${item.name}`,
+        percent: 100
+      });
       setTaskStatus(`Uninstalled ${item.name}`);
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
@@ -348,10 +528,12 @@ export function App() {
   }
 
   async function handleRemoveTracked(item: InboxItem | null) {
-    if (!item || item.status !== "needsChoice") {
+    if (!item || (item.status !== "needsChoice" && !(item.status === "noRelease" && item.installPathKind === "Unknown"))) {
+      clearTaskProgress();
       return;
     }
 
+    clearTaskProgress();
     setBusy(true);
     setError(null);
     try {
@@ -371,18 +553,23 @@ export function App() {
 
   async function handleBulkRemoveTracked() {
     if (!bulkRemoveAvailability.enabled) {
+      clearTaskProgress();
       setError(bulkRemoveAvailability.reason ?? "Select at least one removable item");
       setTaskStatus("Bulk remove failed");
       return;
     }
 
-    const targets = apps.filter((app) => selectedIds.includes(app.id) && app.status === "needsChoice");
+    const targets = apps.filter(
+      (app) => selectedIds.includes(app.id) && (app.status === "needsChoice" || (app.status === "noRelease" && app.installPathKind === "Unknown"))
+    );
     if (targets.length === 0) {
+      clearTaskProgress();
       setError("Select at least one uninstalled tracked item");
       setTaskStatus("Bulk remove failed");
       return;
     }
 
+    clearTaskProgress();
     setBusy(true);
     setError(null);
     setPendingInstall(null);
@@ -415,9 +602,11 @@ export function App() {
 
   async function handleOpenRelease(item: InboxItem | null) {
     if (!item?.releaseUrl) {
+      clearTaskProgress();
       setTaskStatus("No release link available");
       return;
     }
+    clearTaskProgress();
     try {
       await openUrl(item.releaseUrl);
       setTaskStatus(`Opened ${item.name} release page`);
@@ -429,11 +618,13 @@ export function App() {
   }
 
   async function handleOpenInstallPath(item: InboxItem | null) {
-    if (!item?.installPath || item.installPath === "unknown" || item.status === "needsChoice") {
-      setTaskStatus(item?.installPathKind === "SystemInstaller" ? "No installer file available" : "No install path available");
+    if (!item?.installPath || item.installPath === "unknown" || item.status === "needsChoice" || item.installPathKind !== "ManagedPath") {
+      clearTaskProgress();
+      setTaskStatus("No install path available");
       return;
     }
 
+    clearTaskProgress();
     try {
       await openPath(item.installPath);
       setTaskStatus(`Opened ${item.name} install location`);
@@ -445,13 +636,15 @@ export function App() {
   }
 
   async function handleOpenInstallRoot() {
-    if (!installRoot) {
+    if (!displayInstallRoot) {
+      clearTaskProgress();
       setTaskStatus("No install root selected");
       return;
     }
 
+    clearTaskProgress();
     try {
-      await openPath(installRoot);
+      await openPath(displayInstallRoot);
       setTaskStatus("Opened install root");
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
@@ -462,8 +655,10 @@ export function App() {
 
   function handleCopyReleaseNote(note?: string) {
     if (!note || !navigator.clipboard) {
+      clearTaskProgress();
       return;
     }
+    clearTaskProgress();
     void navigator.clipboard.writeText(note);
     setTaskStatus("Release note copied");
   }
@@ -509,12 +704,11 @@ export function App() {
             <h1>{activeView === "dashboard" ? ui.updatesTitle : ui.settingsTitle}</h1>
           </div>
           <div className="topbarMeta">
-            <span className={busy ? "statePill busy" : "statePill"}>{taskStatus}</span>
             <span className={hasGithubToken ? "statePill success" : "statePill"}>{hasGithubToken ? ui.configReady : ui.configPublic}</span>
           </div>
           {activeView === "dashboard" ? (
             <div className="topbarActions">
-              <TooltipButton label={ui.checkUpdates} onClick={() => void refreshDashboard()} disabled={busy} className="ghostButton topbarButton">
+              <TooltipButton label={ui.checkUpdates} onClick={() => void refreshDashboard()} disabled={busy || loading} className="ghostButton topbarButton">
                 <RefreshCw size={17} />
                 <span>{ui.checkUpdates}</span>
               </TooltipButton>
@@ -604,27 +798,25 @@ export function App() {
                         label={ui.selectAll}
                         onClick={() => setSelectedIds(selectVisibleIds(inbox))}
                         disabled={visibleApps.length === 0 || busy}
-                        className="ghostButton bulkButton"
+                        className="ghostButton bulkButton bulkIconButton"
                       >
                         <CheckCircle2 size={17} />
-                        <span>{ui.selectAll}</span>
                       </TooltipButton>
                       <TooltipButton
                         type="button"
                         label={ui.clearSelection}
                         onClick={() => setSelectedIds([])}
                         disabled={selectedIds.length === 0 || busy}
-                        className="ghostButton bulkButton"
+                        className="ghostButton bulkButton bulkIconButton"
                       >
                         <RotateCcw size={17} />
-                        <span>{ui.clearSelection}</span>
                       </TooltipButton>
                       <TooltipButton
                         type="button"
                         label={bulkRemoveAvailability.reason ?? ui.remove}
                         onClick={() => void handleBulkRemoveTracked()}
                         disabled={!bulkRemoveAvailability.enabled}
-                        className="primaryButton bulkButton"
+                        className="dangerButton bulkButton"
                       >
                         <Trash2 size={17} />
                         <span>{ui.remove}</span>
@@ -634,7 +826,7 @@ export function App() {
                 </div>
 
                 <div className="appTable" role="table" aria-label={ui.updatesTitle}>
-                  {loading ? (
+                  {loading && apps.length === 0 ? (
                     <div className="emptyState">{ui.loadingDashboard}</div>
                   ) : apps.length === 0 ? (
                     <div className="emptyState">{ui.noApps}</div>
@@ -662,7 +854,6 @@ export function App() {
                 item={selected}
                 busy={busy}
                 language={language}
-                taskProgress={taskProgress}
                 onOpenInstallPath={() => {
                   void handleOpenInstallPath(selected);
                 }}
@@ -711,10 +902,10 @@ export function App() {
                 <input
                   value={configDraft.installRoot}
                   onChange={(event) => setConfigDraft((current) => ({ ...current, installRoot: event.target.value }))}
-                  placeholder={ui.openInstallRoot}
+                  placeholder={configDraft.effectiveInstallRoot || ui.openInstallRoot}
                   autoComplete="off"
                 />
-                <small>{ui.installRootHelp}</small>
+                <small>{usingDefaultInstallRoot ? `${ui.usingDefaultInstallRoot}: ${displayInstallRoot}` : ui.installRootHelp}</small>
                 <div className="fieldActions">
                   <TooltipButton
                     label={ui.restoreDefault}
@@ -728,7 +919,7 @@ export function App() {
                   <TooltipButton
                     label={ui.openInstallRoot}
                     onClick={() => void handleOpenInstallRoot()}
-                    disabled={configSaving || installRoot.length === 0}
+                    disabled={configSaving || displayInstallRoot.length === 0}
                     className="ghostButton fieldActionButton"
                   >
                     <FolderOpen size={16} />
@@ -792,14 +983,11 @@ export function App() {
                 <RefreshCw size={17} />
                 <span>{ui.reloadSettings}</span>
               </TooltipButton>
-              <TooltipButton label={ui.saveSettings} onClick={() => void handleSaveConfig()} disabled={configSaving} className="primaryButton">
-                <Plus size={17} />
-                <span>{ui.saveSettings}</span>
-              </TooltipButton>
             </div>
           </section>
         )}
 
+        <StatusDock taskStatus={taskStatus} taskProgress={taskProgress} busy={busy || loading || configSaving} language={language} />
       </main>
     </div>
   );
@@ -885,7 +1073,6 @@ function Inspector({
   item,
   busy,
   language,
-  taskProgress,
   onOpenInstallPath,
   onOpenRelease,
   onCopyReleaseNote,
@@ -899,7 +1086,6 @@ function Inspector({
   item: InboxItem | null;
   busy: boolean;
   language: Language;
-  taskProgress: TaskProgressView | null;
   onOpenInstallPath: () => void;
   onOpenRelease: () => void;
   onCopyReleaseNote: (note?: string) => void;
@@ -937,52 +1123,7 @@ function Inspector({
             {item.currentVersion} → {item.latestVersion}
           </p>
         </div>
-        <TooltipButton
-          type="button"
-          label={openReleaseAvailability.reason ?? ui.openRelease}
-          onClick={onOpenRelease}
-          disabled={!openReleaseAvailability.enabled}
-          className="iconButton"
-        >
-          <FolderOpen size={18} />
-          <span>{ui.openRelease}</span>
-        </TooltipButton>
       </div>
-
-      {taskProgress && taskProgress.repoId === item.id ? (
-        <section
-          className={taskProgress.stage === "failed" ? "taskProgressPanel failed" : "taskProgressPanel"}
-          aria-live="polite"
-        >
-          <div className="taskProgressHeader">
-            <div className="taskProgressCopy">
-              <p className="eyebrow">{taskActionLabel(taskProgress.action, language)}</p>
-              <strong>{taskStageLabel(taskProgress.stage, language)}</strong>
-            </div>
-            <span className={taskProgress.stage === "failed" ? "statePill danger" : "statePill subtle"}>
-              {taskProgress.percent == null
-                ? ui.processing
-                : taskProgress.stage === "failed"
-                  ? ui.status.failed
-                  : `${taskProgress.percent}%`}
-            </span>
-          </div>
-          <p className="taskProgressMessage">{taskProgress.message}</p>
-          <div
-            className={taskProgress.percent == null ? "taskProgressTrack busy" : "taskProgressTrack"}
-            role="progressbar"
-            aria-label={taskProgress.message}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={taskProgress.percent ?? undefined}
-          >
-            <div
-              className={taskProgress.percent == null ? "taskProgressValue busy" : "taskProgressValue"}
-              style={taskProgress.percent == null ? undefined : { width: `${taskProgress.percent}%` }}
-            />
-          </div>
-        </section>
-      ) : null}
 
       <div className="inspectorBlock accent">
         <div className="blockTitle">
@@ -1071,15 +1212,15 @@ function Inspector({
           <ExternalLink size={16} />
           <span>{ui.openRelease}</span>
         </button>
-        {item.status !== "needsChoice" && item.installPath !== "unknown" ? (
+        {item.status !== "needsChoice" && item.installPathKind === "ManagedPath" ? (
           <button
             type="button"
             className="ghostButton actionButton wide"
             onClick={onOpenInstallPath}
-            aria-label={item.installPathKind === "SystemInstaller" ? ui.openInstallerFile : ui.openInstallLocation}
+            aria-label={ui.openInstallLocation}
           >
             <FolderOpen size={16} />
-            <span>{item.installPathKind === "SystemInstaller" ? ui.openInstallerFile : ui.openInstallLocation}</span>
+            <span>{ui.openInstallLocation}</span>
           </button>
         ) : null}
         <button
@@ -1092,10 +1233,10 @@ function Inspector({
           <Download size={16} />
           <span>{item.actionLabel}</span>
         </button>
-        {item.status === "needsChoice" ? (
+        {item.status === "needsChoice" || (item.status === "noRelease" && item.installPathKind === "Unknown") ? (
           <button
             type="button"
-            className="ghostButton actionButton wide"
+            className="dangerButton actionButton wide"
             onClick={onRemoveTracked}
             disabled={!removeTrackedAvailability.enabled}
             aria-label={removeTrackedAvailability.reason ?? ui.removeTracked}
@@ -1141,6 +1282,78 @@ function Inspector({
   );
 }
 
+function StatusDock({
+  taskStatus,
+  taskProgress,
+  busy,
+  language
+}: {
+  taskStatus: string;
+  taskProgress: TaskProgressView | null;
+  busy: boolean;
+  language: Language;
+}) {
+  const presentation = buildStatusDockPresentation(taskProgress, busy, taskStatus, language);
+  const progressPercent = presentation.progressPercent;
+  const progressValuePercent = progressPercent == null ? null : progressPercent === 0 ? 6 : progressPercent;
+  const taskRunning = taskProgress != null && taskProgress.stage !== "finished" && taskProgress.stage !== "failed";
+
+  return (
+    <footer
+      className={presentation.failed ? "statusDock failed" : "statusDock"}
+      aria-live="polite"
+      aria-atomic="true"
+      aria-busy={busy || undefined}
+    >
+      <div className="statusDockCopy">
+        <span className={busy ? "statusDot busy" : "statusDot"} />
+        <div>
+          <p className="eyebrow">{presentation.eyebrow}</p>
+          <strong title={presentation.headline}>{presentation.headline}</strong>
+        </div>
+      </div>
+      <div className="statusDockDetail">
+        {presentation.detail ? (
+          <span className="taskProgressMessage" title={presentation.detail}>
+            {presentation.detail}
+          </span>
+        ) : null}
+        <span className={presentation.failed ? "statePill danger" : "statePill subtle"}>
+          {presentation.pillLabel}
+        </span>
+      </div>
+      {presentation.showProgress ? (
+        <div
+          className={
+            presentation.progressMode === "indeterminate"
+              ? "taskProgressTrack busy"
+              : taskRunning
+                ? "taskProgressTrack active"
+                : "taskProgressTrack"
+          }
+          role="progressbar"
+          aria-label={presentation.detail}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={presentation.progressMode === "determinate" && progressPercent != null ? progressPercent : undefined}
+          aria-valuetext={presentation.progressMode === "indeterminate" ? presentation.pillLabel : undefined}
+        >
+          <div
+            className={
+              presentation.progressMode === "indeterminate"
+                ? "taskProgressValue busy"
+                : taskRunning
+                  ? "taskProgressValue active"
+                  : "taskProgressValue"
+            }
+            style={presentation.progressMode === "indeterminate" ? undefined : { width: `${progressValuePercent ?? 0}%` }}
+          />
+        </div>
+      ) : null}
+    </footer>
+  );
+}
+
 function ReleaseNoteView({ note, emptyText }: { note: string; emptyText: string }) {
   if (!note) {
     return <div className="releaseNotePreview empty">{emptyText}</div>;
@@ -1155,19 +1368,60 @@ function ReleaseNoteView({ note, emptyText }: { note: string; emptyText: string 
           const Tag = `h${block.level}` as "h1" | "h2" | "h3";
           return (
             <Tag key={`${block.type}-${index}`} className={`noteHeading level${block.level}`}>
-              {block.text}
+              {renderInlineMarkdown(block.text)}
             </Tag>
           );
         }
 
         if (block.type === "list") {
           return (
-            <ul key={`${block.type}-${index}`} className="noteList">
+            <ul key={`${block.type}-${index}`} className={block.ordered ? "noteList ordered" : "noteList"}>
               {block.items.map((item) => (
-                <li key={item}>{item}</li>
+                <li key={item}>{renderListItem(item)}</li>
               ))}
             </ul>
           );
+        }
+
+        if (block.type === "quote") {
+          return (
+            <blockquote key={`${block.type}-${index}`} className="noteQuote">
+              {renderInlineMarkdown(block.text)}
+            </blockquote>
+          );
+        }
+
+        if (block.type === "table") {
+          return (
+            <div key={`${block.type}-${index}`} className="noteTableScroller">
+              <table className="noteTable">
+                <thead>
+                  <tr>
+                    {block.header.map((cell, cellIndex) => (
+                      <th key={`${block.type}-${index}-head-${cellIndex}`} scope="col">
+                        {renderInlineMarkdown(cell)}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {block.rows.map((row, rowIndex) => (
+                    <tr key={`${block.type}-${index}-row-${rowIndex}`}>
+                      {row.map((cell, cellIndex) => (
+                        <td key={`${block.type}-${index}-row-${rowIndex}-cell-${cellIndex}`}>
+                          {renderInlineMarkdown(cell)}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          );
+        }
+
+        if (block.type === "divider") {
+          return <hr key={`${block.type}-${index}`} className="noteDivider" aria-hidden="true" />;
         }
 
         if (block.type === "code") {
@@ -1180,7 +1434,7 @@ function ReleaseNoteView({ note, emptyText }: { note: string; emptyText: string 
 
         return (
           <p key={`${block.type}-${index}`} className="noteParagraph">
-            {block.text}
+            {renderInlineMarkdown(block.text)}
           </p>
         );
       })}
@@ -1188,78 +1442,62 @@ function ReleaseNoteView({ note, emptyText }: { note: string; emptyText: string 
   );
 }
 
-type ReleaseNoteBlock =
-  | { type: "heading"; level: 1 | 2 | 3; text: string }
-  | { type: "paragraph"; text: string }
-  | { type: "list"; items: string[] }
-  | { type: "code"; text: string };
-
-function parseReleaseNote(note: string): ReleaseNoteBlock[] {
-  const lines = note.replace(/\r\n/g, "\n").split("\n");
-  const blocks: ReleaseNoteBlock[] = [];
-  let index = 0;
-
-  const pushParagraph = (buffer: string[]) => {
-    const text = buffer.join(" ").trim();
-    if (text) {
-      blocks.push({ type: "paragraph", text });
+function renderInlineMarkdown(text: string) {
+  return text.split(/(`[^`]+`|!\[[^\]]*\]\([^)]+\)|\[[^\]]+\]\([^)]+\)|<br\s*\/?>|https?:\/\/[^\s<]+)/gi).map((part, index) => {
+    if (part.startsWith("`") && part.endsWith("`")) {
+      return <code key={`${part}-${index}`}>{part.slice(1, -1)}</code>;
     }
-    buffer.length = 0;
-  };
-
-  while (index < lines.length) {
-    const line = lines[index];
-
-    if (!line.trim()) {
-      index += 1;
-      continue;
+    const imageMatch = /^!\[([^\]]*)\]\(([^)]+)\)$/.exec(part);
+    if (imageMatch) {
+      return (
+        <img
+          key={`${part}-${index}`}
+          className="noteImage"
+          src={imageMatch[2].trim()}
+          alt={imageMatch[1]}
+          loading="lazy"
+        />
+      );
     }
-
-    const headingMatch = /^(#{1,3})\s+(.*)$/.exec(line);
-    if (headingMatch) {
-      blocks.push({
-        type: "heading",
-        level: headingMatch[1].length as 1 | 2 | 3,
-        text: headingMatch[2].trim()
-      });
-      index += 1;
-      continue;
-    }
-
-    if (/^```/.test(line)) {
-      const codeLines: string[] = [];
-      index += 1;
-      while (index < lines.length && !/^```/.test(lines[index])) {
-        codeLines.push(lines[index]);
-        index += 1;
+    const linkMatch = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(part);
+    if (linkMatch) {
+      const href = linkMatch[2].trim();
+      if (/^https?:\/\//i.test(href)) {
+        return (
+          <a key={`${part}-${index}`} href={href} target="_blank" rel="noreferrer">
+            {linkMatch[1]}
+          </a>
+        );
       }
-      if (index < lines.length) {
-        index += 1;
-      }
-      blocks.push({ type: "code", text: codeLines.join("\n") });
-      continue;
+      return linkMatch[1];
     }
+    if (/^<br\s*\/?>$/i.test(part)) {
+      return <br key={`${part}-${index}`} />;
+    }
+    if (/^https?:\/\//i.test(part)) {
+      return (
+        <a key={`${part}-${index}`} href={part} target="_blank" rel="noreferrer">
+          {part}
+        </a>
+      );
+    }
+    return part;
+  });
+}
 
-    if (/^(\s*[-*+]\s+)/.test(line)) {
-      const items: string[] = [];
-      while (index < lines.length && /^(\s*[-*+]\s+)/.test(lines[index])) {
-        items.push(lines[index].replace(/^(\s*[-*+]\s+)/, "").trim());
-        index += 1;
-      }
-      blocks.push({ type: "list", items });
-      continue;
-    }
-
-    const paragraphLines = [line.trim()];
-    index += 1;
-    while (index < lines.length && lines[index].trim() && !/^(#{1,3})\s+/.test(lines[index]) && !/^```/.test(lines[index]) && !/^(\s*[-*+]\s+)/.test(lines[index])) {
-      paragraphLines.push(lines[index].trim());
-      index += 1;
-    }
-    pushParagraph(paragraphLines);
+function renderListItem(item: string) {
+  const checklistMatch = /^\[(x| )\]\s+(.*)$/i.exec(item);
+  if (!checklistMatch) {
+    return renderInlineMarkdown(item);
   }
 
-  return blocks;
+  const checked = checklistMatch[1].toLowerCase() === "x";
+  return (
+    <span className="noteChecklist">
+      <input type="checkbox" checked={checked} readOnly tabIndex={-1} />
+      <span>{renderInlineMarkdown(checklistMatch[2])}</span>
+    </span>
+  );
 }
 
 function StatusIcon({ status }: { status: InboxItem["status"] }) {
@@ -1268,6 +1506,9 @@ function StatusIcon({ status }: { status: InboxItem["status"] }) {
   }
   if (status === "needsChoice") {
     return <ShieldAlert className="statusIcon needsChoice" size={18} />;
+  }
+  if (status === "noRelease") {
+    return <EyeOff className="statusIcon noRelease" size={18} />;
   }
   return <RefreshCw className="statusIcon updateAvailable" size={18} />;
 }
@@ -1279,6 +1520,8 @@ function statusLabel(status: InboxItem["status"], language: Language) {
       return ui.status.updateAvailable;
     case "needsChoice":
       return ui.status.needsChoice;
+    case "noRelease":
+      return ui.status.noRelease;
     case "failed":
       return ui.status.failed;
     case "current":
@@ -1286,40 +1529,13 @@ function statusLabel(status: InboxItem["status"], language: Language) {
   }
 }
 
-function taskActionLabel(action: TaskProgressView["action"], language: Language) {
-  const ui = createUiText(language);
-  switch (action) {
-    case "install":
-      return ui.task.install;
-    case "uninstall":
-      return ui.task.uninstall;
-  }
-}
-
-function taskStageLabel(stage: TaskProgressView["stage"], language: Language) {
-  const ui = createUiText(language);
-  switch (stage) {
-    case "preparing":
-      return ui.stage.preparing;
-    case "downloading":
-      return ui.stage.downloading;
-    case "copyingAsset":
-      return ui.stage.copyingAsset;
-    case "extractingArchive":
-      return ui.stage.extractingArchive;
-    case "runningSystemInstaller":
-      return ui.stage.runningSystemInstaller;
-    case "updatingManifest":
-      return ui.stage.updatingManifest;
-    case "locatingRecord":
-      return ui.stage.locatingRecord;
-    case "removingFiles":
-      return ui.stage.removingFiles;
-    case "finished":
-      return ui.stage.finished;
-    case "failed":
-      return ui.stage.failed;
-  }
+function configDraftKey(config: ConfigDraft) {
+  return JSON.stringify({
+    githubToken: config.githubToken.trim(),
+    proxyUrl: config.proxyUrl.trim(),
+    installRoot: config.installRoot.trim(),
+    language: normalizeLanguage(config.language)
+  });
 }
 
 function filterLabel(status: InboxFilter, language: Language) {
@@ -1333,8 +1549,8 @@ function filterLabel(status: InboxFilter, language: Language) {
       return ui.needsChoice;
     case "failed":
       return ui.failed;
-    case "current":
-      return ui.current;
+    default:
+      return ui.all;
   }
 }
 
@@ -1348,8 +1564,8 @@ function FilterIcon({ status }: { status: InboxFilter }) {
       return <ShieldAlert size={15} />;
     case "failed":
       return <CircleAlert size={15} />;
-    case "current":
-      return <CircleCheckBig size={15} />;
+    default:
+      return <Layers3 size={15} />;
   }
 }
 

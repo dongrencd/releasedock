@@ -10,6 +10,7 @@ use std::{
 use anyhow::{Context, Result};
 use releasedock_core::{
     asset_matcher::{Architecture, AssetMatcher, OperatingSystem},
+    config::effective_install_root,
     config::{Config, ConfigStore, Language},
     installer::{install_from_plan, uninstall_repo as core_uninstall_repo, ProgressReporter, TaskProgress},
     install_plan::InstallPlan,
@@ -19,13 +20,17 @@ use releasedock_core::{
 };
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
+use tokio::task::JoinSet;
 
 mod tracking;
 
-use tracking::TrackedRepoStore;
+use tracking::{TrackedRepo, TrackedRepoStore};
 
 const DEFAULT_TRACKED_REPO_ID: &str = "dongrencd/releasedock";
 const TASK_PROGRESS_EVENT: &str = "task-progress";
+const DASHBOARD_ITEM_EVENT: &str = "dashboard-item-updated";
+const DASHBOARD_PROGRESS_EVENT: &str = "dashboard-progress";
+const DASHBOARD_CONCURRENCY: usize = 6;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -33,6 +38,7 @@ enum AppStatus {
     UpdateAvailable,
     Current,
     NeedsChoice,
+    NoRelease,
     Failed,
 }
 
@@ -61,6 +67,23 @@ struct ManagedAppView {
 struct BulkRemoveResultView {
     apps: Vec<ManagedAppView>,
     removed_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DashboardItemEvent {
+    refresh_id: u64,
+    index: usize,
+    total: usize,
+    item: ManagedAppView,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DashboardProgressEvent {
+    refresh_id: u64,
+    total: usize,
+    completed: usize,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -120,13 +143,15 @@ fn should_run_cli() -> bool {
 }
 
 #[tauri::command]
-async fn load_dashboard() -> Result<Vec<ManagedAppView>, String> {
-    build_dashboard().await.map_err(format_error)
+async fn load_dashboard(app: tauri::AppHandle, refresh_id: u64) -> Result<Vec<ManagedAppView>, String> {
+    build_dashboard(&app, refresh_id).await.map_err(format_error)
 }
 
 #[tauri::command]
 async fn load_config() -> Result<DesktopConfig, String> {
-    runtime_config().map(DesktopConfig::from).map_err(format_error)
+    runtime_config()
+        .map(desktop_config_from_runtime)
+        .map_err(format_error)
 }
 
 #[tauri::command]
@@ -134,12 +159,12 @@ async fn save_config(config: DesktopConfig) -> Result<DesktopConfig, String> {
     let store = config_store().map_err(format_error)?;
     let runtime_config = Config::from(config.clone());
     store.save(&runtime_config).map_err(format_error)?;
-    Ok(DesktopConfig::from(runtime_config))
+    Ok(desktop_config_from_runtime(runtime_config))
 }
 
 #[tauri::command]
-async fn add_repo(repo_input: String) -> Result<Vec<ManagedAppView>, String> {
-    add_repo_to_tracking(&repo_input)
+async fn add_repo(app: tauri::AppHandle, repo_input: String) -> Result<Vec<ManagedAppView>, String> {
+    add_repo_to_tracking(&app, &repo_input)
         .await
         .map_err(format_error)
 }
@@ -171,15 +196,18 @@ async fn uninstall_repo(app: tauri::AppHandle, repo_input: String) -> Result<Vec
 }
 
 #[tauri::command]
-async fn remove_tracked_repo(repo_input: String) -> Result<Vec<ManagedAppView>, String> {
-    remove_tracked_repo_from_tracking(&repo_input)
+async fn remove_tracked_repo(app: tauri::AppHandle, repo_input: String) -> Result<Vec<ManagedAppView>, String> {
+    remove_tracked_repo_from_tracking(&app, &repo_input)
         .await
         .map_err(format_error)
 }
 
 #[tauri::command]
-async fn bulk_remove_tracked_repos(repo_inputs: Vec<String>) -> Result<BulkRemoveResultView, String> {
-    bulk_remove_tracked_repos_from_tracking(repo_inputs)
+async fn bulk_remove_tracked_repos(
+    app: tauri::AppHandle,
+    repo_inputs: Vec<String>,
+) -> Result<BulkRemoveResultView, String> {
+    bulk_remove_tracked_repos_from_tracking(&app, repo_inputs)
         .await
         .map_err(format_error)
 }
@@ -199,7 +227,7 @@ async fn open_system_uninstall_settings() -> Result<(), String> {
     open_system_uninstall_settings_in_system().map_err(format_error)
 }
 
-async fn build_dashboard() -> Result<Vec<ManagedAppView>> {
+async fn build_dashboard(app: &tauri::AppHandle, refresh_id: u64) -> Result<Vec<ManagedAppView>> {
     let store = ManifestStore::default()?;
     let manifest = store.load()?;
     let tracked_store = TrackedRepoStore::default()?;
@@ -209,67 +237,143 @@ async fn build_dashboard() -> Result<Vec<ManagedAppView>> {
     let runtime_config = runtime_config()?;
     let language = ui_language(&runtime_config);
     let client = release_client(Some(&runtime_config))?;
+    let work_items = build_dashboard_work_items(manifest.apps, tracked_repos, installed_ids);
+    if work_items.is_empty() {
+        return Ok(Vec::new());
+    }
 
-    let mut dashboard = Vec::with_capacity(manifest.apps.len() + tracked_repos.len());
-    for app in manifest.apps {
-        dashboard.push(enrich_installed_app(&client, app, language).await);
+    let total = work_items.len();
+    let mut pending = work_items.into_iter();
+    let mut tasks = JoinSet::new();
+    for _ in 0..DASHBOARD_CONCURRENCY {
+        if let Some(work_item) = pending.next() {
+            spawn_dashboard_task(&mut tasks, &client, work_item, language);
+        }
+    }
+
+    let mut dashboard = vec![None; total];
+    let mut completed = 0usize;
+    while let Some(join_result) = tasks.join_next().await {
+        let (index, item) = join_result
+            .map_err(|error| anyhow::anyhow!("failed to join dashboard refresh task: {error}"))?;
+        completed += 1;
+        dashboard[index] = Some(item.clone());
+        let _ = app.emit(
+            DASHBOARD_ITEM_EVENT,
+            DashboardItemEvent {
+                refresh_id,
+                index,
+                total,
+                item,
+            },
+        );
+        let _ = app.emit(
+            DASHBOARD_PROGRESS_EVENT,
+            DashboardProgressEvent {
+                refresh_id,
+                total,
+                completed,
+            },
+        );
+
+        if let Some(work_item) = pending.next() {
+            spawn_dashboard_task(&mut tasks, &client, work_item, language);
+        }
+    }
+
+    Ok(dashboard
+        .into_iter()
+        .map(|item| item.expect("dashboard item should be populated"))
+        .collect())
+}
+
+fn spawn_dashboard_task(
+    tasks: &mut JoinSet<(usize, ManagedAppView)>,
+    client: &ReleaseClient,
+    work_item: DashboardWorkItem,
+    language: Language,
+) {
+    let client = client.clone();
+    tasks.spawn(async move { resolve_dashboard_item(client, work_item, language).await });
+}
+
+#[derive(Debug)]
+enum DashboardWorkItem {
+    Installed {
+        index: usize,
+        app: releasedock_core::manifest::InstalledApp,
+        repo: RepoRef,
+    },
+    Tracked {
+        index: usize,
+        repo: RepoRef,
+    },
+}
+
+fn build_dashboard_work_items(
+    installed_apps: Vec<releasedock_core::manifest::InstalledApp>,
+    tracked_repos: Vec<TrackedRepo>,
+    installed_ids: HashSet<String>,
+) -> Vec<DashboardWorkItem> {
+    let mut work_items = Vec::with_capacity(installed_apps.len() + tracked_repos.len());
+
+    for app in installed_apps {
+        if let Ok(repo) = RepoRef::parse(&app.repo_url) {
+            let index = work_items.len();
+            work_items.push(DashboardWorkItem::Installed { index, app, repo });
+        }
     }
 
     for tracked_repo in tracked_repos {
-        if installed_ids.contains(&tracked_repo.repo_id) {
+        let Ok(repo) = RepoRef::parse(tracked_repo.repo_id.as_str()) else {
+            continue;
+        };
+
+        if installed_ids.contains(&repo.id()) {
             continue;
         }
-        dashboard.push(enrich_tracked_repo(&client, &tracked_repo.repo_id, language).await);
+
+        let index = work_items.len();
+        work_items.push(DashboardWorkItem::Tracked { index, repo });
     }
 
-    Ok(dashboard)
+    work_items
 }
 
-async fn enrich_installed_app(
-    client: &ReleaseClient,
-    app: releasedock_core::manifest::InstalledApp,
+async fn resolve_dashboard_item(
+    client: ReleaseClient,
+    work_item: DashboardWorkItem,
     language: Language,
-) -> ManagedAppView {
-    match RepoRef::parse(&app.repo_url) {
-        Ok(repo) => match client.latest_release(&repo).await {
-            Ok(release) => render_app(app, repo, release, language),
-            Err(error) => build_failed_view(
-                app.id,
-                app.name,
-                Some(repo.github_url()),
-                Some(format!("failed to request latest release: {error}")),
-                language,
-            ),
-        },
-        Err(error) => build_failed_view(
-            app.id,
-            app.name,
-            None,
-            Some(format!("invalid repository URL: {error}")),
-            language,
-        ),
-    }
-}
-
-async fn enrich_tracked_repo(client: &ReleaseClient, repo_id: &str, language: Language) -> ManagedAppView {
-    match RepoRef::parse(repo_id) {
-        Ok(repo) => match client.latest_release(&repo).await {
-            Ok(release) => render_tracked_repo(repo, release, language),
-            Err(error) => build_failed_view(
-                repo.id(),
-                repo.name.clone(),
-                Some(repo.github_url()),
-                Some(format!("failed to request latest release: {error}")),
-                language,
-            ),
-        },
-        Err(error) => build_failed_view(
-            repo_id.to_string(),
-            repo_id.to_string(),
-            None,
-            Some(format!("invalid repository URL: {error}")),
-            language,
-        ),
+) -> (usize, ManagedAppView) {
+    match work_item {
+        DashboardWorkItem::Installed { index, app, repo } => {
+            let item = match client.latest_release_optional(&repo).await {
+                Ok(Some(release)) => render_app(app, repo, release, language),
+                Ok(None) => build_no_release_installed_view(app, repo, language),
+                Err(error) => build_failed_view(
+                    app.id,
+                    app.name,
+                    Some(repo.github_url()),
+                    Some(error.to_string()),
+                    language,
+                ),
+            };
+            (index, item)
+        }
+        DashboardWorkItem::Tracked { index, repo } => {
+            let item = match client.latest_release_optional(&repo).await {
+                Ok(Some(release)) => render_tracked_repo(repo, release, language),
+                Ok(None) => build_no_release_tracked_view(repo, language),
+                Err(error) => build_failed_view(
+                    repo.id(),
+                    repo.name.clone(),
+                    Some(repo.github_url()),
+                    Some(error.to_string()),
+                    language,
+                ),
+            };
+            (index, item)
+        }
     }
 }
 
@@ -319,6 +423,34 @@ fn render_app(
     }
 }
 
+fn build_no_release_installed_view(
+    app: releasedock_core::manifest::InstalledApp,
+    repo: RepoRef,
+    language: Language,
+) -> ManagedAppView {
+    ManagedAppView {
+        id: app.id,
+        name: app.name,
+        current_version: app.installed_version,
+        latest_version: tr_owned(language, "No release", "暂无 release"),
+        status: AppStatus::NoRelease,
+        source: "GitHub".to_string(),
+        release_title: Some(tr_owned(language, "No release published", "暂无 release")),
+        release_note: Some(tr_owned(
+            language,
+            "This repository has no release yet.",
+            "这个仓库还没有发布 release。",
+        )),
+        release_url: Some(repo.github_url()),
+        published_at: None,
+        asset_name: None,
+        install_path: app.install_path.display().to_string(),
+        install_type: format!("{:?}", app.install_type),
+        install_path_kind: app.install_path_kind,
+        uninstall_supported: app.uninstall_supported,
+    }
+}
+
 fn render_tracked_repo(repo: RepoRef, release: Release, language: Language) -> ManagedAppView {
     let matcher = AssetMatcher::current();
     let matched = matcher.select_best(&release).ok();
@@ -338,6 +470,31 @@ fn render_tracked_repo(repo: RepoRef, release: Release, language: Language) -> M
         release_url: release.html_url.clone().or_else(|| Some(repo.github_url())),
         published_at: release.published_at.as_ref().map(|value| value.to_rfc3339()),
         asset_name: matched.map(|asset| asset.asset.name),
+        install_path: install_path.display().to_string(),
+        install_type: "Unknown".to_string(),
+        install_path_kind: InstallPathKind::Unknown,
+        uninstall_supported: false,
+    }
+}
+
+fn build_no_release_tracked_view(repo: RepoRef, language: Language) -> ManagedAppView {
+    let install_path = default_install_path(&repo);
+    ManagedAppView {
+        id: repo.id(),
+        name: repo.name.clone(),
+        current_version: tr_owned(language, "Not installed", "未安装"),
+        latest_version: tr_owned(language, "No release", "暂无 release"),
+        status: AppStatus::NoRelease,
+        source: "GitHub".to_string(),
+        release_title: Some(tr_owned(language, "No release published", "暂无 release")),
+        release_note: Some(tr_owned(
+            language,
+            "This repository has no release yet.",
+            "这个仓库还没有发布 release。",
+        )),
+        release_url: Some(repo.github_url()),
+        published_at: None,
+        asset_name: None,
         install_path: install_path.display().to_string(),
         install_type: "Unknown".to_string(),
         install_path_kind: InstallPathKind::Unknown,
@@ -371,19 +528,12 @@ fn build_failed_view(
     }
 }
 
-async fn add_repo_to_tracking(repo_input: &str) -> Result<Vec<ManagedAppView>> {
+async fn add_repo_to_tracking(app: &tauri::AppHandle, repo_input: &str) -> Result<Vec<ManagedAppView>> {
     let repo = RepoRef::parse(repo_input)?;
-    let runtime_config = runtime_config()?;
-    let client = release_client(Some(&runtime_config))?;
-    client
-        .latest_release(&repo)
-        .await
-        .with_context(|| format!("failed to fetch latest release for {}", repo.id()))?;
-
     let store = TrackedRepoStore::default()?;
     store.upsert(&repo.id())?;
 
-    build_dashboard().await
+    build_dashboard(app, 0).await
 }
 
 async fn install_repo_to_tracking(app: &tauri::AppHandle, repo_input: &str) -> Result<Vec<ManagedAppView>> {
@@ -402,7 +552,7 @@ async fn install_repo_to_tracking(app: &tauri::AppHandle, repo_input: &str) -> R
     let reporter = task_progress_reporter(app);
     install_from_plan(&plan, &store, None, Some(&runtime_config), language, reporter).await?;
 
-    build_dashboard().await
+    build_dashboard(app, 0).await
 }
 
 async fn uninstall_repo_from_tracking(app: &tauri::AppHandle, repo_input: &str) -> Result<Vec<ManagedAppView>> {
@@ -416,10 +566,13 @@ async fn uninstall_repo_from_tracking(app: &tauri::AppHandle, repo_input: &str) 
         anyhow::bail!("no managed app matched {}", repo.id());
     }
 
-    build_dashboard().await
+    build_dashboard(app, 0).await
 }
 
-async fn remove_tracked_repo_from_tracking(repo_input: &str) -> Result<Vec<ManagedAppView>> {
+async fn remove_tracked_repo_from_tracking(
+    app: &tauri::AppHandle,
+    repo_input: &str,
+) -> Result<Vec<ManagedAppView>> {
     let repo = RepoRef::parse(repo_input)?;
     let store = TrackedRepoStore::default()?;
     let removed = store.remove(&repo.id())?;
@@ -427,10 +580,11 @@ async fn remove_tracked_repo_from_tracking(repo_input: &str) -> Result<Vec<Manag
         anyhow::bail!("no tracked repo matched {}", repo.id());
     }
 
-    build_dashboard().await
+    build_dashboard(app, 0).await
 }
 
 async fn bulk_remove_tracked_repos_from_tracking(
+    app: &tauri::AppHandle,
     repo_inputs: Vec<String>,
 ) -> Result<BulkRemoveResultView> {
     let repo_ids = repo_inputs
@@ -444,7 +598,7 @@ async fn bulk_remove_tracked_repos_from_tracking(
         anyhow::bail!("no tracked repos matched the provided selection");
     }
 
-    let apps = build_dashboard().await?;
+    let apps = build_dashboard(app, 0).await?;
     Ok(BulkRemoveResultView {
         apps,
         removed_count: removed_ids.len(),
@@ -520,15 +674,8 @@ async fn build_install_plan(
 }
 
 fn default_install_path(repo: &RepoRef) -> PathBuf {
-    let base_dir = runtime_config()
-        .ok()
-        .and_then(|config| config.install_root)
-        .or_else(|| {
-            ManifestStore::default_path()
-                .ok()
-                .and_then(|path| path.parent().map(Path::to_path_buf))
-        })
-        .unwrap_or_else(|| PathBuf::from("."));
+    let runtime_config = runtime_config().ok();
+    let base_dir = effective_install_root(runtime_config.as_ref(), install_root_fallback());
     base_dir
         .join("apps")
         .join(format!("{}-{}", repo.owner, repo.name))
@@ -560,18 +707,8 @@ struct DesktopConfig {
     github_token: Option<String>,
     proxy_url: Option<String>,
     install_root: Option<PathBuf>,
+    effective_install_root: Option<PathBuf>,
     language: Option<String>,
-}
-
-impl From<Config> for DesktopConfig {
-    fn from(value: Config) -> Self {
-        Self {
-            github_token: value.github_token,
-            proxy_url: value.proxy_url,
-            install_root: value.install_root,
-            language: value.language,
-        }
-    }
 }
 
 impl From<DesktopConfig> for Config {
@@ -583,6 +720,23 @@ impl From<DesktopConfig> for Config {
             language: value.language,
         }
     }
+}
+
+fn desktop_config_from_runtime(value: Config) -> DesktopConfig {
+    let effective_install_root = effective_install_root(Some(&value), install_root_fallback());
+    DesktopConfig {
+        github_token: value.github_token,
+        proxy_url: value.proxy_url,
+        install_root: value.install_root,
+        effective_install_root: Some(effective_install_root),
+        language: value.language,
+    }
+}
+
+fn install_root_fallback() -> Option<PathBuf> {
+    ManifestStore::default_path()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
 }
 
 fn validate_github_url(url: &url::Url) -> Result<()> {

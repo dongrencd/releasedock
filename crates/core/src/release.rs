@@ -105,6 +105,12 @@ impl ReleaseClient {
     }
 
     pub async fn latest_release(&self, repo: &RepoRef) -> Result<Release> {
+        self.latest_release_optional(repo)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("GitHub latest release request returned 404 Not Found"))
+    }
+
+    pub async fn latest_release_optional(&self, repo: &RepoRef) -> Result<Option<Release>> {
         let url = format!(
             "https://api.github.com/repos/{}/{}/releases/latest",
             repo.owner, repo.name
@@ -117,6 +123,10 @@ impl ReleaseClient {
             .await
             .context("failed to request latest GitHub release")?;
 
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
         if !response.status().is_success() {
             let error = github_response_error("GitHub latest release", response).await;
             anyhow::bail!(error);
@@ -126,6 +136,7 @@ impl ReleaseClient {
             .json::<Release>()
             .await
             .context("failed to parse GitHub release response")
+            .map(Some)
     }
 
     pub async fn download_bytes(&self, url: &str) -> Result<Vec<u8>> {

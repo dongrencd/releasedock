@@ -1,6 +1,6 @@
 export type Language = "en" | "zh-CN";
 
-export type InboxFilter = "all" | "updateAvailable" | "needsChoice" | "failed" | "current";
+export type InboxFilter = "all" | "updateAvailable" | "needsChoice" | "failed";
 
 type Copy = {
   appName: string;
@@ -26,6 +26,7 @@ type Copy = {
   all: string;
   updateAvailable: string;
   needsChoice: string;
+  noRelease: string;
   failed: string;
   current: string;
   selectAll: string;
@@ -34,6 +35,7 @@ type Copy = {
   loadingDashboard: string;
   noApps: string;
   noMatch: string;
+  statusBar: string;
   processing: string;
   releaseInfo: string;
   releaseNote: string;
@@ -57,6 +59,7 @@ type Copy = {
   settingsTitleSmall: string;
   installRoot: string;
   installRootHelp: string;
+  usingDefaultInstallRoot: string;
   restoreDefault: string;
   openInstallRoot: string;
   githubToken: string;
@@ -95,7 +98,7 @@ type Copy = {
   };
   action: {
     update: string;
-    view: string;
+    install: string;
     retry: string;
     open: string;
   };
@@ -103,6 +106,7 @@ type Copy = {
     updateAvailable: string;
     current: string;
     needsChoice: string;
+    noRelease: string;
     failed: string;
   };
   installType: {
@@ -160,7 +164,8 @@ const copy: Record<Language, Copy> = {
     filterPrefix: "Filter:",
     all: "All",
     updateAvailable: "Updates",
-    needsChoice: "Review",
+    needsChoice: "Action needed",
+    noRelease: "No release",
     failed: "Failed",
     current: "Latest",
     selectAll: "Select all",
@@ -169,6 +174,7 @@ const copy: Record<Language, Copy> = {
     loadingDashboard: "Loading GitHub Release data",
     noApps: "No managed apps yet. Add a GitHub repository above.",
     noMatch: "No matching apps. This search only filters the local list.",
+    statusBar: "Status",
     processing: "Processing",
     releaseInfo: "Release info",
     releaseNote: "Release note",
@@ -189,9 +195,10 @@ const copy: Record<Language, Copy> = {
     openSystemUninstall: "Open system uninstall",
     removeTracked: "Remove tracking",
     noSelection: "No app selected",
-    settingsTitleSmall: "3 local settings",
+    settingsTitleSmall: "4 local settings",
     installRoot: "Install root",
     installRootHelp: "Downloaded installers and managed apps live under this root.",
+    usingDefaultInstallRoot: "Using default install root",
     restoreDefault: "Restore default",
     openInstallRoot: "Open folder",
     githubToken: "GitHub token",
@@ -230,14 +237,15 @@ const copy: Record<Language, Copy> = {
     },
     action: {
       update: "Update",
-      view: "Review",
+      install: "Install",
       retry: "Retry",
       open: "Open"
     },
     status: {
       updateAvailable: "Update available",
       current: "Up to date",
-      needsChoice: "Needs review",
+      needsChoice: "Action needed",
+      noRelease: "No release",
       failed: "Failed"
     },
     installType: {
@@ -295,7 +303,8 @@ const copy: Record<Language, Copy> = {
     filterPrefix: "筛选：",
     all: "全部",
     updateAvailable: "有更新",
-    needsChoice: "需确认",
+    needsChoice: "待处理",
+    noRelease: "无 release",
     failed: "失败",
     current: "最新",
     selectAll: "全选",
@@ -304,6 +313,7 @@ const copy: Record<Language, Copy> = {
     loadingDashboard: "正在加载 GitHub Release 数据",
     noApps: "还没有添加软件。先在上方输入 GitHub 仓库。",
     noMatch: "没有匹配的软件。筛选只会查找本地列表，不会搜索 GitHub 全网。",
+    statusBar: "状态",
     processing: "处理中",
     releaseInfo: "Release 信息",
     releaseNote: "Release note",
@@ -324,9 +334,10 @@ const copy: Record<Language, Copy> = {
     openSystemUninstall: "打开系统卸载",
     removeTracked: "移除跟踪",
     noSelection: "暂无可展示的软件",
-    settingsTitleSmall: "3 个本地配置项",
+    settingsTitleSmall: "4 个本地配置项",
     installRoot: "软件安装位置",
     installRootHelp: "下载缓存和自动管理的软件会放在这个位置下的 `apps` 目录中。",
+    usingDefaultInstallRoot: "使用默认安装目录",
     restoreDefault: "恢复默认",
     openInstallRoot: "打开目录",
     githubToken: "GitHub Token",
@@ -365,14 +376,15 @@ const copy: Record<Language, Copy> = {
     },
     action: {
       update: "更新",
-      view: "查看",
+      install: "安装",
       retry: "重试",
       open: "打开"
     },
     status: {
       updateAvailable: "建议更新",
       current: "最新",
-      needsChoice: "需确认",
+      needsChoice: "待处理",
+      noRelease: "无 release",
       failed: "失败"
     },
     installType: {

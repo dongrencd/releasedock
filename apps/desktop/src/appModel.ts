@@ -1,6 +1,6 @@
 import { createUiText, type Language } from "./i18n";
 
-export type AppStatus = "updateAvailable" | "current" | "needsChoice" | "failed";
+export type AppStatus = "updateAvailable" | "current" | "needsChoice" | "noRelease" | "failed";
 
 export type ManagedApp = {
   id: string;
@@ -37,7 +37,48 @@ export type BulkRemoveAvailability = {
   reason?: string;
 };
 
-export type InboxFilter = "all" | "updateAvailable" | "needsChoice" | "failed" | "current";
+export type InboxFilter = "all" | "updateAvailable" | "needsChoice" | "failed";
+
+export type ReleaseNoteBlock =
+  | { type: "heading"; level: 1 | 2 | 3; text: string }
+  | { type: "paragraph"; text: string }
+  | { type: "list"; ordered: boolean; items: string[] }
+  | { type: "quote"; text: string }
+  | { type: "table"; header: string[]; rows: string[][] }
+  | { type: "divider" }
+  | { type: "code"; text: string };
+
+export type TaskProgressAction = "install" | "uninstall";
+
+export type TaskProgressStage =
+  | "preparing"
+  | "downloading"
+  | "copyingAsset"
+  | "extractingArchive"
+  | "runningSystemInstaller"
+  | "updatingManifest"
+  | "locatingRecord"
+  | "removingFiles"
+  | "finished"
+  | "failed";
+
+export type TaskProgressLike = {
+  action: TaskProgressAction;
+  stage: TaskProgressStage;
+  message: string;
+  percent?: number | null;
+};
+
+export type StatusDockPresentation = {
+  eyebrow: string;
+  headline: string;
+  detail: string;
+  pillLabel: string;
+  failed: boolean;
+  showProgress: boolean;
+  progressMode: "determinate" | "indeterminate";
+  progressPercent: number | null;
+};
 
 export function inboxFilters(language: Language): Array<{ id: InboxFilter; label: string }> {
   const ui = createUiText(language);
@@ -45,8 +86,7 @@ export function inboxFilters(language: Language): Array<{ id: InboxFilter; label
     { id: "all", label: ui.all },
     { id: "updateAvailable", label: ui.updateAvailable },
     { id: "needsChoice", label: ui.needsChoice },
-    { id: "failed", label: ui.failed },
-    { id: "current", label: ui.current }
+    { id: "failed", label: ui.failed }
   ];
 }
 
@@ -58,6 +98,205 @@ export function buildUpdateInbox(apps: ManagedApp[], language: Language): InboxI
       priority: priorityForStatus(app.status)
     }))
     .sort((left, right) => left.priority - right.priority || left.name.localeCompare(right.name));
+}
+
+export function parseReleaseNote(note: string): ReleaseNoteBlock[] {
+  const lines = note.replace(/\r\n/g, "\n").split("\n");
+  const blocks: ReleaseNoteBlock[] = [];
+  let index = 0;
+
+  const pushParagraph = (buffer: string[]) => {
+    const text = buffer.join(" ").trim();
+    if (text) {
+      blocks.push({ type: "paragraph", text });
+    }
+    buffer.length = 0;
+  };
+
+  while (index < lines.length) {
+    const line = lines[index];
+    const trimmed = line.trim();
+
+    if (!trimmed || isHtmlComment(trimmed)) {
+      index += 1;
+      continue;
+    }
+
+    if (isHorizontalRule(trimmed)) {
+      blocks.push({ type: "divider" });
+      index += 1;
+      continue;
+    }
+
+    const headingMatch = /^(#{1,3})\s+(.*)$/.exec(line);
+    if (headingMatch) {
+      blocks.push({
+        type: "heading",
+        level: headingMatch[1].length as 1 | 2 | 3,
+        text: headingMatch[2].trim()
+      });
+      index += 1;
+      continue;
+    }
+
+    if (/^```/.test(line)) {
+      const codeLines: string[] = [];
+      index += 1;
+      while (index < lines.length && !/^```/.test(lines[index])) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+      if (index < lines.length) {
+        index += 1;
+      }
+      blocks.push({ type: "code", text: codeLines.join("\n") });
+      continue;
+    }
+
+    const tableHeader = parseTableCells(line);
+    if (
+      tableHeader.length > 1 &&
+      index + 1 < lines.length &&
+      isTableSeparator(lines[index + 1])
+    ) {
+      const rows: string[][] = [];
+      index += 2;
+      while (index < lines.length) {
+        const rowLine = lines[index];
+        const rowTrimmed = rowLine.trim();
+        if (!rowTrimmed || !rowLine.includes("|")) {
+          break;
+        }
+        if (
+          isHtmlComment(rowTrimmed) ||
+          isHorizontalRule(rowTrimmed) ||
+          /^(#{1,3})\s+/.test(rowLine) ||
+          /^```/.test(rowLine) ||
+          /^(\s*[-*+]\s+)/.test(rowLine) ||
+          /^(\s*\d+\.\s+)/.test(rowLine) ||
+          /^>\s?/.test(rowLine)
+        ) {
+          break;
+        }
+        rows.push(normalizeTableRow(parseTableCells(rowLine), tableHeader.length));
+        index += 1;
+      }
+      blocks.push({ type: "table", header: tableHeader, rows });
+      continue;
+    }
+
+    const orderedListMatch = /^(\s*\d+\.\s+)/.test(line);
+    const unorderedListMatch = /^(\s*[-*+]\s+)/.test(line);
+    if (orderedListMatch || unorderedListMatch) {
+      const ordered = orderedListMatch;
+      const items: string[] = [];
+      const itemPattern = ordered ? /^(\s*\d+\.\s+)/ : /^(\s*[-*+]\s+)/;
+      while (index < lines.length && itemPattern.test(lines[index])) {
+        items.push(lines[index].replace(itemPattern, "").trim());
+        index += 1;
+      }
+      blocks.push({ type: "list", ordered, items });
+      continue;
+    }
+
+    const quoteMatch = /^>\s?(.*)$/.test(line);
+    if (quoteMatch) {
+      const quoteLines: string[] = [];
+      while (index < lines.length && /^>\s?/.test(lines[index])) {
+        quoteLines.push(lines[index].replace(/^>\s?/, "").trim());
+        index += 1;
+      }
+      blocks.push({ type: "quote", text: quoteLines.join(" ").trim() });
+      continue;
+    }
+
+    const paragraphLines = [trimmed];
+    index += 1;
+    while (
+      index < lines.length &&
+      lines[index].trim() &&
+      !isHtmlComment(lines[index].trim()) &&
+      !isHorizontalRule(lines[index].trim()) &&
+      !/^(#{1,3})\s+/.test(lines[index]) &&
+      !/^```/.test(lines[index]) &&
+      !/^(\s*[-*+]\s+)/.test(lines[index]) &&
+      !/^(\s*\d+\.\s+)/.test(lines[index]) &&
+      !/^>\s?/.test(lines[index])
+    ) {
+      paragraphLines.push(lines[index].trim());
+      index += 1;
+    }
+    pushParagraph(paragraphLines);
+  }
+
+  return blocks;
+}
+
+export function taskActionLabel(action: TaskProgressAction, language: Language): string {
+  const ui = createUiText(language);
+  return action === "install" ? ui.task.install : ui.task.uninstall;
+}
+
+export function taskStageLabel(stage: TaskProgressStage, language: Language): string {
+  const ui = createUiText(language);
+  switch (stage) {
+    case "preparing":
+      return ui.stage.preparing;
+    case "downloading":
+      return ui.stage.downloading;
+    case "copyingAsset":
+      return ui.stage.copyingAsset;
+    case "extractingArchive":
+      return ui.stage.extractingArchive;
+    case "runningSystemInstaller":
+      return ui.stage.runningSystemInstaller;
+    case "updatingManifest":
+      return ui.stage.updatingManifest;
+    case "locatingRecord":
+      return ui.stage.locatingRecord;
+    case "removingFiles":
+      return ui.stage.removingFiles;
+    case "finished":
+      return ui.stage.finished;
+    case "failed":
+      return ui.stage.failed;
+  }
+}
+
+export function buildStatusDockPresentation(
+  taskProgress: TaskProgressLike | null,
+  busy: boolean,
+  taskStatus: string,
+  language: Language
+): StatusDockPresentation {
+  const ui = createUiText(language);
+  if (!taskProgress) {
+    return {
+      eyebrow: ui.statusBar,
+      headline: taskStatus,
+      detail: busy ? taskStatus : "",
+      pillLabel: busy ? ui.processing : taskStatus,
+      failed: false,
+      showProgress: busy,
+      progressMode: "indeterminate",
+      progressPercent: null
+    };
+  }
+
+  const normalizedPercent = normalizeProgressPercent(taskProgress.percent);
+  const progressPercent = taskProgress.stage === "finished" && normalizedPercent == null ? 100 : normalizedPercent;
+  const failed = taskProgress.stage === "failed";
+
+  return {
+    eyebrow: taskActionLabel(taskProgress.action, language),
+    headline: taskStageLabel(taskProgress.stage, language),
+    detail: taskProgress.message,
+    pillLabel: failed ? ui.status.failed : progressPercent == null ? ui.processing : `${progressPercent}%`,
+    failed,
+    showProgress: true,
+    progressMode: progressPercent == null ? "indeterminate" : "determinate",
+    progressPercent
+  };
 }
 
 export function getOpenReleaseAvailability(
@@ -91,7 +330,7 @@ export function getPrimaryActionAvailability(
     return { enabled: false, reason: ui.model.selectApp };
   }
 
-  if (item.status === "current") {
+  if (item.status === "current" || item.status === "noRelease") {
     return getOpenReleaseAvailability(item, busy, language);
   }
 
@@ -154,7 +393,7 @@ export function getRemoveTrackedAvailability(
     return { enabled: false, reason: ui.model.selectApp };
   }
 
-  if (item.status !== "needsChoice") {
+  if (item.status !== "needsChoice" && !(item.status === "noRelease" && item.installPathKind === "Unknown")) {
     return { enabled: false, reason: ui.model.onlyUntracked };
   }
 
@@ -191,7 +430,9 @@ export function getBulkRemoveAvailability(
 
   const selectedSet = new Set(selectedIds);
   const selectedApps = apps.filter((app) => selectedSet.has(app.id));
-  const candidates = selectedApps.filter((app) => app.status === "needsChoice");
+  const candidates = selectedApps.filter(
+    (app) => app.status === "needsChoice" || (app.status === "noRelease" && app.installPathKind === "Unknown")
+  );
   const skippedCount = selectedApps.length - candidates.length;
 
   if (candidates.length === 0) {
@@ -246,7 +487,9 @@ function actionForStatus(status: AppStatus, language: Language): InboxItem["acti
     case "updateAvailable":
       return ui.action.update;
     case "needsChoice":
-      return ui.action.view;
+      return ui.action.install;
+    case "noRelease":
+      return ui.action.open;
     case "failed":
       return ui.action.retry;
     case "current":
@@ -262,7 +505,47 @@ function priorityForStatus(status: AppStatus): number {
       return 1;
     case "updateAvailable":
       return 2;
-    case "current":
+    case "noRelease":
       return 3;
+    case "current":
+      return 4;
   }
+}
+
+function isHtmlComment(line: string) {
+  return /^<!--[\s\S]*-->$/.test(line);
+}
+
+function isHorizontalRule(line: string) {
+  return /^(?:-{3,}|\*{3,}|_{3,})$/.test(line);
+}
+
+function normalizeProgressPercent(percent: number | null | undefined) {
+  if (percent == null || Number.isNaN(percent)) {
+    return null;
+  }
+
+  return Math.max(0, Math.min(100, Math.round(percent)));
+}
+
+function parseTableCells(line: string) {
+  return line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
+function normalizeTableRow(cells: string[], width: number) {
+  const row = cells.slice(0, width);
+  while (row.length < width) {
+    row.push("");
+  }
+  return row;
+}
+
+function isTableSeparator(line: string) {
+  const cells = parseTableCells(line);
+  return cells.length > 1 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
 }

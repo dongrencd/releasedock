@@ -163,7 +163,7 @@ input {
 
 .workspace {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   min-width: 0;
 }
 
@@ -324,6 +324,7 @@ input {
 
 .ghostButton:disabled,
 .primaryButton:disabled,
+.dangerButton:disabled,
 .iconButton:disabled,
 .linkButton:disabled {
   cursor: not-allowed;
@@ -358,6 +359,13 @@ input {
   border: 1px solid #d8dee8;
   color: #243044;
   background: #ffffff;
+}
+
+.dangerButton {
+  padding: 0 14px;
+  border: 1px solid #f5c2c7;
+  color: #b91c1c;
+  background: #fff7f7;
 }
 
 .primaryButton {
@@ -427,14 +435,14 @@ input {
 
 .settingsPanel {
   display: grid;
-  gap: 12px;
-  padding: 14px 24px 18px;
+  gap: 10px;
+  padding: 12px 18px 16px;
 }
 
 .settingsForm {
   display: grid;
-  gap: 14px;
-  padding: 14px;
+  gap: 12px;
+  padding: 12px;
   border: 1px solid #d8dee8;
   border-radius: 8px;
   background: #ffffff;
@@ -442,7 +450,7 @@ input {
 
 .fieldRow {
   display: grid;
-  gap: 8px;
+  gap: 6px;
 }
 
 .fieldRow > span {
@@ -458,17 +466,17 @@ input {
 }
 
 .fieldRow.primaryField {
-  padding: 12px;
-  border: 1px solid #b8d8d4;
-  border-radius: 8px;
-  background: #f0fdfa;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .fieldActions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 2px;
+  margin-top: 0;
 }
 
 .languageSwitch {
@@ -532,7 +540,69 @@ input {
   display: flex;
   gap: 10px;
   justify-content: flex-end;
-  padding: 0 24px 4px;
+  padding: 0 18px 2px;
+}
+
+.statusDock {
+  display: grid;
+  grid-template-columns: minmax(220px, auto) minmax(0, 1fr);
+  gap: 8px 16px;
+  align-items: center;
+  padding: 10px 24px;
+  border-top: 1px solid #d8dee8;
+  color: #334155;
+  background: #ffffff;
+}
+
+.statusDock.failed {
+  border-top-color: #f5c2c7;
+  background: #fff7f7;
+}
+
+.statusDockCopy,
+.statusDockDetail {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.statusDockCopy {
+  gap: 10px;
+}
+
+.statusDockCopy strong,
+.statusDockDetail {
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.statusDockCopy strong,
+.statusDockDetail span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.statusDockDetail {
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.statusDot {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 9px;
+  border-radius: 999px;
+  background: #94a3b8;
+}
+
+.statusDot.busy {
+  background: #0f766e;
+  box-shadow: 0 0 0 5px rgba(15, 118, 110, 0.12);
+}
+
+.statusDock .taskProgressTrack {
+  grid-column: 1 / -1;
 }
 
 .errorBanner {
@@ -690,6 +760,12 @@ h2 {
   white-space: nowrap;
 }
 
+.bulkIconButton {
+  width: 38px;
+  min-width: 38px;
+  padding: 0;
+}
+
 .appTable {
   display: grid;
   gap: 8px;
@@ -792,6 +868,10 @@ h2 {
   color: #b45309;
 }
 
+.statusIcon.noRelease {
+  color: #475569;
+}
+
 .statusIcon.current {
   color: #15803d;
 }
@@ -816,6 +896,11 @@ h2 {
 .statusBadge.needsChoice {
   color: #92400e;
   background: #fef3c7;
+}
+
+.statusBadge.noRelease {
+  color: #334155;
+  background: #e2e8f0;
 }
 
 .statusBadge.current {
@@ -867,39 +952,6 @@ h2 {
   max-height: calc(100vh - 176px);
 }
 
-.taskProgressPanel {
-  display: grid;
-  gap: 8px;
-  padding: 12px;
-  border: 1px solid #99d4ce;
-  border-radius: 8px;
-  background: #f0fdfa;
-}
-
-.taskProgressPanel.failed {
-  border-color: #f5c2c7;
-  background: #fef2f2;
-}
-
-.taskProgressHeader {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.taskProgressCopy {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-}
-
-.taskProgressCopy strong {
-  color: #0f172a;
-  font-size: 14px;
-  line-height: 1.35;
-}
-
 .taskProgressMessage {
   color: #334155;
   font-size: 13px;
@@ -908,6 +960,7 @@ h2 {
 }
 
 .taskProgressTrack {
+  position: relative;
   height: 8px;
   overflow: hidden;
   border-radius: 999px;
@@ -922,16 +975,41 @@ h2 {
   transition: width 180ms linear;
 }
 
-.taskProgressTrack.busy .taskProgressValue {
-  width: 36%;
-  animation: taskProgressShift 1.15s ease-in-out infinite alternate;
+.taskProgressTrack.busy {
+  background: linear-gradient(90deg, #dbe7e5 0%, #e8f4f2 50%, #dbe7e5 100%);
+  background-size: 200% 100%;
+  animation: taskTrackPulse 1.4s linear infinite;
 }
 
-.taskProgressPanel.failed .taskProgressTrack {
+.taskProgressTrack.busy .taskProgressValue {
+  width: 42%;
+  min-width: 56px;
+  will-change: transform;
+  background: linear-gradient(90deg, #0f766e 0%, #16a394 50%, #0f766e 100%);
+  background-size: 200% 100%;
+  animation:
+    taskProgressShift 1.15s linear infinite,
+    taskProgressGlow 1.15s linear infinite;
+}
+
+.taskProgressTrack.active {
+  background: linear-gradient(90deg, #dbe7e5 0%, #e8f4f2 50%, #dbe7e5 100%);
+  background-size: 200% 100%;
+  animation: taskTrackPulse 1.8s linear infinite;
+}
+
+.taskProgressTrack.active .taskProgressValue {
+  min-width: 24px;
+  background: linear-gradient(90deg, #0f766e 0%, #16a394 50%, #0f766e 100%);
+  background-size: 200% 100%;
+  animation: taskProgressShift 1.25s linear infinite;
+}
+
+.statusDock.failed .taskProgressTrack {
   background: #fde2e4;
 }
 
-.taskProgressPanel.failed .taskProgressValue {
+.statusDock.failed .taskProgressValue {
   background: #dc2626;
 }
 
@@ -1005,11 +1083,11 @@ h2 {
 .releaseNotePreview {
   margin: 0;
   overflow: auto;
-  padding: 14px 14px 12px;
+  padding: 16px 16px 14px;
   border: 1px solid #d8dee8;
   border-radius: 8px;
   color: #243044;
-  background: #f8fafc;
+  background: #ffffff;
   font-size: 13px;
   line-height: 1.58;
 }
@@ -1050,13 +1128,112 @@ h2 {
   word-break: break-word;
 }
 
+.releaseNotePreview .noteQuote {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-left: 3px solid #0f766e;
+  border-radius: 0 8px 8px 0;
+  color: #334155;
+  background: #f0fdfa;
+}
+
+.releaseNotePreview .noteChecklist {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.releaseNotePreview .noteChecklist input {
+  margin-top: 2px;
+  accent-color: #0f766e;
+}
+
+.releaseNotePreview .noteImage {
+  display: block;
+  max-width: 100%;
+  margin: 8px 0;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.releaseNotePreview .noteTableScroller {
+  margin: 0 0 10px;
+  overflow: auto;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.releaseNotePreview .noteTable {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.releaseNotePreview .noteTable th,
+.releaseNotePreview .noteTable td {
+  padding: 8px 10px;
+  border-right: 1px solid #d8dee8;
+  border-bottom: 1px solid #d8dee8;
+  vertical-align: top;
+  text-align: left;
+  word-break: break-word;
+}
+
+.releaseNotePreview .noteTable th:last-child,
+.releaseNotePreview .noteTable td:last-child {
+  border-right: 0;
+}
+
+.releaseNotePreview .noteTable tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.releaseNotePreview .noteTable thead th {
+  background: #f8fafc;
+  color: #0f172a;
+  font-weight: 700;
+}
+
+.releaseNotePreview code {
+  padding: 2px 5px;
+  border: 1px solid #d8dee8;
+  border-radius: 5px;
+  color: #0f172a;
+  background: #f1f5f9;
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 12px;
+}
+
+.releaseNotePreview a {
+  color: #0f766e;
+  text-decoration: none;
+}
+
+.releaseNotePreview a:hover {
+  text-decoration: underline;
+}
+
 .releaseNotePreview .noteList {
   margin: 0 0 10px;
-  padding-left: 20px;
+  padding-left: 22px;
 }
 
 .releaseNotePreview .noteList li {
   margin-bottom: 6px;
+}
+
+.releaseNotePreview .noteList.ordered {
+  list-style-type: decimal;
+}
+
+.releaseNotePreview .noteDivider {
+  margin: 0 0 10px;
+  border: 0;
+  border-top: 1px solid #d8dee8;
 }
 
 .releaseNotePreview .noteCode {
@@ -1074,6 +1251,10 @@ h2 {
 .releaseNotePreview .noteCode code {
   font: inherit;
   white-space: pre;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
 }
 
 .installPreview {
@@ -1157,6 +1338,10 @@ h2 {
   justify-content: center;
 }
 
+.inspectorActions .dangerButton {
+  justify-content: center;
+}
+
 .inspectorActions .actionButton svg {
   width: 16px;
   height: 16px;
@@ -1170,11 +1355,31 @@ h2 {
 
 @keyframes taskProgressShift {
   from {
-    transform: translateX(0);
+    transform: translateX(-130%);
   }
 
   to {
-    transform: translateX(160%);
+    transform: translateX(260%);
+  }
+}
+
+@keyframes taskProgressGlow {
+  from {
+    background-position: 0% 50%;
+  }
+
+  to {
+    background-position: 100% 50%;
+  }
+}
+
+@keyframes taskTrackPulse {
+  from {
+    background-position: 0% 50%;
+  }
+
+  to {
+    background-position: 100% 50%;
   }
 }
 
@@ -1197,6 +1402,14 @@ h2 {
   }
 
   .topbarMeta {
+    justify-content: flex-start;
+  }
+
+  .statusDock {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .statusDockDetail {
     justify-content: flex-start;
   }
 

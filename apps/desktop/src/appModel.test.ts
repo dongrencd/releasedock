@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { type Language } from "./i18n";
 import {
+  buildStatusDockPresentation,
   buildUpdateInbox,
   getBulkRemoveAvailability,
   filterManagedApps,
@@ -9,7 +10,9 @@ import {
   getPrimaryActionAvailability,
   getRemoveTrackedAvailability,
   getUninstallAvailability,
+  parseReleaseNote,
   pruneSelection,
+  inboxFilters,
   selectVisibleIds,
   toggleSelection
 } from "./appModel";
@@ -42,6 +45,22 @@ describe("buildUpdateInbox", () => {
     expect(inbox[0].id).toBe("owner/update");
     expect(inbox[0].actionLabel).toBe("Update");
     expect(inbox[1].actionLabel).toBe("Open");
+  });
+
+  it("labels needs-choice apps as install actions", () => {
+    const inbox = buildUpdateInbox([
+      {
+        id: "owner/choice",
+        name: "Choice",
+        currentVersion: "Not installed",
+        latestVersion: "v1.1.0",
+        status: "needsChoice",
+        source: "GitHub",
+        installPath: "/tmp/choice"
+      }
+    ], language);
+
+    expect(inbox[0].actionLabel).toBe("Install");
   });
 
   it("preserves original release note for detail view", () => {
@@ -90,6 +109,15 @@ describe("buildUpdateInbox", () => {
     expect(filterManagedApps([...apps], "all", "update.zip")).toHaveLength(1);
   });
 
+  it("keeps the inbox filters compact", () => {
+    expect(inboxFilters(language).map((item) => item.id)).toEqual([
+      "all",
+      "updateAvailable",
+      "needsChoice",
+      "failed"
+    ]);
+  });
+
   it("filters only the managed app list and ignores release note body text", () => {
     const apps = [
       {
@@ -134,6 +162,31 @@ describe("buildUpdateInbox", () => {
     expect(getRemoveTrackedAvailability(app, false, language)).toEqual({
       enabled: false,
       reason: "Only uninstalled tracked items can be removed"
+    });
+  });
+
+  it("treats no-release tracked repos as removable and openable", () => {
+    const app = buildUpdateInbox([
+      {
+        id: "owner/none",
+        name: "No Release",
+        currentVersion: "Not installed",
+        latestVersion: "No release",
+        status: "noRelease",
+        source: "GitHub",
+        installPath: "/tmp/none",
+        installPathKind: "Unknown",
+        releaseUrl: "https://github.com/owner/none"
+      }
+    ], language)[0];
+
+    expect(app.actionLabel).toBe("Open");
+    expect(getPrimaryActionAvailability(app, false, language)).toEqual({ enabled: true });
+    expect(getRemoveTrackedAvailability(app, false, language)).toEqual({ enabled: true });
+    expect(getBulkRemoveAvailability([app], [app.id], false, language)).toEqual({
+      enabled: true,
+      candidateCount: 1,
+      skippedCount: 0
     });
   });
 
@@ -194,5 +247,175 @@ describe("buildUpdateInbox", () => {
       skippedCount: 1,
       reason: "Select at least one uninstalled tracked item"
     });
+  });
+});
+
+describe("parseReleaseNote", () => {
+  it("skips generated html comments and keeps readable markdown blocks", () => {
+    const blocks = parseReleaseNote(`<!-- cliproxyapi-linux-release-assets:start -->
+## Linux release assets
+
+See [release docs](https://example.com/docs)
+
+> Built for Linux users.
+
+---
+
+1. Default Linux build
+2. Portable Linux build
+
+- \`CLIProxyAPI_<version>_linux_<arch>.tar.gz\`
+* \`CLIProxyAPI_<version>_linux_<arch>_no-plugin.tar.gz\`
+
+\`\`\`bash
+cliproxyapi --version
+\`\`\`
+
+Plain paragraph
+<!-- cliproxyapi-linux-release-assets:end -->`);
+
+    expect(blocks).toEqual([
+      { type: "heading", level: 2, text: "Linux release assets" },
+      { type: "paragraph", text: "See [release docs](https://example.com/docs)" },
+      { type: "quote", text: "Built for Linux users." },
+      { type: "divider" },
+      {
+        type: "list",
+        ordered: true,
+        items: ["Default Linux build", "Portable Linux build"]
+      },
+      {
+        type: "list",
+        ordered: false,
+        items: [
+          "`CLIProxyAPI_<version>_linux_<arch>.tar.gz`",
+          "`CLIProxyAPI_<version>_linux_<arch>_no-plugin.tar.gz`"
+        ]
+      },
+      { type: "code", text: "cliproxyapi --version" },
+      { type: "paragraph", text: "Plain paragraph" }
+    ]);
+  });
+
+  it("parses markdown tables into structured blocks", () => {
+    const blocks = parseReleaseNote(`<!-- table:start -->
+| Architecture | Windows | Ubuntu |
+| --- | --- | --- |
+| x86-64 (64-bit) | EXE | Download |
+| AArch64 (ARM64) | EXE | Download |
+| x86-32 (32-bit) | EXE (Legacy) |
+
+After table
+<!-- table:end -->`);
+
+    expect(blocks).toEqual([
+      {
+        type: "table",
+        header: ["Architecture", "Windows", "Ubuntu"],
+        rows: [
+          ["x86-64 (64-bit)", "EXE", "Download"],
+          ["AArch64 (ARM64)", "EXE", "Download"],
+          ["x86-32 (32-bit)", "EXE (Legacy)", ""]
+        ]
+      },
+      { type: "paragraph", text: "After table" }
+    ]);
+  });
+
+  it("keeps checklist markers inside list items for rendering", () => {
+    const blocks = parseReleaseNote(`- [x] Done
+- [ ] Pending`);
+
+    expect(blocks).toEqual([
+      {
+        type: "list",
+        ordered: false,
+        items: ["[x] Done", "[ ] Pending"]
+      }
+    ]);
+  });
+});
+
+describe("buildStatusDockPresentation", () => {
+  it("shows an indeterminate bar for busy work without task progress", () => {
+    const presentation = buildStatusDockPresentation(null, true, "Checking latest release", language);
+
+    expect(presentation).toEqual({
+      eyebrow: "Status",
+      headline: "Checking latest release",
+      detail: "Checking latest release",
+      pillLabel: "Processing",
+      failed: false,
+      showProgress: true,
+      progressMode: "indeterminate",
+      progressPercent: null
+    });
+  });
+
+  it("keeps zero percent visible and marks finished work as complete", () => {
+    const zero = buildStatusDockPresentation(
+      {
+        action: "install",
+        stage: "preparing",
+        message: "Preparing to install",
+        percent: 0
+      },
+      false,
+      "Installing",
+      language
+    );
+
+    expect(zero.progressMode).toBe("determinate");
+    expect(zero.progressPercent).toBe(0);
+    expect(zero.pillLabel).toBe("0%");
+
+    const finished = buildStatusDockPresentation(
+      {
+        action: "uninstall",
+        stage: "finished",
+        message: "Done",
+        percent: null
+      },
+      false,
+      "Uninstalling",
+      language
+    );
+
+    expect(finished.progressMode).toBe("determinate");
+    expect(finished.progressPercent).toBe(100);
+    expect(finished.pillLabel).toBe("100%");
+  });
+
+  it("clamps out-of-range percentages and keeps failures visible", () => {
+    const clamped = buildStatusDockPresentation(
+      {
+        action: "install",
+        stage: "downloading",
+        message: "Downloading asset",
+        percent: 142
+      },
+      false,
+      "Installing",
+      language
+    );
+
+    expect(clamped.progressPercent).toBe(100);
+    expect(clamped.pillLabel).toBe("100%");
+
+    const failed = buildStatusDockPresentation(
+      {
+        action: "uninstall",
+        stage: "failed",
+        message: "Remove failed",
+        percent: 67
+      },
+      false,
+      "Uninstalling",
+      language
+    );
+
+    expect(failed.failed).toBe(true);
+    expect(failed.pillLabel).toBe("Failed");
+    expect(failed.progressMode).toBe("determinate");
   });
 });

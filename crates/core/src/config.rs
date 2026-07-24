@@ -30,6 +30,13 @@ pub struct ConfigStore {
     path: PathBuf,
 }
 
+pub fn effective_install_root(config: Option<&Config>, fallback_root: Option<PathBuf>) -> PathBuf {
+    config
+        .and_then(|value| value.install_root.clone())
+        .or(fallback_root)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
 impl ConfigStore {
     pub fn default_path() -> Result<PathBuf> {
         let project_dirs = ProjectDirs::from("io", "releasedock", "ReleaseDock")
@@ -84,5 +91,38 @@ impl ConfigStore {
         fs::rename(&temp_path, &self.path)
             .with_context(|| format!("failed to replace config {}", self.path.display()))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uses_custom_install_root_when_present() {
+        let config = Config {
+            install_root: Some(PathBuf::from("/custom/root")),
+            ..Default::default()
+        };
+
+        let resolved = effective_install_root(Some(&config), Some(PathBuf::from("/fallback/root")));
+
+        assert_eq!(resolved, PathBuf::from("/custom/root"));
+    }
+
+    #[test]
+    fn falls_back_to_supplied_root_when_custom_root_is_missing() {
+        let config = Config::default();
+
+        let resolved = effective_install_root(Some(&config), Some(PathBuf::from("/fallback/root")));
+
+        assert_eq!(resolved, PathBuf::from("/fallback/root"));
+    }
+
+    #[test]
+    fn falls_back_to_current_directory_when_no_root_is_available() {
+        let resolved = effective_install_root(None, None);
+
+        assert_eq!(resolved, PathBuf::from("."));
     }
 }

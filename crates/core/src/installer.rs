@@ -14,7 +14,7 @@ use zip::ZipArchive;
 
 use crate::{
     asset_matcher::InstallType,
-    config::{Config, Language},
+    config::{effective_install_root, Config, Language},
     install_plan::InstallPlan,
     manifest::{InstallPathKind, InstalledApp, ManifestStore},
     release::ReleaseClient,
@@ -183,6 +183,7 @@ pub async fn install_from_plan(
             percent: Some(100),
         },
     );
+    let _ = cleanup_download_cache(&download_path);
 
     Ok(InstallOutcome {
         app,
@@ -636,6 +637,47 @@ fn remove_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn cleanup_download_cache(download_path: &Path) -> Result<()> {
+    if download_path.exists() {
+        fs::remove_file(download_path)
+            .with_context(|| format!("failed to remove download cache {}", download_path.display()))?;
+    }
+
+    if let Some(repo_dir) = download_path.parent() {
+        prune_empty_dir(repo_dir)?;
+    }
+
+    Ok(())
+}
+
+fn prune_empty_dir(dir: &Path) -> Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+
+    if fs::read_dir(dir)
+        .with_context(|| format!("failed to inspect cache directory {}", dir.display()))?
+        .next()
+        .is_some()
+    {
+        return Ok(());
+    }
+
+    fs::remove_dir(dir).with_context(|| format!("failed to remove empty cache directory {}", dir.display()))?;
+    if let Some(downloads_dir) = dir.parent() {
+        if downloads_dir.file_name().and_then(|value| value.to_str()) == Some("downloads")
+            && fs::read_dir(downloads_dir)
+                .with_context(|| format!("failed to inspect cache directory {}", downloads_dir.display()))?
+                .next()
+                .is_none()
+        {
+            let _ = fs::remove_dir(downloads_dir);
+        }
+    }
+
+    Ok(())
+}
+
 fn install_dir(
     manifest_store: &ManifestStore,
     repo: &RepoRef,
@@ -651,10 +693,10 @@ fn cache_dir(manifest_store: &ManifestStore, runtime_config: Option<&Config>) ->
 }
 
 fn cache_root(manifest_store: &ManifestStore, runtime_config: Option<&Config>) -> PathBuf {
-    runtime_config
-        .and_then(|config| config.install_root.clone())
-        .or_else(|| manifest_store.path().parent().map(Path::to_path_buf))
-        .unwrap_or_else(|| PathBuf::from("."))
+    effective_install_root(
+        runtime_config,
+        manifest_store.path().parent().map(Path::to_path_buf),
+    )
 }
 
 fn mark_executable(path: &Path) -> Result<()> {
@@ -767,6 +809,7 @@ mod tests {
 
         assert!(outcome.install_path.exists());
         assert!(outcome.install_path.join("bundle/hello.txt").exists());
+        assert!(!outcome.download_path.exists());
         let stored = manifest.load().unwrap();
         assert_eq!(stored.apps.len(), 1);
         assert_eq!(stored.apps[0].id, "owner/project");
@@ -801,9 +844,30 @@ mod tests {
 
         assert!(outcome.install_path.exists());
         assert!(outcome.install_path.join("bundle/hello-xz.txt").exists());
+        assert!(!outcome.download_path.exists());
         let stored = manifest.load().unwrap();
         assert_eq!(stored.apps.len(), 1);
         assert_eq!(stored.apps[0].asset_name, "fixture.tar.xz");
+    }
+
+    #[tokio::test]
+    async fn keeps_download_cache_when_install_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = ManifestStore::at_path(temp.path().join("apps.json"));
+        let bad_fixture = temp.path().join("fixture.zip");
+        fs::write(&bad_fixture, b"not a real archive").unwrap();
+
+        let plan = sample_plan(InstallType::Archive, "fixture.zip");
+        let result = install_from_plan(&plan, &manifest, Some(&bad_fixture), None, Language::En, None).await;
+
+        assert!(result.is_err());
+        let cache_path = temp
+            .path()
+            .join("downloads")
+            .join("owner_project")
+            .join("fixture.zip");
+        assert!(cache_path.exists());
+        assert!(manifest.load().unwrap().apps.is_empty());
     }
 
     #[test]

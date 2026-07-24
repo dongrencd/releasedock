@@ -2,7 +2,7 @@
 
 ## Goal
 
-Before updating software from a GitHub Release, the user should be able to see what changed in that release. The first version keeps the original release note content, but the GUI renders the common Markdown structure so headings, paragraphs, lists, and code blocks stay readable.
+Before updating software from a GitHub Release, the user should be able to see what changed in that release. The GUI keeps the original release note content but renders the common Markdown structure so headings, paragraphs, lists, tables, quotes, links, inline code, checklist items, and images stay readable.
 
 ## Data Source
 
@@ -45,5 +45,11 @@ When the user selects an app in the update manager, the right-hand inspector sho
 - install path or installer file, depending on install type
 - open release page action
 - copy release note action
+- the install action should read like an install step, not a generic view action
+- downloaded cache files should be cleaned up after a successful install
 
-The note view should be larger than the metadata sections and scroll internally when content is long. Headings should stand out from body text, and code blocks should remain readable inside the inspector.
+The note view should be larger than the metadata sections and scroll internally when content is long. Headings should stand out from body text, tables should scroll horizontally, and code blocks and images should remain readable inside the inspector.
+
+Task progress lives in the bottom status bar. It should keep moving for indeterminate work, show a visible sliver at `0%`, and clear itself after success or failure so the strip does not get stuck on a stale state.
+Repositories without a published release should render as a neutral `No release` state in the GUI instead of surfacing a loading error.
+Dashboard refresh progress should update the list incrementally, but it should not replace install or uninstall task progress while those tasks are active.
