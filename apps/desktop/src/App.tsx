@@ -47,6 +47,7 @@ import {
   getUninstallAvailability,
   filterManagedApps,
   inboxFilters,
+  isActionRequired,
   selectVisibleIds,
   toggleSelection,
   type InboxFilter,
@@ -61,7 +62,7 @@ import {
   normalizeLanguage,
   type Language
 } from "./i18n";
-import type { InstallPlan, TaskProgressEvent } from "./backend";
+import type { BackgroundCheckEvent, InstallPlan, TaskProgressEvent } from "./backend";
 
 type ConfigDraft = {
   githubToken: string;
@@ -69,6 +70,8 @@ type ConfigDraft = {
   installRoot: string;
   effectiveInstallRoot: string;
   language: Language;
+  backgroundCheckEnabled: boolean;
+  checkIntervalMinutes: number;
 };
 
 type TaskProgressView = Omit<TaskProgressEvent, "stage"> & {
@@ -97,7 +100,9 @@ export function App() {
     proxyUrl: "",
     installRoot: "",
     effectiveInstallRoot: "",
-    language: "en"
+    language: "en",
+    backgroundCheckEnabled: true,
+    checkIntervalMinutes: 30
   });
   const currentConfigKey = useRef(configDraftKey(configDraft));
   const lastSavedConfigKey = useRef("");
@@ -107,6 +112,8 @@ export function App() {
   const [configSaving, setConfigSaving] = useState(false);
   const [taskStatus, setTaskStatus] = useState("Loading GitHub Release data");
   const [error, setError] = useState<string | null>(null);
+  // 后台检查发现的更新数（来自托盘后台检查）
+  const [backgroundUpdateCount, setBackgroundUpdateCount] = useState(0);
   const activeTaskProgress = useRef<TaskProgressContext>(null);
   const dashboardRefreshId = useRef(0);
   const dashboardOrder = useRef<Map<string, number>>(new Map());
@@ -181,6 +188,18 @@ export function App() {
   useEffect(() => {
     let unlistenItem: (() => void) | undefined;
     let unlistenProgress: (() => void) | undefined;
+    let unlistenBackground: (() => void) | undefined;
+    let unlistenTrayCheck: (() => void) | undefined;
+
+    // 后台检查完成事件 — 更新 badge 计数
+    void listen<BackgroundCheckEvent>("background-check-complete", (event) => {
+      setBackgroundUpdateCount(event.payload.updateCount);
+    });
+
+    // 托盘"检查更新"菜单 — 触发前端刷新
+    void listen<void>("tray-check-updates", () => {
+      void refreshDashboard();
+    });
 
     void listen<DashboardItemEvent>("dashboard-item-updated", (event) => {
       if (event.payload.refreshId !== dashboardRefreshId.current) {
@@ -212,6 +231,8 @@ export function App() {
     return () => {
       unlistenItem?.();
       unlistenProgress?.();
+      unlistenBackground?.();
+      unlistenTrayCheck?.();
     };
   }, []);
 
@@ -322,7 +343,9 @@ export function App() {
         proxyUrl: data.proxyUrl ?? "",
         installRoot: data.installRoot ?? "",
         effectiveInstallRoot: data.effectiveInstallRoot ?? data.installRoot ?? "",
-        language: normalizeLanguage(data.language)
+        language: normalizeLanguage(data.language),
+        backgroundCheckEnabled: data.backgroundCheckEnabled ?? true,
+        checkIntervalMinutes: data.checkIntervalMinutes ?? 30
       };
       lastSavedConfigKey.current = configDraftKey(draft);
       setConfigDraft(draft);
@@ -384,14 +407,18 @@ export function App() {
         proxyUrl: draft.proxyUrl.trim() || null,
         installRoot: draft.installRoot.trim() || null,
         effectiveInstallRoot: draft.effectiveInstallRoot.trim() || null,
-        language: draft.language
+        language: draft.language,
+        backgroundCheckEnabled: draft.backgroundCheckEnabled,
+        checkIntervalMinutes: draft.checkIntervalMinutes
       });
       const savedDraft = {
         githubToken: saved.githubToken ?? "",
         proxyUrl: saved.proxyUrl ?? "",
         installRoot: saved.installRoot ?? "",
         effectiveInstallRoot: saved.effectiveInstallRoot ?? saved.installRoot ?? "",
-        language: normalizeLanguage(saved.language)
+        language: normalizeLanguage(saved.language),
+        backgroundCheckEnabled: saved.backgroundCheckEnabled ?? true,
+        checkIntervalMinutes: saved.checkIntervalMinutes ?? 30
       };
       lastSavedConfigKey.current = configDraftKey(savedDraft);
       if (currentConfigKey.current === draftKey) {
@@ -705,6 +732,11 @@ export function App() {
           </div>
           <div className="topbarMeta">
             <span className={hasGithubToken ? "statePill success" : "statePill"}>{hasGithubToken ? ui.configReady : ui.configPublic}</span>
+            {backgroundUpdateCount > 0 ? (
+              <span className="statePill subtle" title={ui.trayBadge(backgroundUpdateCount)}>
+                {ui.trayBadge(backgroundUpdateCount)}
+              </span>
+            ) : null}
           </div>
           {activeView === "dashboard" ? (
             <div className="topbarActions">
@@ -760,7 +792,7 @@ export function App() {
                     </div>
                   </div>
                   <div className="sectionMeta">
-                    <span className="statePill subtle">{ui.managedAppsPending(inbox.filter((item) => item.status !== "current").length)}</span>
+                    <span className="statePill subtle">{ui.managedAppsPending(inbox.filter((item) => isActionRequired(item) || item.status === "failed").length)}</span>
                     <span className="statePill subtle">{ui.filterPrefix}{filterLabel(filter, language)}</span>
                   </div>
                 </div>
@@ -976,6 +1008,39 @@ export function App() {
                 />
                 <small>{ui.proxyUrlHelp}</small>
               </label>
+
+              <div className="fieldRow backgroundCheckRow">
+                <span>{ui.backgroundCheck}</span>
+                <div className="backgroundCheckControls">
+                  <label className="toggleRow">
+                    <input
+                      type="checkbox"
+                      checked={configDraft.backgroundCheckEnabled}
+                      onChange={(event) => setConfigDraft((current) => ({ ...current, backgroundCheckEnabled: event.target.checked }))}
+                    />
+                    <span>{configDraft.backgroundCheckEnabled ? ui.configReady : ui.configPublic}</span>
+                  </label>
+                  <div className="intervalRow">
+                    <label className="intervalField">
+                      <span>{ui.checkInterval}</span>
+                      <input
+                        type="number"
+                        min={1}
+                        value={configDraft.checkIntervalMinutes}
+                        onChange={(event) => {
+                          const value = Number.parseInt(event.target.value, 10);
+                          setConfigDraft((current) => ({
+                            ...current,
+                            checkIntervalMinutes: Number.isNaN(value) || value < 1 ? 1 : value
+                          }));
+                        }}
+                      />
+                      <span className="intervalUnit">{ui.checkIntervalUnit}</span>
+                    </label>
+                  </div>
+                </div>
+                <small>{ui.backgroundCheckHelp} {ui.checkIntervalHelp}</small>
+              </div>
             </div>
 
             <div className="settingsActions">
@@ -1199,85 +1264,96 @@ function Inspector({
             </TooltipButton>
           </div>
         </div>
-      ) : null}
-
-      <div className="inspectorActions" aria-label={ui.managedAppsTitle}>
-        <button
-          type="button"
-          className="ghostButton actionButton wide"
-          onClick={onOpenRelease}
-          disabled={!openReleaseAvailability.enabled}
-          aria-label={openReleaseAvailability.reason ?? ui.openRelease}
-        >
-          <ExternalLink size={16} />
-          <span>{ui.openRelease}</span>
-        </button>
-        {item.status !== "needsChoice" && item.installPathKind === "ManagedPath" ? (
-          <button
-            type="button"
-            className="ghostButton actionButton wide"
-            onClick={onOpenInstallPath}
-            aria-label={ui.openInstallLocation}
-          >
-            <FolderOpen size={16} />
-            <span>{ui.openInstallLocation}</span>
-          </button>
-        ) : null}
-        <button
-          type="button"
-          className="primaryButton actionButton wide"
-          onClick={onPrimaryAction}
-          disabled={!primaryActionAvailability.enabled}
-          aria-label={primaryActionAvailability.reason ?? item.actionLabel}
-        >
-          <Download size={16} />
-          <span>{item.actionLabel}</span>
-        </button>
-        {item.status === "needsChoice" || (item.status === "noRelease" && item.installPathKind === "Unknown") ? (
-          <button
-            type="button"
-            className="dangerButton actionButton wide"
-            onClick={onRemoveTracked}
-            disabled={!removeTrackedAvailability.enabled}
-            aria-label={removeTrackedAvailability.reason ?? ui.removeTracked}
-          >
-            <Trash2 size={16} />
-            <span>{ui.removeTracked}</span>
-          </button>
-          ) : item.uninstallSupported === false ? (
-          isWindowsPlatform() ? (
-            <TooltipButton
-              label={ui.openSystemUninstall}
-              onClick={() => void openSystemUninstallSettings()}
-              className="ghostButton actionButton wide"
+      ) : (
+        <div className="inspectorActions" aria-label={ui.managedAppsTitle}>
+          {/* 主动作独占第一组：安装 / 更新 / 打开 / 重试 */}
+          <div className="inspectorActionsGroup">
+            <button
+              type="button"
+              className="primaryButton actionButton wide"
+              onClick={onPrimaryAction}
+              disabled={!primaryActionAvailability.enabled}
+              aria-label={primaryActionAvailability.reason ?? item.actionLabel}
             >
-              <Trash2 size={16} />
-              <span>{ui.openSystemUninstall}</span>
-            </TooltipButton>
-          ) : (
+              <Download size={16} />
+              <span>{item.actionLabel}</span>
+            </button>
+          </div>
+
+          {/* 次要动作放第二组：打开 Release、打开安装目录 */}
+          <div className="inspectorActionsGroup">
             <button
               type="button"
               className="ghostButton actionButton wide"
-              disabled
-              aria-label={uninstallAvailability.reason ?? ui.model.useSystemUninstall}
+              onClick={onOpenRelease}
+              disabled={!openReleaseAvailability.enabled}
+              aria-label={openReleaseAvailability.reason ?? ui.openRelease}
             >
-              <Trash2 size={16} />
-              <span>{ui.model.useSystemUninstall}</span>
+              <ExternalLink size={16} />
+              <span>{ui.openRelease}</span>
             </button>
-          )
-        ) : (
-          <button
-            type="button"
-            className="ghostButton actionButton wide"
-            onClick={onUninstall}
-            disabled={!uninstallAvailability.enabled}
-            aria-label={uninstallAvailability.reason ?? ui.uninstallAbility}
-          >
-            <Trash2 size={16} />
-            <span>{ui.uninstallAbility}</span>
-          </button>
-        )}
-      </div>
+            {item.status !== "needsChoice" && item.installPathKind === "ManagedPath" ? (
+              <button
+                type="button"
+                className="ghostButton actionButton wide"
+                onClick={onOpenInstallPath}
+                aria-label={ui.openInstallLocation}
+              >
+                <FolderOpen size={16} />
+                <span>{ui.openInstallLocation}</span>
+              </button>
+            ) : null}
+          </div>
+
+          {/* 危险动作放最后：移除跟踪、卸载、打开系统卸载 */}
+          <div className="inspectorActionsGroup">
+            {item.status === "needsChoice" || (item.status === "noRelease" && item.installPathKind === "Unknown") ? (
+              <button
+                type="button"
+                className="dangerButton actionButton wide"
+                onClick={onRemoveTracked}
+                disabled={!removeTrackedAvailability.enabled}
+                aria-label={removeTrackedAvailability.reason ?? ui.removeTracked}
+              >
+                <Trash2 size={16} />
+                <span>{ui.removeTracked}</span>
+              </button>
+            ) : item.uninstallSupported === false ? (
+              isWindowsPlatform() ? (
+                <TooltipButton
+                  label={ui.openSystemUninstall}
+                  onClick={() => void openSystemUninstallSettings()}
+                  className="dangerButton actionButton wide"
+                >
+                  <Trash2 size={16} />
+                  <span>{ui.openSystemUninstall}</span>
+                </TooltipButton>
+              ) : (
+                <button
+                  type="button"
+                  className="ghostButton actionButton wide"
+                  disabled
+                  aria-label={uninstallAvailability.reason ?? ui.model.useSystemUninstall}
+                >
+                  <Trash2 size={16} />
+                  <span>{ui.model.useSystemUninstall}</span>
+                </button>
+              )
+            ) : (
+              <button
+                type="button"
+                className="dangerButton actionButton wide"
+                onClick={onUninstall}
+                disabled={!uninstallAvailability.enabled}
+                aria-label={uninstallAvailability.reason ?? ui.uninstallAbility}
+              >
+                <Trash2 size={16} />
+                <span>{ui.uninstallAbility}</span>
+              </button>
+            )}
+          </div>
+        </div>
+      )}
     </aside>
   );
 }
@@ -1534,7 +1610,9 @@ function configDraftKey(config: ConfigDraft) {
     githubToken: config.githubToken.trim(),
     proxyUrl: config.proxyUrl.trim(),
     installRoot: config.installRoot.trim(),
-    language: normalizeLanguage(config.language)
+    language: normalizeLanguage(config.language),
+    backgroundCheckEnabled: config.backgroundCheckEnabled,
+    checkIntervalMinutes: config.checkIntervalMinutes
   });
 }
 
@@ -1545,7 +1623,7 @@ function filterLabel(status: InboxFilter, language: Language) {
       return ui.all;
     case "updateAvailable":
       return ui.updateAvailable;
-    case "needsChoice":
+    case "actionRequired":
       return ui.needsChoice;
     case "failed":
       return ui.failed;
@@ -1560,7 +1638,7 @@ function FilterIcon({ status }: { status: InboxFilter }) {
       return <Layers3 size={15} />;
     case "updateAvailable":
       return <Download size={15} />;
-    case "needsChoice":
+    case "actionRequired":
       return <ShieldAlert size={15} />;
     case "failed":
       return <CircleAlert size={15} />;

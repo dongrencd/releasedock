@@ -24,10 +24,37 @@ pub struct Config {
     pub install_root: Option<PathBuf>,
     #[serde(default)]
     pub language: Option<String>,
+    /// 后台定时检查 GitHub Release 更新，默认开启
+    #[serde(default)]
+    pub background_check_enabled: Option<bool>,
+    /// 后台检查间隔（分钟），默认 30
+    #[serde(default)]
+    pub check_interval_minutes: Option<u32>,
+    /// 首次关闭窗口时是否已提示过驻留托盘
+    #[serde(default)]
+    pub tray_hint_shown: Option<bool>,
 }
 
 pub struct ConfigStore {
     path: PathBuf,
+}
+
+/// 后台检查默认间隔（分钟）
+pub const DEFAULT_CHECK_INTERVAL_MINUTES: u32 = 30;
+
+/// 判断后台检查是否启用（缺省视为开启）
+pub fn background_check_enabled(config: Option<&Config>) -> bool {
+    config
+        .and_then(|c| c.background_check_enabled)
+        .unwrap_or(true)
+}
+
+/// 获取后台检查间隔（分钟），缺省回退到 DEFAULT_CHECK_INTERVAL_MINUTES
+pub fn check_interval_minutes(config: Option<&Config>) -> u32 {
+    config
+        .and_then(|c| c.check_interval_minutes)
+        .unwrap_or(DEFAULT_CHECK_INTERVAL_MINUTES)
+        .max(1)
 }
 
 pub fn effective_install_root(config: Option<&Config>, fallback_root: Option<PathBuf>) -> PathBuf {
@@ -124,5 +151,38 @@ mod tests {
         let resolved = effective_install_root(None, None);
 
         assert_eq!(resolved, PathBuf::from("."));
+    }
+
+    #[test]
+    fn background_check_defaults_to_enabled_when_unset() {
+        assert!(background_check_enabled(None));
+        assert!(background_check_enabled(Some(&Config::default())));
+    }
+
+    #[test]
+    fn background_check_respects_explicit_disable() {
+        let config = Config {
+            background_check_enabled: Some(false),
+            ..Default::default()
+        };
+        assert!(!background_check_enabled(Some(&config)));
+    }
+
+    #[test]
+    fn check_interval_defaults_when_unset() {
+        assert_eq!(check_interval_minutes(None), DEFAULT_CHECK_INTERVAL_MINUTES);
+        assert_eq!(
+            check_interval_minutes(Some(&Config::default())),
+            DEFAULT_CHECK_INTERVAL_MINUTES
+        );
+    }
+
+    #[test]
+    fn check_interval_clamps_below_one() {
+        let config = Config {
+            check_interval_minutes: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(check_interval_minutes(Some(&config)), 1);
     }
 }

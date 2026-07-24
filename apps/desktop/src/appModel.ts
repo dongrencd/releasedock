@@ -37,7 +37,9 @@ export type BulkRemoveAvailability = {
   reason?: string;
 };
 
-export type InboxFilter = "all" | "updateAvailable" | "needsChoice" | "failed";
+// 公开筛选以用户任务语义命名，而不是直接映射内部状态名。
+// actionRequired 是聚合筛选：匹配 needsChoice 以及可移除的 noRelease 跟踪项。
+export type InboxFilter = "all" | "updateAvailable" | "actionRequired" | "failed";
 
 export type ReleaseNoteBlock =
   | { type: "heading"; level: 1 | 2 | 3; text: string }
@@ -85,9 +87,17 @@ export function inboxFilters(language: Language): Array<{ id: InboxFilter; label
   return [
     { id: "all", label: ui.all },
     { id: "updateAvailable", label: ui.updateAvailable },
-    { id: "needsChoice", label: ui.needsChoice },
+    { id: "actionRequired", label: ui.needsChoice },
     { id: "failed", label: ui.failed }
   ];
+}
+
+// 需处理：用户任务聚合，同时覆盖需要选资产的 needsChoice 状态
+// 以及可移除的 noRelease 跟踪项。
+// 用于公开筛选 actionRequired，以及顶部"需处理"统计。
+export function isActionRequired(app: ManagedApp): boolean {
+  return app.status === "needsChoice"
+    || (app.status === "noRelease" && app.installPathKind === "Unknown");
 }
 
 export function buildUpdateInbox(apps: ManagedApp[], language: Language): InboxItem[] {
@@ -455,7 +465,12 @@ export function getBulkRemoveAvailability(
 export function filterManagedApps(apps: ManagedApp[], filter: InboxFilter, query: string): ManagedApp[] {
   const needle = query.trim().toLowerCase();
   return apps.filter((app) => {
-    if (filter !== "all" && app.status !== filter) {
+    // actionRequired 是聚合筛选，不能直接用 status 比较
+    if (filter === "actionRequired") {
+      if (!isActionRequired(app)) {
+        return false;
+      }
+    } else if (filter !== "all" && app.status !== filter) {
       return false;
     }
 

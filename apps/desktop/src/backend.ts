@@ -20,11 +20,19 @@ export type DesktopConfig = {
   installRoot: string | null;
   effectiveInstallRoot: string | null;
   language: "en" | "zh-CN" | null;
+  backgroundCheckEnabled: boolean | null;
+  checkIntervalMinutes: number | null;
 };
 
 export type BulkRemoveResult = {
   apps: ManagedApp[];
   removedCount: number;
+};
+
+// 后台检查完成事件
+export type BackgroundCheckEvent = {
+  updateCount: number;
+  totalChecked: number;
 };
 
 export type DashboardItemEvent = {

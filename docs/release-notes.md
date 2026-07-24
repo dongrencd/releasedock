@@ -53,3 +53,15 @@ The note view should be larger than the metadata sections and scroll internally 
 Task progress lives in the bottom status bar. It should keep moving for indeterminate work, show a visible sliver at `0%`, and clear itself after success or failure so the strip does not get stuck on a stale state.
 Repositories without a published release should render as a neutral `No release` state in the GUI instead of surfacing a loading error.
 Dashboard refresh progress should update the list incrementally, but it should not replace install or uninstall task progress while those tasks are active.
+
+## Background Update Check
+
+The desktop app checks for new releases in the background while it runs in the system tray:
+
+- **Trigger**: closing the window hides it to the tray; a timer then re-checks repositories every N minutes (configurable, default 30).
+- **Notification**: when new updates are found, a system notification is shown. The tray tooltip updates to "ReleaseDock · N updates available".
+- **Top bar badge**: the main window also shows an "N updates available" pill in the top-right corner, so users who keep the window open still see the count at a glance.
+- **Tray menu**: right-click offers "Check updates" (triggers an immediate refresh), "Open window" (restores the hidden window), and "Quit" (exits the app).
+- **Settings**: the background check toggle and check interval are stored in the config and auto-saved like the other settings fields.
+
+This background loop reuses the same GitHub release data path as the manual "Check updates" button, so results stay consistent. It does not auto-install anything — it only surfaces new releases so the user can decide.

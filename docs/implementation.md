@@ -39,6 +39,7 @@ Core modules:
 - The install root is the local workspace base directory. Download caches go under `downloads/`, and managed installs go under `apps/<owner>-<repo>`. The settings page label "install root" refers to this base directory.
 - GUI filtering only applies to the local managed list. It does not search GitHub globally. Public repositories do not require a token, while private repositories and frequent refreshes should use one.
 - The installer supports `.tar.xz` archives. Windows `.exe` / `.msi` and Linux `.deb` / `.rpm` assets are marked as requiring user confirmation before installation.
+- **System tray + background check**: closing the main window hides it to the system tray instead of quitting the app. The tray icon context menu offers "Check updates", "Open window", and "Quit" entries. A background timer re-checks all tracked and installed repositories for new releases at a configurable interval (default 30 minutes). When new updates are found, a native system notification fires and the tray tooltip shows the pending update count. The settings page exposes a "background check" toggle and an interval field. The feature is enabled by default.
 
 ## Next Steps
 

@@ -13,6 +13,7 @@ import {
   parseReleaseNote,
   pruneSelection,
   inboxFilters,
+  isActionRequired,
   selectVisibleIds,
   toggleSelection
 } from "./appModel";
@@ -113,9 +114,119 @@ describe("buildUpdateInbox", () => {
     expect(inboxFilters(language).map((item) => item.id)).toEqual([
       "all",
       "updateAvailable",
-      "needsChoice",
+      "actionRequired",
       "failed"
     ]);
+  });
+
+  it("treats needsChoice and removable noRelease as action required", () => {
+    expect(isActionRequired({
+      id: "owner/choice",
+      name: "Choice",
+      currentVersion: "Not installed",
+      latestVersion: "v1.0.0",
+      status: "needsChoice",
+      source: "GitHub",
+      installPath: "/tmp/choice"
+    })).toBe(true);
+
+    expect(isActionRequired({
+      id: "owner/none",
+      name: "No Release",
+      currentVersion: "Not installed",
+      latestVersion: "No release",
+      status: "noRelease",
+      source: "GitHub",
+      installPath: "/tmp/none",
+      installPathKind: "Unknown"
+    })).toBe(true);
+
+    // 已安装但仓库无 release 的项不可移除，不算待处理
+    expect(isActionRequired({
+      id: "owner/installed-none",
+      name: "Installed No Release",
+      currentVersion: "v1.0.0",
+      latestVersion: "No release",
+      status: "noRelease",
+      source: "GitHub",
+      installPath: "/tmp/installed",
+      installPathKind: "ManagedPath"
+    })).toBe(false);
+
+    expect(isActionRequired({
+      id: "owner/current",
+      name: "Current",
+      currentVersion: "v1.0.0",
+      latestVersion: "v1.0.0",
+      status: "current",
+      source: "GitHub",
+      installPath: "/tmp/current"
+    })).toBe(false);
+
+    expect(isActionRequired({
+      id: "owner/failed",
+      name: "Failed",
+      currentVersion: "Unknown",
+      latestVersion: "Unknown",
+      status: "failed",
+      source: "GitHub",
+      installPath: "unknown"
+    })).toBe(false);
+  });
+
+  it("filters actionRequired as a composite of needsChoice and removable noRelease", () => {
+    const apps = [
+      {
+        id: "owner/choice",
+        name: "Choice",
+        currentVersion: "Not installed",
+        latestVersion: "v1.0.0",
+        status: "needsChoice",
+        source: "GitHub",
+        installPath: "/tmp/choice"
+      },
+      {
+        id: "owner/none",
+        name: "No Release",
+        currentVersion: "Not installed",
+        latestVersion: "No release",
+        status: "noRelease",
+        source: "GitHub",
+        installPath: "/tmp/none",
+        installPathKind: "Unknown"
+      },
+      {
+        id: "owner/installed-none",
+        name: "Installed No Release",
+        currentVersion: "v1.0.0",
+        latestVersion: "No release",
+        status: "noRelease",
+        source: "GitHub",
+        installPath: "/tmp/installed",
+        installPathKind: "ManagedPath"
+      },
+      {
+        id: "owner/current",
+        name: "Current",
+        currentVersion: "v1.0.0",
+        latestVersion: "v1.0.0",
+        status: "current",
+        source: "GitHub",
+        installPath: "/tmp/current"
+      },
+      {
+        id: "owner/update",
+        name: "Update",
+        currentVersion: "v1.0.0",
+        latestVersion: "v1.1.0",
+        status: "updateAvailable",
+        source: "GitHub",
+        installPath: "/tmp/update"
+      }
+    ] as const;
+
+    const filtered = filterManagedApps([...apps], "actionRequired", "");
+    expect(filtered.map((app) => app.id)).toEqual(["owner/choice", "owner/none"]);
   });
 
   it("filters only the managed app list and ignores release note body text", () => {

@@ -31,6 +31,8 @@ The Windows first screen is a compact workbench, not a welcome page. Keep the mo
 - Hover placement: icon button help text should open to the right by default and flip left near the right edge, so the tooltip does not cover the relevant panel.
 - Install locations: the detail panel should expose open-folder actions, and settings should expose open-root and restore-default actions.
 - System installers: Windows `.exe` / `.msi` and Linux `.deb` / `.rpm` files require explicit confirmation and must not be treated like one-click installs. Successful installs should clean up the temporary download cache copy.
+- System tray: closing the main window minimizes the app to the system tray instead of quitting. The tray menu provides "Check updates", "Open window", and "Quit" actions. Left-clicking the tray icon restores the window. The tray tooltip shows the pending update count ("ReleaseDock · 3 updates available") when there are new releases, or just "ReleaseDock" when everything is current.
+- Background check: a background timer re-checks all tracked and installed repositories for new releases at a configurable interval. The settings page exposes a toggle ("Background check") and interval field ("Check interval" in minutes). The feature is enabled by default with a 30-minute interval. When new updates are found, a native system notification informs the user, and the top bar shows an "N updates available" pill until the next manual refresh or dashboard update clears it.
 
 ## Visuals
 

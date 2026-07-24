@@ -12,6 +12,7 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "ReleaseDock",
         "width": 1280,
         "height": 820,

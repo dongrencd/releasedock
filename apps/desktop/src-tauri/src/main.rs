@@ -4,13 +4,13 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
-    sync::Arc,
+    sync::{Arc, LazyLock},
 };
 
 use anyhow::{Context, Result};
 use releasedock_core::{
     asset_matcher::{Architecture, AssetMatcher, OperatingSystem},
-    config::effective_install_root,
+    config::{background_check_enabled, check_interval_minutes, effective_install_root},
     config::{Config, ConfigStore, Language},
     installer::{install_from_plan, uninstall_repo as core_uninstall_repo, ProgressReporter, TaskProgress},
     install_plan::InstallPlan,
@@ -19,10 +19,14 @@ use releasedock_core::{
     repo::RepoRef,
 };
 use serde::{Deserialize, Serialize};
-use tauri::Emitter;
-use tokio::task::JoinSet;
+use tauri::{Emitter, Manager};
+use tauri_plugin_notification::NotificationExt;
+use tokio::sync::Mutex;
+use tokio::task::{JoinHandle, JoinSet};
 
+mod background_check;
 mod tracking;
+mod tray;
 
 use tracking::{TrackedRepo, TrackedRepoStore};
 
@@ -31,6 +35,9 @@ const TASK_PROGRESS_EVENT: &str = "task-progress";
 const DASHBOARD_ITEM_EVENT: &str = "dashboard-item-updated";
 const DASHBOARD_PROGRESS_EVENT: &str = "dashboard-progress";
 const DASHBOARD_CONCURRENCY: usize = 6;
+
+/// 持有当前后台检查任务句柄，支持保存设置后热重启
+static BACKGROUND_TASK: LazyLock<Mutex<Option<JoinHandle<()>>>> = LazyLock::new(|| Mutex::new(None));
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -109,6 +116,7 @@ async fn main() -> Result<()> {
     }
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             load_dashboard,
             load_config,
@@ -123,6 +131,57 @@ async fn main() -> Result<()> {
             open_path,
             open_system_uninstall_settings
         ])
+        // 系统托盘：创建图标、菜单
+        .setup(|app| {
+            // 读取语言配置，用于 tray 菜单 i18n
+            let lang = runtime_config()
+                .ok()
+                .and_then(|c| c.language)
+                .map(|l| match l.as_str() {
+                    "zh-CN" => Language::ZhCn,
+                    _ => Language::En,
+                })
+                .unwrap_or(Language::En);
+            tray::build_tray(app.handle(), lang)?;
+
+            // 启动后台定时检查（走 restart 路径以确保统一管理句柄）
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                restart_background_checker(app_handle).await;
+            });
+
+            Ok(())
+        })
+        // 关闭窗口时仅隐藏到托盘，不退出程序
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // 首次关闭时发系统通知提示已驻留托盘
+                let app = window.app_handle();
+                let app_clone = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Ok(store) = config_store() {
+                        if let Ok(config) = store.load() {
+                            if !config.tray_hint_shown.unwrap_or(false) {
+                                // 发提示通知
+                                let _ = app_clone
+                                    .notification()
+                                    .builder()
+                                    .title("ReleaseDock")
+                                    .body("ReleaseDock stays in the system tray. Click the tray icon to reopen.")
+                                    .show();
+                                // 标记已提示
+                                let mut updated = config;
+                                updated.tray_hint_shown = Some(true);
+                                let _ = store.save(&updated);
+                            }
+                        }
+                    }
+                });
+
+                let _ = window.hide();
+                api.prevent_close();
+            }
+        })
         .run(tauri::generate_context!())
         .expect("failed to run ReleaseDock desktop app");
 
@@ -155,10 +214,14 @@ async fn load_config() -> Result<DesktopConfig, String> {
 }
 
 #[tauri::command]
-async fn save_config(config: DesktopConfig) -> Result<DesktopConfig, String> {
+async fn save_config(app: tauri::AppHandle, config: DesktopConfig) -> Result<DesktopConfig, String> {
     let store = config_store().map_err(format_error)?;
     let runtime_config = Config::from(config.clone());
     store.save(&runtime_config).map_err(format_error)?;
+
+    // 保存后热重启后台检查任务
+    restart_background_checker(app).await;
+
     Ok(desktop_config_from_runtime(runtime_config))
 }
 
@@ -685,7 +748,7 @@ fn config_store() -> Result<ConfigStore> {
     ConfigStore::from_env_or_default()
 }
 
-fn runtime_config() -> Result<Config> {
+pub(crate) fn runtime_config() -> Result<Config> {
     config_store()?.load()
 }
 
@@ -709,6 +772,9 @@ struct DesktopConfig {
     install_root: Option<PathBuf>,
     effective_install_root: Option<PathBuf>,
     language: Option<String>,
+    background_check_enabled: Option<bool>,
+    check_interval_minutes: Option<u32>,
+    tray_hint_shown: Option<bool>,
 }
 
 impl From<DesktopConfig> for Config {
@@ -718,6 +784,9 @@ impl From<DesktopConfig> for Config {
             proxy_url: value.proxy_url,
             install_root: value.install_root,
             language: value.language,
+            background_check_enabled: value.background_check_enabled,
+            check_interval_minutes: value.check_interval_minutes,
+            tray_hint_shown: value.tray_hint_shown,
         }
     }
 }
@@ -730,6 +799,31 @@ fn desktop_config_from_runtime(value: Config) -> DesktopConfig {
         install_root: value.install_root,
         effective_install_root: Some(effective_install_root),
         language: value.language,
+        background_check_enabled: value.background_check_enabled,
+        check_interval_minutes: value.check_interval_minutes,
+        tray_hint_shown: value.tray_hint_shown,
+    }
+}
+
+/// 重启后台检查任务（abort 旧任务 → 读最新 config → 决定是否 spawn 新任务）
+async fn restart_background_checker(app: tauri::AppHandle) {
+    // abort 旧任务
+    {
+        let mut guard = BACKGROUND_TASK.lock().await;
+        if let Some(handle) = guard.take() {
+            handle.abort();
+        }
+    }
+
+    // 读最新 config 决定是否 spawn 新任务
+    let runtime_config = runtime_config().ok();
+    let bg_enabled = background_check_enabled(runtime_config.as_ref());
+    let interval = check_interval_minutes(runtime_config.as_ref()) as u64;
+
+    if bg_enabled && interval > 0 {
+        let handle = background_check::spawn_background_checker(app, interval);
+        let mut guard = BACKGROUND_TASK.lock().await;
+        *guard = Some(handle);
     }
 }
 
@@ -750,7 +844,7 @@ fn validate_github_url(url: &url::Url) -> Result<()> {
     }
 }
 
-fn tr_owned(language: Language, english: &'static str, chinese: &'static str) -> String {
+pub(crate) fn tr_owned(language: Language, english: &'static str, chinese: &'static str) -> String {
     match language {
         Language::En => english.to_string(),
         Language::ZhCn => chinese.to_string(),

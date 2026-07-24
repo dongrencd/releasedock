@@ -1,6 +1,6 @@
 export type Language = "en" | "zh-CN";
 
-export type InboxFilter = "all" | "updateAvailable" | "needsChoice" | "failed";
+export type InboxFilter = "all" | "updateAvailable" | "actionRequired" | "failed";
 
 type Copy = {
   appName: string;
@@ -73,6 +73,12 @@ type Copy = {
   hideToken: string;
   saveSettings: string;
   reloadSettings: string;
+  backgroundCheck: string;
+  backgroundCheckHelp: string;
+  checkInterval: string;
+  checkIntervalUnit: string;
+  checkIntervalHelp: string;
+  trayBadge: (count: number) => string;
   currentStatusLoading: string;
   currentStatusLoaded: (count: number) => string;
   currentStatusEmpty: string;
@@ -212,6 +218,12 @@ const copy: Record<Language, Copy> = {
     hideToken: "Hide token",
     saveSettings: "Save settings",
     reloadSettings: "Reload settings",
+    backgroundCheck: "Background check",
+    backgroundCheckHelp: "Periodically check GitHub for new releases while the app runs in the tray.",
+    checkInterval: "Check interval",
+    checkIntervalUnit: "minutes",
+    checkIntervalHelp: "Time between background update checks. Default is 30 minutes.",
+    trayBadge: (count) => `${count} updates available`,
     currentStatusLoading: "Loading GitHub Release data",
     currentStatusLoaded: (count) => `Loaded ${count} apps`,
     currentStatusEmpty: "No managed apps yet",
@@ -351,6 +363,12 @@ const copy: Record<Language, Copy> = {
     hideToken: "隐藏 token",
     saveSettings: "保存设置",
     reloadSettings: "重新载入",
+    backgroundCheck: "后台检查",
+    backgroundCheckHelp: "应用驻留托盘时定时检查 GitHub 是否有新 release。",
+    checkInterval: "检查间隔",
+    checkIntervalUnit: "分钟",
+    checkIntervalHelp: "后台检查更新的时间间隔，默认 30 分钟。",
+    trayBadge: (count) => `${count} 个有更新`,
     currentStatusLoading: "正在加载 GitHub Release 数据",
     currentStatusLoaded: (count) => `已加载 ${count} 个软件`,
     currentStatusEmpty: "当前没有管理的软件",

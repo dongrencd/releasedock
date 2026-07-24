@@ -1329,6 +1329,19 @@ h2 {
   margin-top: 12px;
 }
 
+/* 按动作优先级分组：主动作 / 次要 / 危险，组间用分隔线区分 */
+.inspectorActionsGroup {
+  display: grid;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.inspectorActionsGroup:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
 .inspectorActions .actionButton,
 .previewActions .actionButton {
   min-height: 38px;
@@ -1439,4 +1452,111 @@ h2 {
     position: static;
     max-height: none;
   }
+}
+
+/* 后台检查设置区 */
+.backgroundCheckRow {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+
+.backgroundCheckRow > span:first-child {
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.backgroundCheckControls {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+}
+
+@media (max-width: 1180px) {
+  .backgroundCheckControls {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.toggleRow {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: max-content;
+}
+
+.toggleRow > span {
+  color: #475569;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.toggleRow input[type="checkbox"] {
+  appearance: none;
+  width: 42px;
+  height: 24px;
+  border-radius: 999px;
+  background: #d8dee8;
+  cursor: pointer;
+  position: relative;
+  outline: none;
+  transition: background 120ms ease-in-out;
+}
+
+.toggleRow input[type="checkbox"]::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: #ffffff;
+  transition: transform 120ms ease-in-out;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.1);
+}
+
+.toggleRow input[type="checkbox"]:checked {
+  background: #0f766e;
+}
+
+.toggleRow input[type="checkbox"]:checked::before {
+  transform: translateX(18px);
+}
+
+.intervalRow {
+  display: flex;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.intervalField {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.intervalField > span:first-child {
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.intervalField input {
+  width: 72px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  color: #18212f;
+  background: #f8fafc;
+  text-align: center;
+}
+
+.intervalUnit {
+  color: #64748b;
+  font-size: 12px;
+  white-space: nowrap;
 }
