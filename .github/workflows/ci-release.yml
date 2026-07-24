@@ -24,22 +24,22 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Test core and CLI
-        run: cargo test -p ghrm-core -p ghrm-cli
+        run: cargo test -p releasedock-core -p releasedock-cli
 
       - name: Build Linux CLI
-        run: cargo build -p ghrm-cli --release
+        run: cargo build -p releasedock-cli --release
 
       - name: Package Linux CLI
         run: |
           mkdir -p artifacts
-          cp target/release/ghrm artifacts/ghrm-linux-x64
-          chmod +x artifacts/ghrm-linux-x64
+          cp target/release/releasedock artifacts/releasedock-linux-x64
+          chmod +x artifacts/releasedock-linux-x64
 
       - name: Upload Linux CLI
         uses: actions/upload-artifact@v4
         with:
-          name: ghrm-linux-x64
-          path: artifacts/ghrm-linux-x64
+          name: releasedock-linux-x64
+          path: artifacts/releasedock-linux-x64
 
   windows-desktop:
     name: Windows Desktop
@@ -76,9 +76,9 @@ jobs:
       - name: Upload Windows desktop bundle
         uses: actions/upload-artifact@v4
         with:
-          name: ghrm-windows-x64-desktop
+          name: releasedock-windows-x64-desktop
           path: |
-            apps/desktop/src-tauri/target/release/ghrm.exe
+            apps/desktop/src-tauri/target/release/releasedock.exe
             apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
             apps/desktop/src-tauri/target/release/bundle/msi/*.msi
 
@@ -93,13 +93,13 @@ jobs:
       - name: Download Linux CLI
         uses: actions/download-artifact@v4
         with:
-          name: ghrm-linux-x64
+          name: releasedock-linux-x64
           path: release-assets
 
       - name: Download Windows desktop bundle
         uses: actions/download-artifact@v4
         with:
-          name: ghrm-windows-x64-desktop
+          name: releasedock-windows-x64-desktop
           path: release-assets
 
       - name: Create GitHub Release
