@@ -4,7 +4,8 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use reqwest::{
     Proxy,
-    header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT},
+    header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, RETRY_AFTER, USER_AGENT},
+    StatusCode,
 };
 use serde::{Deserialize, Serialize};
 
@@ -117,10 +118,8 @@ impl ReleaseClient {
             .context("failed to request latest GitHub release")?;
 
         if !response.status().is_success() {
-            anyhow::bail!(
-                "GitHub latest release request failed with {}",
-                response.status()
-            );
+            let error = github_response_error("GitHub latest release", response).await;
+            anyhow::bail!(error);
         }
 
         response
@@ -138,7 +137,8 @@ impl ReleaseClient {
             .context("failed to request GitHub asset")?;
 
         if !response.status().is_success() {
-            anyhow::bail!("GitHub asset request failed with {}", response.status());
+            let error = github_response_error("GitHub asset", response).await;
+            anyhow::bail!(error);
         }
 
         response
@@ -160,7 +160,8 @@ impl ReleaseClient {
             .context("failed to request GitHub asset")?;
 
         if !response.status().is_success() {
-            anyhow::bail!("GitHub asset request failed with {}", response.status());
+            let error = github_response_error("GitHub asset", response).await;
+            anyhow::bail!(error);
         }
 
         if let Some(parent) = path.parent() {
@@ -188,5 +189,148 @@ impl ReleaseClient {
         file.flush()
             .with_context(|| format!("failed to flush download {}", path.display()))?;
         Ok(())
+    }
+}
+
+async fn github_response_error(resource: &str, response: reqwest::Response) -> String {
+    let status = response.status();
+    let headers = response.headers().clone();
+    let body = response.text().await.unwrap_or_default();
+    format_github_response_error(resource, status, &headers, &body)
+}
+
+fn format_github_response_error(
+    resource: &str,
+    status: StatusCode,
+    headers: &HeaderMap,
+    body: &str,
+) -> String {
+    let mut message = format!("{resource} request failed with {status}");
+    if let Some(summary) = summarize_github_body(body) {
+        message.push_str(": ");
+        message.push_str(&summary);
+    }
+
+    let mut extras = Vec::new();
+    if let Some(request_id) = header_value(headers, "x-github-request-id") {
+        extras.push(format!("request id {request_id}"));
+    }
+    if let Some(remaining) = header_value(headers, "x-ratelimit-remaining") {
+        extras.push(format!("rate limit remaining {remaining}"));
+    }
+    if let Some(reset) = header_value(headers, "x-ratelimit-reset") {
+        extras.push(format!("rate limit reset {reset}"));
+    }
+    if let Some(retry_after) = headers.get(RETRY_AFTER).and_then(|value| value.to_str().ok()) {
+        extras.push(format!("retry after {retry_after}"));
+    }
+
+    if !extras.is_empty() {
+        message.push_str(" (");
+        message.push_str(&extras.join(", "));
+        message.push(')');
+    }
+
+    message
+}
+
+fn summarize_github_body(body: &str) -> Option<String> {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        let mut parts = Vec::new();
+        if let Some(message) = value.get("message").and_then(|value| value.as_str()) {
+            let message = message.trim();
+            if !message.is_empty() {
+                parts.push(message.to_string());
+            }
+        }
+        if let Some(documentation_url) = value.get("documentation_url").and_then(|value| value.as_str()) {
+            let documentation_url = documentation_url.trim();
+            if !documentation_url.is_empty() {
+                parts.push(documentation_url.to_string());
+            }
+        }
+        if !parts.is_empty() {
+            return Some(parts.join(" | "));
+        }
+    }
+
+    Some(trimmed.lines().map(str::trim).filter(|line| !line.is_empty()).collect::<Vec<_>>().join(" "))
+        .filter(|text| !text.is_empty())
+        .map(|text| shorten(&text, 240))
+}
+
+fn shorten(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+
+    let mut shortened = String::new();
+    for (index, ch) in text.chars().enumerate() {
+        if index + 1 >= limit {
+            break;
+        }
+        shortened.push(ch);
+    }
+    shortened.push_str("...");
+    shortened
+}
+
+fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+        .filter(|value| !value.trim().is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_github_response_error;
+    use reqwest::{
+        StatusCode,
+        header::{HeaderMap, HeaderValue},
+    };
+
+    #[test]
+    fn formats_github_error_with_body_and_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-github-request-id", HeaderValue::from_static("abc123"));
+        headers.insert("x-ratelimit-remaining", HeaderValue::from_static("0"));
+        headers.insert("x-ratelimit-reset", HeaderValue::from_static("1234567890"));
+        headers.insert("retry-after", HeaderValue::from_static("60"));
+
+        let message = format_github_response_error(
+            "GitHub latest release",
+            StatusCode::FORBIDDEN,
+            &headers,
+            r#"{"message":"Request forbidden by administrative rules.","documentation_url":"https://docs.github.com/rest/releases/releases#get-the-latest-release"}"#,
+        );
+
+        assert!(message.contains("GitHub latest release request failed with 403 Forbidden"));
+        assert!(message.contains("Request forbidden by administrative rules."));
+        assert!(message.contains("https://docs.github.com/rest/releases/releases#get-the-latest-release"));
+        assert!(message.contains("request id abc123"));
+        assert!(message.contains("rate limit remaining 0"));
+        assert!(message.contains("rate limit reset 1234567890"));
+        assert!(message.contains("retry after 60"));
+    }
+
+    #[test]
+    fn shortens_plain_text_body() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-github-request-id", HeaderValue::from_static("abc123"));
+
+        let body = "line one\n\nline two ".repeat(40);
+        let message = format_github_response_error("GitHub asset", StatusCode::BAD_GATEWAY, &headers, &body);
+
+        assert!(message.starts_with("GitHub asset request failed with 502 Bad Gateway"));
+        assert!(message.contains("line one"));
+        assert!(message.contains("request id abc123"));
+        assert!(message.len() < 600);
     }
 }

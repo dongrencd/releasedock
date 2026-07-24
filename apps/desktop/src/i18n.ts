@@ -7,7 +7,6 @@ type Copy = {
   appSubtitle: string;
   navUpdates: string;
   navSettings: string;
-  currentTracking: string;
   updatesEyebrow: string;
   settingsEyebrow: string;
   updatesTitle: string;
@@ -44,11 +43,7 @@ type Copy = {
   noAssetAvailable: string;
   installerFile: string;
   installPath: string;
-  installTypeTitle: string;
-  recordType: string;
   uninstallAbility: string;
-  autoUninstall: string;
-  source: string;
   installPreview: string;
   installPreviewConfirmation: string;
   cancel: string;
@@ -71,6 +66,8 @@ type Copy = {
   language: string;
   languageEnglish: string;
   languageChinese: string;
+  showToken: string;
+  hideToken: string;
   saveSettings: string;
   reloadSettings: string;
   currentStatusLoading: string;
@@ -145,7 +142,6 @@ const copy: Record<Language, Copy> = {
     appSubtitle: "Release manager",
     navUpdates: "Updates",
     navSettings: "Settings",
-    currentTracking: "Current",
     updatesEyebrow: "Updates",
     settingsEyebrow: "Settings",
     updatesTitle: "Managed apps",
@@ -182,11 +178,7 @@ const copy: Record<Language, Copy> = {
     noAssetAvailable: "No asset available",
     installerFile: "Installer file",
     installPath: "Install path",
-    installTypeTitle: "Install type",
-    recordType: "Record type",
     uninstallAbility: "Uninstall",
-    autoUninstall: "Auto uninstall",
-    source: "Source",
     installPreview: "Install preview",
     installPreviewConfirmation: "This installer needs confirmation before it runs.",
     cancel: "Cancel",
@@ -209,6 +201,8 @@ const copy: Record<Language, Copy> = {
     language: "Language",
     languageEnglish: "English",
     languageChinese: "简体中文",
+    showToken: "Show token",
+    hideToken: "Hide token",
     saveSettings: "Save settings",
     reloadSettings: "Reload settings",
     currentStatusLoading: "Loading GitHub Release data",
@@ -283,7 +277,6 @@ const copy: Record<Language, Copy> = {
     appSubtitle: "Release 管理台",
     navUpdates: "更新管理",
     navSettings: "设置",
-    currentTracking: "当前",
     updatesEyebrow: "更新管理",
     settingsEyebrow: "设置",
     updatesTitle: "已管理软件",
@@ -320,11 +313,7 @@ const copy: Record<Language, Copy> = {
     noAssetAvailable: "暂无资产文件",
     installerFile: "安装包保存位置",
     installPath: "安装路径",
-    installTypeTitle: "安装类型",
-    recordType: "记录类型",
     uninstallAbility: "卸载能力",
-    autoUninstall: "自动卸载",
-    source: "来源",
     installPreview: "安装预览",
     installPreviewConfirmation: "这个安装包需要在系统权限确认后继续执行。",
     cancel: "取消",
@@ -347,6 +336,8 @@ const copy: Record<Language, Copy> = {
     language: "界面语言",
     languageEnglish: "English",
     languageChinese: "简体中文",
+    showToken: "显示 token",
+    hideToken: "隐藏 token",
     saveSettings: "保存设置",
     reloadSettings: "重新载入",
     currentStatusLoading: "正在加载 GitHub Release 数据",

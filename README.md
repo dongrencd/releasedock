@@ -9,7 +9,7 @@ The project is already usable in its first release:
 - Rust core: repository parsing, release data models, release notes, asset matching, install plans, manifests, and runtime configuration.
 - CLI: `install` can use a live GitHub latest release or fixtures, `--json` prints the install plan only, `--yes` skips interactive confirmation, `config` manages the GitHub token, proxy, and install root, `check` compares installed apps with the latest release, `list` reads the manifest, and `update` / `uninstall` use the real execution path.
 - Desktop GUI: Tauri 2 + React dashboard with real manifest loading, GitHub release refresh, release note viewing, install preview and confirmation, install execution, uninstall and tracking removal, visible install progress, install-location shortcuts, and a settings page for token, proxy, language, and install root. The default UI language is English.
-- The desktop app seeds `dongrencd/releasedock` on first launch so the current project is visible immediately.
+- The sidebar footer shows the product name and subtitle; it does not act as a repository shortcut.
 - Public repositories do not require a token. Private repositories and frequent API calls should use one.
 - The install root stores downloaded installers in `downloads/` and managed software in `apps/`. Windows `.exe` / `.msi` installers are tracked as system installers, so the file is kept for reference while the actual install location is owned by the installer itself.
 
@@ -50,7 +50,7 @@ bash scripts/linux/build-cli.sh
 bash scripts/linux/build-desktop.sh
 ```
 
-`build-desktop.sh` builds the desktop executable at `apps/desktop/src-tauri/target/release/releasedock` by default. Pass `--bundles` only when you want to try packaging.
+`build-desktop.sh` removes stale desktop outputs before building and then writes the desktop executable to `apps/desktop/src-tauri/target/release/releasedock` by default. Pass `--bundles` only when you want to try packaging.
 
 ### GitHub Actions artifacts
 

@@ -12,7 +12,7 @@ bash scripts/linux/build-cli.sh
 bash scripts/linux/build-desktop.sh
 ```
 
-The desktop script builds only the desktop executable at `apps/desktop/src-tauri/target/release/releasedock` by default so local development does not get stuck in the AppImage packaging toolchain.
+The desktop script removes stale desktop outputs first and then builds only the desktop executable at `apps/desktop/src-tauri/target/release/releasedock` by default so local development does not get stuck in the AppImage packaging toolchain.
 If you want to try desktop packaging, pass `--bundles`, for example:
 
 ```bash

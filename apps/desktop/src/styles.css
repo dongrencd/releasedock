@@ -61,19 +61,6 @@ input {
   line-height: 1.35;
 }
 
-.sourceTileCopy {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-}
-
-.sourceTileCopy strong {
-  color: #ffffff;
-  font-size: 13px;
-  line-height: 1.35;
-  word-break: break-word;
-}
-
 .brand {
   display: flex;
   align-items: center;
@@ -92,8 +79,7 @@ input {
   font-weight: 700;
 }
 
-.brandButton,
-.sourceButton {
+.brandButton {
   width: 100%;
   border: 0;
   padding: 0;
@@ -104,20 +90,44 @@ input {
   min-height: 58px;
 }
 
-.sourceButton {
+.sidebarFooter {
   display: grid;
-  justify-items: start;
-  gap: 10px;
-  min-height: 92px;
+  gap: 4px;
   margin-top: auto;
-  padding: 12px 14px;
-  text-align: left;
-  align-content: start;
-  margin-top: auto;
-  border: 1px solid #2f5f5b;
-  border-radius: 8px;
+  padding: 12px 14px 2px;
   color: #d9e6e4;
-  background: #173f3d;
+}
+
+.sidebarFooter span:first-child {
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.sidebarFooter span:last-child {
+  color: #b8cdca;
+  font-size: 12px;
+}
+
+.fieldInputRow {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.fieldInputRow input {
+  flex: 1 1 auto;
+}
+
+.tokenToggle {
+  flex: 0 0 42px;
+  width: 42px;
+  min-height: 40px;
+  padding: 0;
+}
+
+.tokenToggle svg {
+  flex: 0 0 auto;
 }
 
 .navList {
@@ -532,6 +542,8 @@ input {
   border-radius: 8px;
   color: #991b1b;
   background: #fef2f2;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .inboxPanel,
@@ -993,20 +1005,75 @@ h2 {
 .releaseNotePreview {
   margin: 0;
   overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  padding: 12px;
+  padding: 14px 14px 12px;
   border: 1px solid #d8dee8;
   border-radius: 8px;
   color: #243044;
   background: #f8fafc;
-  font-family: "Cascadia Mono", "Consolas", monospace;
-  font-size: 12px;
-  line-height: 1.55;
+  font-size: 13px;
+  line-height: 1.58;
 }
 
 .releaseNotePreview {
-  max-height: 160px;
+  min-height: 280px;
+  max-height: 48vh;
+}
+
+.releaseNotePreview.empty {
+  display: grid;
+  align-content: center;
+  color: #64748b;
+}
+
+.releaseNotePreview .noteHeading {
+  margin: 0 0 10px;
+  color: #0f172a;
+  line-height: 1.25;
+}
+
+.releaseNotePreview .noteHeading.level1 {
+  font-size: 20px;
+}
+
+.releaseNotePreview .noteHeading.level2 {
+  font-size: 17px;
+}
+
+.releaseNotePreview .noteHeading.level3 {
+  font-size: 15px;
+}
+
+.releaseNotePreview .noteParagraph {
+  margin: 0 0 10px;
+  color: #243044;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.releaseNotePreview .noteList {
+  margin: 0 0 10px;
+  padding-left: 20px;
+}
+
+.releaseNotePreview .noteList li {
+  margin-bottom: 6px;
+}
+
+.releaseNotePreview .noteCode {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  overflow: auto;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.releaseNotePreview .noteCode code {
+  font: inherit;
+  white-space: pre;
 }
 
 .installPreview {
@@ -1077,23 +1144,27 @@ h2 {
 
 .inspectorActions {
   display: grid;
-  gap: 10px;
+  gap: 12px;
   margin-top: 12px;
 }
 
 .inspectorActions .actionButton,
 .previewActions .actionButton {
-  min-height: 36px;
+  min-height: 38px;
 }
 
 .inspectorActions .actionButton {
   justify-content: center;
 }
 
+.inspectorActions .actionButton svg {
+  width: 16px;
+  height: 16px;
+}
+
 .blockTitle,
 .sectionGlyph,
-.topbarCopy,
-.sourceButton {
+.topbarCopy {
   position: relative;
 }
 

@@ -600,11 +600,22 @@ fn doctor() -> Result<()> {
     println!("releasedock doctor: core CLI is available");
     println!("config path: {}", store.path().display());
     println!(
+        "github token source: {}",
+        config_source_label(config.github_token.as_deref(), "GITHUB_TOKEN")
+    );
+    println!(
+        "proxy source: {}",
+        config_source_label(config.proxy_url.as_deref(), "HTTPS_PROXY")
+    );
+    println!(
         "github token: {}",
         if config
             .github_token
             .as_deref()
             .is_some_and(|value| !value.is_empty())
+            || std::env::var("GITHUB_TOKEN")
+                .ok()
+                .is_some_and(|value| !value.trim().is_empty())
         {
             "已配置"
         } else {
@@ -617,6 +628,9 @@ fn doctor() -> Result<()> {
             .proxy_url
             .as_deref()
             .is_some_and(|value| !value.is_empty())
+            || std::env::var("HTTPS_PROXY")
+                .ok()
+                .is_some_and(|value| !value.trim().is_empty())
         {
             "已配置"
         } else {
@@ -633,6 +647,21 @@ fn doctor() -> Result<()> {
     );
 
     Ok(())
+}
+
+fn config_source_label(config_value: Option<&str>, env_name: &str) -> String {
+    if config_value.is_some_and(|value| !value.trim().is_empty()) {
+        return "config".to_string();
+    }
+
+    if std::env::var(env_name)
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return format!("env {env_name}");
+    }
+
+    "none".to_string()
 }
 
 fn config_store() -> Result<ConfigStore> {

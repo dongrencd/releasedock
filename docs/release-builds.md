@@ -54,7 +54,7 @@ npm run build
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
-The local desktop script builds only `apps/desktop/src-tauri/target/release/releasedock` by default and does not enter the AppImage bundling path.
+The local desktop script removes stale desktop outputs first and then builds only `apps/desktop/src-tauri/target/release/releasedock` by default. It does not enter the AppImage bundling path.
 If you want to exercise local packaging, pass `--bundles deb,rpm` explicitly. AppImage is still better handled in Actions or in an environment with the full packaging toolchain.
 
 ## Notes

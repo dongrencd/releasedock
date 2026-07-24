@@ -2,7 +2,7 @@
 
 ## Goal
 
-Before updating software from a GitHub Release, the user should be able to see what changed in that release. The first version shows the raw GitHub Release `body` without AI summarization, rewriting, or translation.
+Before updating software from a GitHub Release, the user should be able to see what changed in that release. The first version keeps the original release note content, but the GUI renders the common Markdown structure so headings, paragraphs, lists, and code blocks stay readable.
 
 ## Data Source
 
@@ -39,11 +39,11 @@ When the user selects an app in the update manager, the right-hand inspector sho
 - release title
 - current version and latest version
 - publish time
-- raw release note text
-- install preview with the selected asset, install type, and confirmation prompt
+- rendered release note content
+- install preview with the selected asset and confirmation prompt
 - asset file
 - install path or installer file, depending on install type
 - open release page action
 - copy release note action
 
-Long release notes must scroll inside the inspector and must not break the layout.
+The note view should be larger than the metadata sections and scroll internally when content is long. Headings should stand out from body text, and code blocks should remain readable inside the inspector.

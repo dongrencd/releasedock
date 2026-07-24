@@ -645,7 +645,12 @@ fn read_fixture_release(path: &PathBuf) -> Result<Release> {
 }
 
 fn format_error(error: anyhow::Error) -> String {
-    error.to_string()
+    error
+        .chain()
+        .map(|cause| cause.to_string().replace('\n', " ").trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(": ")
 }
 
 #[cfg(test)]

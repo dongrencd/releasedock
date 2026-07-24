@@ -10,6 +10,8 @@ import {
   FolderOpen,
   Layers3,
   Plus,
+  Eye,
+  EyeOff,
   RefreshCw,
   RotateCcw,
   Search,
@@ -29,7 +31,6 @@ import {
   removeTrackedRepo,
   saveConfig,
   uninstallRepo,
-  DEFAULT_TRACKED_REPO_ID,
   openSystemUninstallSettings
 } from "./backend";
 import {
@@ -88,6 +89,7 @@ export function App() {
     installRoot: "",
     language: "en"
   });
+  const [showGithubToken, setShowGithubToken] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
   const [taskStatus, setTaskStatus] = useState("Loading GitHub Release data");
   const [error, setError] = useState<string | null>(null);
@@ -471,7 +473,7 @@ export function App() {
       <aside className="sidebar" aria-label={ui.navUpdates}>
         <div className="brandBlock">
           <button className="brand brandButton" type="button" aria-label={ui.appName}>
-            <div className="brandMark">GR</div>
+            <div className="brandMark">RD</div>
           </button>
           <div className="brandCopy">
             <strong>{ui.appName}</strong>
@@ -494,13 +496,10 @@ export function App() {
           />
         </nav>
 
-        <button className="sourceTile sourceButton" type="button" aria-label={DEFAULT_TRACKED_REPO_ID} title={DEFAULT_TRACKED_REPO_ID}>
-          <span className="sourceTileCopy">
-            <span className="sidebarLabel">{ui.currentTracking}</span>
-            <strong>{DEFAULT_TRACKED_REPO_ID}</strong>
-          </span>
-          <ExternalLink size={18} />
-        </button>
+        <div className="sidebarFooter" aria-label={`${ui.appName} ${ui.appSubtitle}`}>
+          <span>{ui.appName}</span>
+          <span>{ui.appSubtitle}</span>
+        </div>
       </aside>
 
       <main className="workspace">
@@ -757,12 +756,22 @@ export function App() {
 
               <label className="fieldRow">
                 <span>{ui.githubToken}</span>
-                <input
-                  value={configDraft.githubToken}
-                  onChange={(event) => setConfigDraft((current) => ({ ...current, githubToken: event.target.value }))}
-                  placeholder="token"
-                  autoComplete="off"
-                />
+                <div className="fieldInputRow">
+                  <input
+                    type={showGithubToken ? "text" : "password"}
+                    value={configDraft.githubToken}
+                    onChange={(event) => setConfigDraft((current) => ({ ...current, githubToken: event.target.value }))}
+                    placeholder="token"
+                    autoComplete="off"
+                  />
+                  <TooltipButton
+                    label={showGithubToken ? ui.hideToken : ui.showToken}
+                    onClick={() => setShowGithubToken((current) => !current)}
+                    className="ghostButton tokenToggle"
+                  >
+                    {showGithubToken ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </TooltipButton>
+                </div>
                 <small>{ui.githubTokenHelp}</small>
               </label>
 
@@ -907,7 +916,6 @@ function Inspector({
   const uninstallAvailability = getUninstallAvailability(item, busy, language);
   const removeTrackedAvailability = getRemoveTrackedAvailability(item, busy, language);
   const ui = createUiText(language);
-  const canOpenSystemUninstall = item?.installPathKind === "SystemInstaller";
 
   if (!item) {
     return (
@@ -1001,9 +1009,7 @@ function Inspector({
             <span>{ui.copy}</span>
           </TooltipButton>
         </div>
-        <pre className="releaseNotePreview">
-          {item.releaseNote?.trim() || ui.notes.noReleaseNote}
-        </pre>
+        <ReleaseNoteView note={item.releaseNote?.trim() || ""} emptyText={ui.notes.noReleaseNote} />
       </div>
 
       <dl className="detailList">
@@ -1014,22 +1020,6 @@ function Inspector({
         <div>
           <dt>{item.installPathKind === "SystemInstaller" ? ui.installerFile : ui.installPath}</dt>
           <dd className="mono wrapText">{item.installPath}</dd>
-        </div>
-        <div>
-          <dt>{ui.installTypeTitle}</dt>
-          <dd>{installTypeLabel(item.installType ?? "Unknown", language)}</dd>
-        </div>
-        <div>
-          <dt>{ui.recordType}</dt>
-          <dd>{installPathKindLabel(item.installPathKind ?? "Unknown", language)}</dd>
-        </div>
-        <div>
-          <dt>{ui.uninstallAbility}</dt>
-          <dd>{item.uninstallSupported === false ? ui.model.useSystemUninstall : ui.autoUninstall}</dd>
-        </div>
-        <div>
-          <dt>{ui.source}</dt>
-          <dd>{item.source}</dd>
         </div>
       </dl>
 
@@ -1113,8 +1103,8 @@ function Inspector({
             <Trash2 size={16} />
             <span>{ui.removeTracked}</span>
           </button>
-        ) : item.uninstallSupported === false ? (
-          canOpenSystemUninstall && isWindowsPlatform() ? (
+          ) : item.uninstallSupported === false ? (
+          isWindowsPlatform() ? (
             <TooltipButton
               label={ui.openSystemUninstall}
               onClick={() => void openSystemUninstallSettings()}
@@ -1149,6 +1139,127 @@ function Inspector({
       </div>
     </aside>
   );
+}
+
+function ReleaseNoteView({ note, emptyText }: { note: string; emptyText: string }) {
+  if (!note) {
+    return <div className="releaseNotePreview empty">{emptyText}</div>;
+  }
+
+  const blocks = parseReleaseNote(note);
+
+  return (
+    <div className="releaseNotePreview">
+      {blocks.map((block, index) => {
+        if (block.type === "heading") {
+          const Tag = `h${block.level}` as "h1" | "h2" | "h3";
+          return (
+            <Tag key={`${block.type}-${index}`} className={`noteHeading level${block.level}`}>
+              {block.text}
+            </Tag>
+          );
+        }
+
+        if (block.type === "list") {
+          return (
+            <ul key={`${block.type}-${index}`} className="noteList">
+              {block.items.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          );
+        }
+
+        if (block.type === "code") {
+          return (
+            <pre key={`${block.type}-${index}`} className="noteCode">
+              <code>{block.text}</code>
+            </pre>
+          );
+        }
+
+        return (
+          <p key={`${block.type}-${index}`} className="noteParagraph">
+            {block.text}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
+type ReleaseNoteBlock =
+  | { type: "heading"; level: 1 | 2 | 3; text: string }
+  | { type: "paragraph"; text: string }
+  | { type: "list"; items: string[] }
+  | { type: "code"; text: string };
+
+function parseReleaseNote(note: string): ReleaseNoteBlock[] {
+  const lines = note.replace(/\r\n/g, "\n").split("\n");
+  const blocks: ReleaseNoteBlock[] = [];
+  let index = 0;
+
+  const pushParagraph = (buffer: string[]) => {
+    const text = buffer.join(" ").trim();
+    if (text) {
+      blocks.push({ type: "paragraph", text });
+    }
+    buffer.length = 0;
+  };
+
+  while (index < lines.length) {
+    const line = lines[index];
+
+    if (!line.trim()) {
+      index += 1;
+      continue;
+    }
+
+    const headingMatch = /^(#{1,3})\s+(.*)$/.exec(line);
+    if (headingMatch) {
+      blocks.push({
+        type: "heading",
+        level: headingMatch[1].length as 1 | 2 | 3,
+        text: headingMatch[2].trim()
+      });
+      index += 1;
+      continue;
+    }
+
+    if (/^```/.test(line)) {
+      const codeLines: string[] = [];
+      index += 1;
+      while (index < lines.length && !/^```/.test(lines[index])) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+      if (index < lines.length) {
+        index += 1;
+      }
+      blocks.push({ type: "code", text: codeLines.join("\n") });
+      continue;
+    }
+
+    if (/^(\s*[-*+]\s+)/.test(line)) {
+      const items: string[] = [];
+      while (index < lines.length && /^(\s*[-*+]\s+)/.test(lines[index])) {
+        items.push(lines[index].replace(/^(\s*[-*+]\s+)/, "").trim());
+        index += 1;
+      }
+      blocks.push({ type: "list", items });
+      continue;
+    }
+
+    const paragraphLines = [line.trim()];
+    index += 1;
+    while (index < lines.length && lines[index].trim() && !/^(#{1,3})\s+/.test(lines[index]) && !/^```/.test(lines[index]) && !/^(\s*[-*+]\s+)/.test(lines[index])) {
+      paragraphLines.push(lines[index].trim());
+      index += 1;
+    }
+    pushParagraph(paragraphLines);
+  }
+
+  return blocks;
 }
 
 function StatusIcon({ status }: { status: InboxItem["status"] }) {
@@ -1281,19 +1392,6 @@ function installTypeLabel(value: InstallPlan["install_type"], language: Language
       return ui.installType.Archive;
     case "Unknown":
       return ui.installType.Unknown;
-  }
-}
-
-function installPathKindLabel(value: ManagedApp["installPathKind"], language: Language) {
-  const ui = createUiText(language);
-  switch (value) {
-    case "ManagedPath":
-      return ui.installPathKind.ManagedPath;
-    case "SystemInstaller":
-      return ui.installPathKind.SystemInstaller;
-    case "Unknown":
-    default:
-      return ui.installPathKind.Unknown;
   }
 }
 

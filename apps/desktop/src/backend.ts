@@ -1,8 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ManagedApp } from "./appModel";
 
-export const DEFAULT_TRACKED_REPO_ID = "dongrencd/releasedock";
-
 export type InstallPlan = {
   repo_id: string;
   repo_url: string;

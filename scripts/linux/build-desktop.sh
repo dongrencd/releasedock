@@ -24,6 +24,25 @@ done
 
 cd "$DESKTOP_DIR"
 
+RELEASE_DIR="$DESKTOP_DIR/src-tauri/target/release"
+STALE_TARGETS=(
+  "$DESKTOP_DIR/dist"
+  "$RELEASE_DIR/ghrm"
+  "$RELEASE_DIR/ghrm-desktop"
+  "$RELEASE_DIR/ghrm.d"
+  "$RELEASE_DIR/ghrm-desktop.d"
+  "$RELEASE_DIR/releasedock"
+  "$RELEASE_DIR/releasedock.d"
+  "$RELEASE_DIR/bundle"
+)
+
+for target in "${STALE_TARGETS[@]}"; do
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    echo "[desktop] rm -rf $target"
+    rm -rf "$target"
+  fi
+done
+
 if [ ! -d node_modules ]; then
   echo "[desktop] npm ci --registry=https://registry.npmmirror.com"
   npm ci --registry=https://registry.npmmirror.com

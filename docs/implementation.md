@@ -31,7 +31,7 @@ Core modules:
 - CLI `info` shows the latest release note and asset list.
 - CLI `doctor` prints config file location, token/proxy state, and the install root without leaking token values.
 - CLI `list`, `check`, `update`, and `uninstall` support the default manifest path and a `--manifest` override. `check` compares each installed app with the latest release and reports status.
-- The GUI reads the real manifest and refreshes live GitHub release data. On first launch it seeds `dongrencd/releasedock`, uses a three-pane workbench layout, shows the important decisions directly, displays release note summaries, install paths, and uninstall capability in the detail pane, supports local list filtering and bulk removal of uninstalled tracked items, and runs install flows through a preview-and-confirm step.
+- The GUI reads the real manifest and refreshes live GitHub release data. It uses a three-pane workbench layout, shows the important decisions directly, displays release note summaries and install paths in the detail pane, supports local list filtering and bulk removal of uninstalled tracked items, and runs install flows through a preview-and-confirm step.
 - The install root is the local workspace base directory. Download caches go under `downloads/`, and managed installs go under `apps/<owner>-<repo>`. The settings page label "install root" refers to this base directory.
 - GUI filtering only applies to the local managed list. It does not search GitHub globally. Public repositories do not require a token, while private repositories and frequent refreshes should use one.
 - The installer supports `.tar.xz` archives. Windows `.exe` / `.msi` and Linux `.deb` / `.rpm` assets are marked as requiring user confirmation before installation.
