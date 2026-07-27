@@ -51,6 +51,7 @@ import {
   isManagedPathKind,
   isSystemInstallerKind,
   isRemovableNoRelease,
+  isFailedInstallProgress,
   parseReleaseNote,
   pruneSelection,
   getUninstallAvailability,
@@ -142,6 +143,9 @@ export function App() {
   const visibleApps = filterManagedApps(apps, filter, searchQuery);
   const inbox = buildUpdateInbox(visibleApps, language);
   const selected = inbox.find((item) => item.id === selectedId) ?? inbox[0] ?? null;
+  const isEmptyDashboard = apps.length === 0;
+  const pendingInstallRepoId = pendingInstall?.repo_id ?? null;
+  const installRetrying = isFailedInstallProgress(taskProgress, pendingInstallRepoId);
   const hasGithubToken = configDraft.githubToken.trim().length > 0;
   const installRoot = configDraft.installRoot.trim();
   const effectiveInstallRoot = configDraft.effectiveInstallRoot.trim();
@@ -792,19 +796,21 @@ export function App() {
             <h1>{activeView === "dashboard" ? ui.updatesTitle : ui.settingsTitle}</h1>
           </div>
           <div className="topbarRight">
-            <div className="topbarMeta">
-              <span className={hasGithubToken ? "statePill success" : "statePill"}>{hasGithubToken ? ui.configReady : ui.configPublic}</span>
-              {backgroundUpdateCount > 0 ? (
-                <span className="statePill subtle" title={ui.trayBadge(backgroundUpdateCount)}>
-                  {ui.trayBadge(backgroundUpdateCount)}
-                </span>
-              ) : null}
-            </div>
             {activeView === "dashboard" ? (
-              <TooltipButton label={ui.checkUpdates} onClick={() => void refreshDashboard()} disabled={busy || loading} className="ghostButton topbarButton">
-                <RefreshCw size={17} />
-                <span>{ui.checkUpdates}</span>
-              </TooltipButton>
+              <>
+                <div className="topbarMeta">
+                  <span className={hasGithubToken ? "statePill success" : "statePill"}>{hasGithubToken ? ui.configReady : ui.configPublic}</span>
+                  {backgroundUpdateCount > 0 ? (
+                    <span className="statePill subtle" title={ui.trayBadge(backgroundUpdateCount)}>
+                      {ui.trayBadge(backgroundUpdateCount)}
+                    </span>
+                  ) : null}
+                </div>
+                <TooltipButton label={ui.checkUpdates} onClick={() => void refreshDashboard()} disabled={busy || loading} className="ghostButton topbarButton">
+                  <RefreshCw size={17} />
+                  <span>{ui.checkUpdates}</span>
+                </TooltipButton>
+              </>
             ) : null}
           </div>
         </header>
@@ -813,7 +819,7 @@ export function App() {
 
         {activeView === "dashboard" ? (
           <section className="dashboardView">
-            <section className="contentGrid">
+            <section className={isEmptyDashboard ? "contentGrid emptyDashboardGrid" : "contentGrid"}>
               <section className="inboxPanel" aria-label={ui.managedAppsTitle}>
                 <div className="sectionHeader workbenchHeader">
                   <div className="sectionTitle">
@@ -922,19 +928,25 @@ export function App() {
                     <div className="emptyState">{ui.noMatch}</div>
                   ) : (
                     inbox.map((item) => (
-                      <InboxRow
+                    <InboxRow
                         key={item.id}
                         item={item}
                         language={language}
                         busy={busy}
                         selected={item.id === selected?.id}
                         checked={selectedIds.includes(item.id)}
+                        pendingInstallRepoId={pendingInstallRepoId}
+                        installRetrying={installRetrying}
                         onSelect={() => setSelectedId(item.id)}
                         onToggleSelection={() => {
                           setSelectedIds((current) => toggleSelection(current, item.id));
                         }}
                         onPrimaryAction={() => {
                           setSelectedId(item.id);
+                          if (pendingInstallRepoId === item.id) {
+                            void handleConfirmInstall(item);
+                            return;
+                          }
                           void handlePrimaryAction(item);
                         }}
                       />
@@ -943,163 +955,203 @@ export function App() {
                 </div>
               </section>
 
-              <Inspector
-                item={selected}
-                busy={busy}
-                language={language}
-                onOpenInstallPath={() => {
-                  void handleOpenInstallPath(selected);
-                }}
-                onOpenApp={() => {
-                  void handleOpenApp(selected);
-                }}
-                onCopyReleaseNote={handleCopyReleaseNote}
-                onOpenRelease={() => {
-                  void handleOpenRelease(selected);
-                }}
-                onPrimaryAction={() => {
-                  if (selected) {
-                    void handlePrimaryAction(selected);
-                  }
-                }}
-                onConfirmInstall={() => {
-                  if (selected) {
-                    void handleConfirmInstall(selected);
-                  }
-                }}
-                onUninstall={() => {
-                  void handleUninstall(selected);
-                }}
-                onRemoveTracked={() => {
-                  void handleRemoveTracked(selected);
-                }}
-                pendingInstall={pendingInstall}
-                onCancelInstall={() => setPendingInstall(null)}
-              />
+              {!isEmptyDashboard ? (
+                <Inspector
+                  item={selected}
+                  busy={busy}
+                  language={language}
+                  onOpenInstallPath={() => {
+                    void handleOpenInstallPath(selected);
+                  }}
+                  onOpenApp={() => {
+                    void handleOpenApp(selected);
+                  }}
+                  onCopyReleaseNote={handleCopyReleaseNote}
+                  onOpenRelease={() => {
+                    void handleOpenRelease(selected);
+                  }}
+                  onPrimaryAction={() => {
+                    if (selected) {
+                      void handlePrimaryAction(selected);
+                    }
+                  }}
+                  onConfirmInstall={() => {
+                    if (selected) {
+                      void handleConfirmInstall(selected);
+                    }
+                  }}
+                  onUninstall={() => {
+                    void handleUninstall(selected);
+                  }}
+                  onRemoveTracked={() => {
+                    void handleRemoveTracked(selected);
+                  }}
+                  pendingInstall={pendingInstall}
+                  installRetrying={installRetrying}
+                  onCancelInstall={() => setPendingInstall(null)}
+                />
+              ) : null}
             </section>
           </section>
         ) : (
           <section className="settingsPanel" aria-label={ui.navSettings}>
-            <div className="settingsForm">
-              <label className="fieldRow wide primaryField">
-                <span>{ui.installRoot}</span>
-                <input
-                  value={configDraft.installRoot}
-                  onChange={(event) => setConfigDraft((current) => ({ ...current, installRoot: event.target.value }))}
-                  placeholder={configDraft.effectiveInstallRoot || ui.openInstallRoot}
-                  autoComplete="off"
-                />
-                <small>{usingDefaultInstallRoot ? `${ui.usingDefaultInstallRoot}: ${displayInstallRoot}` : ui.installRootHelp}</small>
-                <div className="fieldActions">
-                  <TooltipButton
-                    label={ui.restoreDefault}
-                    onClick={() => setConfigDraft((current) => ({ ...current, installRoot: "" }))}
-                    disabled={configSaving || installRoot.length === 0}
-                    className="ghostButton fieldActionButton"
-                  >
-                    <RotateCcw size={16} />
-                    <span>{ui.restoreDefault}</span>
-                  </TooltipButton>
-                  <TooltipButton
-                    label={ui.openInstallRoot}
-                    onClick={() => void handleOpenInstallRoot()}
-                    disabled={configSaving || displayInstallRoot.length === 0}
-                    className="ghostButton fieldActionButton"
-                  >
-                    <FolderOpen size={16} />
-                    <span>{ui.openInstallRoot}</span>
-                  </TooltipButton>
-                </div>
-              </label>
-
-              <label className="fieldRow">
-                <span>{ui.language}</span>
-                <div className="languageSwitch" role="group" aria-label={ui.language}>
-                  {languageOptions(language).map((option) => (
-                    <TooltipButton
-                      key={option.value}
-                      label={option.label}
-                      onClick={() => setConfigDraft((current) => ({ ...current, language: option.value }))}
-                      active={configDraft.language === option.value}
-                      className={configDraft.language === option.value ? "languagePill active" : "languagePill"}
-                    >
-                      <span>{option.label}</span>
-                    </TooltipButton>
-                  ))}
-                </div>
-              </label>
-
-              <label className="fieldRow">
-                <span>{ui.githubToken}</span>
-                <div className="fieldInputRow">
-                  <input
-                    type={showGithubToken ? "text" : "password"}
-                    value={configDraft.githubToken}
-                    onChange={(event) => setConfigDraft((current) => ({ ...current, githubToken: event.target.value }))}
-                    placeholder="token"
-                    autoComplete="off"
-                  />
-                  <TooltipButton
-                    label={showGithubToken ? ui.hideToken : ui.showToken}
-                    onClick={() => setShowGithubToken((current) => !current)}
-                    className="ghostButton tokenToggle"
-                  >
-                    {showGithubToken ? <EyeOff size={16} /> : <Eye size={16} />}
-                  </TooltipButton>
-                </div>
-                <small>{ui.githubTokenHelp}</small>
-              </label>
-
-              <label className="fieldRow">
-                <span>{ui.proxyUrl}</span>
-                <input
-                  value={configDraft.proxyUrl}
-                  onChange={(event) => setConfigDraft((current) => ({ ...current, proxyUrl: event.target.value }))}
-                  placeholder="proxy"
-                  autoComplete="off"
-                />
-                <small>{ui.proxyUrlHelp}</small>
-              </label>
-
-              <div className="fieldRow backgroundCheckRow">
-                <div className="backgroundCheckHeader">
-                  <span>{ui.backgroundCheck}</span>
-                  <label className="toggleRow">
+            <div className="settingsLayout">
+              <div className="settingsMain">
+                <div className="settingsForm">
+                  <label className="fieldRow wide primaryField">
+                    <span>{ui.installRoot}</span>
                     <input
-                      type="checkbox"
-                      checked={configDraft.backgroundCheckEnabled}
-                      onChange={(event) => setConfigDraft((current) => ({ ...current, backgroundCheckEnabled: event.target.checked }))}
+                      value={configDraft.installRoot}
+                      onChange={(event) => setConfigDraft((current) => ({ ...current, installRoot: event.target.value }))}
+                      placeholder={configDraft.effectiveInstallRoot || ui.openInstallRoot}
+                      autoComplete="off"
                     />
-                    <span>{configDraft.backgroundCheckEnabled ? ui.backgroundCheckEnabled : ui.backgroundCheckDisabled}</span>
+                    <small>{usingDefaultInstallRoot ? `${ui.usingDefaultInstallRoot}: ${displayInstallRoot}` : ui.installRootHelp}</small>
+                    <div className="fieldActions">
+                      <TooltipButton
+                        label={ui.restoreDefault}
+                        onClick={() => setConfigDraft((current) => ({ ...current, installRoot: "" }))}
+                        disabled={configSaving || installRoot.length === 0}
+                        className="ghostButton fieldActionButton"
+                      >
+                        <RotateCcw size={16} />
+                        <span>{ui.restoreDefault}</span>
+                      </TooltipButton>
+                      <TooltipButton
+                        label={ui.openInstallRoot}
+                        onClick={() => void handleOpenInstallRoot()}
+                        disabled={configSaving || displayInstallRoot.length === 0}
+                        className="ghostButton fieldActionButton"
+                      >
+                        <FolderOpen size={16} />
+                        <span>{ui.openInstallRoot}</span>
+                      </TooltipButton>
+                    </div>
                   </label>
-                </div>
-                <div className="backgroundCheckControls">
-                  <label className="intervalField">
-                    <span>{ui.checkInterval}</span>
+
+                  <label className="fieldRow">
+                    <span>{ui.language}</span>
+                    <div className="languageSwitch" role="group" aria-label={ui.language}>
+                      {languageOptions(language).map((option) => (
+                        <TooltipButton
+                          key={option.value}
+                          label={option.label}
+                          onClick={() => setConfigDraft((current) => ({ ...current, language: option.value }))}
+                          active={configDraft.language === option.value}
+                          className={configDraft.language === option.value ? "languagePill active" : "languagePill"}
+                        >
+                          <span>{option.label}</span>
+                        </TooltipButton>
+                      ))}
+                    </div>
+                  </label>
+
+                  <label className="fieldRow">
+                    <span>{ui.githubToken}</span>
+                    <div className="fieldInputRow">
+                      <input
+                        type={showGithubToken ? "text" : "password"}
+                        value={configDraft.githubToken}
+                        onChange={(event) => setConfigDraft((current) => ({ ...current, githubToken: event.target.value }))}
+                        placeholder="token"
+                        autoComplete="off"
+                      />
+                      <TooltipButton
+                        label={showGithubToken ? ui.hideToken : ui.showToken}
+                        onClick={() => setShowGithubToken((current) => !current)}
+                        className="ghostButton tokenToggle"
+                      >
+                        {showGithubToken ? <EyeOff size={16} /> : <Eye size={16} />}
+                      </TooltipButton>
+                    </div>
+                    <small>{ui.githubTokenHelp}</small>
+                  </label>
+
+                  <label className="fieldRow">
+                    <span>{ui.proxyUrl}</span>
                     <input
-                      type="number"
-                      min={1}
-                      value={configDraft.checkIntervalMinutes}
-                      onChange={(event) => {
-                        const value = Number.parseInt(event.target.value, 10);
-                        setConfigDraft((current) => ({
-                          ...current,
-                          checkIntervalMinutes: Number.isNaN(value) || value < 1 ? 1 : value
-                        }));
-                      }}
+                      value={configDraft.proxyUrl}
+                      onChange={(event) => setConfigDraft((current) => ({ ...current, proxyUrl: event.target.value }))}
+                      placeholder="proxy"
+                      autoComplete="off"
                     />
-                    <span className="intervalUnit">{ui.checkIntervalUnit}</span>
+                    <small>{ui.proxyUrlHelp}</small>
                   </label>
+
+                  <div className="fieldRow backgroundCheckRow">
+                    <div className="backgroundCheckHeader">
+                      <span>{ui.backgroundCheck}</span>
+                      <label className="toggleRow">
+                        <input
+                          type="checkbox"
+                          checked={configDraft.backgroundCheckEnabled}
+                          onChange={(event) => setConfigDraft((current) => ({ ...current, backgroundCheckEnabled: event.target.checked }))}
+                        />
+                        <span>{configDraft.backgroundCheckEnabled ? ui.backgroundCheckEnabled : ui.backgroundCheckDisabled}</span>
+                      </label>
+                    </div>
+                    <div className="backgroundCheckControls">
+                      <label className="intervalField">
+                        <span>{ui.checkInterval}</span>
+                        <input
+                          type="number"
+                          min={1}
+                          value={configDraft.checkIntervalMinutes}
+                          onChange={(event) => {
+                            const value = Number.parseInt(event.target.value, 10);
+                            setConfigDraft((current) => ({
+                              ...current,
+                              checkIntervalMinutes: Number.isNaN(value) || value < 1 ? 1 : value
+                            }));
+                          }}
+                        />
+                        <span className="intervalUnit">{ui.checkIntervalUnit}</span>
+                      </label>
+                    </div>
+                    <small>{ui.backgroundCheckHelp} {ui.checkIntervalHelp}</small>
+                  </div>
                 </div>
-                <small>{ui.backgroundCheckHelp} {ui.checkIntervalHelp}</small>
               </div>
-            </div>
 
-            <div className="settingsActions">
-              <TooltipButton label={ui.reloadSettings} onClick={() => void refreshConfig()} disabled={configSaving} className="ghostButton">
-                <RefreshCw size={17} />
-                <span>{ui.reloadSettings}</span>
-              </TooltipButton>
+              <aside className="settingsSidebar" aria-label={ui.settingsOverview}>
+                <section className="settingsCard">
+                  <div className="settingsCardHeader">
+                    <span className="settingsCardEyebrow">{ui.settingsOverview}</span>
+                    <p>{ui.settingsOverviewHelp}</p>
+                  </div>
+                  <div className="settingsSummaryList">
+                    <div className="settingsSummaryRow">
+                      <span>{ui.githubToken}</span>
+                      <span className={hasGithubToken ? "statePill success" : "statePill"}>{hasGithubToken ? ui.configReady : ui.configPublic}</span>
+                    </div>
+                    <div className="settingsSummaryRow">
+                      <span>{ui.installRoot}</span>
+                      <span className="settingsSummaryValue">{displayInstallRoot}</span>
+                    </div>
+                    <div className="settingsSummaryRow">
+                      <span>{ui.backgroundCheck}</span>
+                      <span className="settingsSummaryValue">
+                        {configDraft.backgroundCheckEnabled
+                          ? `${ui.backgroundCheckEnabled} · ${configDraft.checkIntervalMinutes} ${ui.checkIntervalUnit}`
+                          : ui.backgroundCheckDisabled}
+                      </span>
+                    </div>
+                  </div>
+                </section>
+
+                <section className="settingsCard">
+                  <div className="settingsCardHeader">
+                    <span className="settingsCardEyebrow">{ui.settingsActions}</span>
+                    <p>{ui.settingsActionsHelp}</p>
+                  </div>
+                  <div className="settingsSidebarActions">
+                    <TooltipButton label={ui.reloadSettings} onClick={() => void refreshConfig()} disabled={configSaving} className="ghostButton">
+                      <RefreshCw size={17} />
+                      <span>{ui.reloadSettings}</span>
+                    </TooltipButton>
+                  </div>
+                </section>
+              </aside>
             </div>
           </section>
         )}
@@ -1135,6 +1187,8 @@ function InboxRow({
   busy,
   selected,
   checked,
+  pendingInstallRepoId,
+  installRetrying,
   onSelect,
   onToggleSelection,
   onPrimaryAction
@@ -1144,11 +1198,19 @@ function InboxRow({
   busy: boolean;
   selected: boolean;
   checked: boolean;
+  pendingInstallRepoId: string | null;
+  installRetrying: boolean;
   onSelect: () => void;
   onToggleSelection: () => void;
   onPrimaryAction: () => void;
 }) {
+  const ui = createUiText(language);
   const primaryActionAvailability = getPrimaryActionAvailability(item, busy, language);
+  const confirmInstallAvailability = getConfirmInstallAvailability(item, busy, language);
+  const confirmingInstall = pendingInstallRepoId === item.id;
+  const retryLabel = installRetrying ? ui.retryInstall : ui.confirmInstall;
+  const actionLabel = confirmingInstall ? retryLabel : item.actionLabel;
+  const actionReason = confirmingInstall ? retryLabel : primaryActionAvailability.reason ?? item.actionLabel;
 
   return (
     <div
@@ -1187,17 +1249,17 @@ function InboxRow({
       </span>
       <button
         type="button"
-        className="rowAction"
-        aria-label={primaryActionAvailability.reason ?? item.actionLabel}
-        title={primaryActionAvailability.reason ?? item.actionLabel}
-        disabled={!primaryActionAvailability.enabled}
+        className={confirmingInstall ? "rowAction confirming" : "rowAction"}
+        aria-label={actionReason}
+        title={actionReason}
+        disabled={confirmingInstall ? !confirmInstallAvailability.enabled : !primaryActionAvailability.enabled}
         onClick={(event) => {
           event.stopPropagation();
           onSelect();
           onPrimaryAction();
         }}
       >
-        {item.actionLabel}
+        {actionLabel}
       </button>
     </div>
   );
@@ -1216,7 +1278,8 @@ function Inspector({
   onUninstall,
   onRemoveTracked,
   onCancelInstall,
-  pendingInstall
+  pendingInstall,
+  installRetrying
 }: {
   item: InboxItem | null;
   busy: boolean;
@@ -1231,6 +1294,7 @@ function Inspector({
   onRemoveTracked: () => void;
   onCancelInstall: () => void;
   pendingInstall: InstallPlan | null;
+  installRetrying: boolean;
 }) {
   const ui = createUiText(language);
 
@@ -1255,13 +1319,14 @@ function Inspector({
   const detailItems = getInspectorDetailItems(item, language);
   const lifecycleHistory = getLifecycleHistoryEntries(item, language);
   const showSecondaryInspectorActions = hasSecondaryInspectorActions(item, language);
+  const showInspectorActions = pendingInstall == null;
   const inspectorActionSection = (
     <div className="inspectorActions" aria-label={ui.managedAppsTitle}>
       {/* 主动作独占第一组：安装 / 更新 / 打开 / 重试 */}
       <div className="inspectorActionsGroup primaryActionGroup">
         <button
           type="button"
-          className="primaryButton actionButton wide"
+          className="primaryButton actionButton wide inspectorPrimaryAction"
           onClick={onPrimaryAction}
           disabled={!primaryActionAvailability.enabled}
           aria-label={primaryActionAvailability.reason ?? item.actionLabel}
@@ -1287,7 +1352,7 @@ function Inspector({
               label={openAppAvailability.reason ?? ui.action.openApp}
               onClick={onOpenApp}
               disabled={!openAppAvailability.enabled}
-              className="ghostButton actionButton wide"
+              className="ghostButton actionButton wide inspectorSecondaryAction"
             >
               <Play size={16} />
               <span>{ui.action.openApp}</span>
@@ -1296,7 +1361,7 @@ function Inspector({
           {shouldShowOpenReleaseSecondary(item, language) ? (
             <button
               type="button"
-              className="ghostButton actionButton wide"
+              className="ghostButton actionButton wide inspectorSecondaryAction"
               onClick={onOpenRelease}
               disabled={!openReleaseAvailability.enabled}
               aria-label={openReleaseAvailability.reason ?? ui.openRelease}
@@ -1308,7 +1373,7 @@ function Inspector({
           {shouldShowInstallLocationAction(item) ? (
             <button
               type="button"
-              className="ghostButton actionButton wide"
+              className="ghostButton actionButton wide inspectorSecondaryAction"
               onClick={onOpenInstallPath}
               aria-label={isSystemInstallerKind(item.installPathKind) ? ui.openInstallerFile : ui.openInstallLocation}
             >
@@ -1324,7 +1389,7 @@ function Inspector({
         {item.status === "needsChoice" || isRemovableNoRelease(item) ? (
           <button
             type="button"
-            className="dangerButton actionButton wide"
+            className="dangerButton actionButton wide inspectorDangerAction"
             onClick={onRemoveTracked}
             disabled={!removeTrackedAvailability.enabled}
             aria-label={removeTrackedAvailability.reason ?? ui.removeTracked}
@@ -1337,7 +1402,7 @@ function Inspector({
             <TooltipButton
               label={ui.openSystemUninstall}
               onClick={() => void openSystemUninstallSettings()}
-              className="dangerButton actionButton wide"
+              className="dangerButton actionButton wide inspectorDangerAction"
             >
               <Trash2 size={16} />
               <span>{ui.openSystemUninstall}</span>
@@ -1345,7 +1410,7 @@ function Inspector({
           ) : (
             <button
               type="button"
-              className="ghostButton actionButton wide"
+              className="ghostButton actionButton wide inspectorDangerAction"
               disabled
               aria-label={uninstallAvailability.reason ?? ui.model.useSystemUninstall}
             >
@@ -1356,7 +1421,7 @@ function Inspector({
         ) : (
           <button
             type="button"
-            className="dangerButton actionButton wide"
+            className="dangerButton actionButton wide inspectorDangerAction"
             onClick={onUninstall}
             disabled={!uninstallAvailability.enabled}
             aria-label={uninstallAvailability.reason ?? ui.uninstallAbility}
@@ -1446,7 +1511,7 @@ function Inspector({
       </div>
 
       {pendingInstall ? (
-        <div className="installPreview">
+        <div className="installPreview pendingInstall">
           <div className="blockTitle">
             <Download size={16} />
             <span>{ui.installPreview}</span>
@@ -1454,18 +1519,18 @@ function Inspector({
           <p className="previewLine">
             {pendingInstall.asset_name} · {installTypeLabel(pendingInstall.install_type, language)}
           </p>
-          <dl className="detailList">
-            <div>
-              <dt>{ui.installManagement}</dt>
-              <dd>{installManagementKindLabel(pendingInstall.management_kind, language)}</dd>
+          <div className="previewMeta">
+            <div className="previewMetaRow">
+              <span className="previewMetaLabel">{ui.installManagement}</span>
+              <span className="previewMetaValue">{installManagementKindLabel(pendingInstall.management_kind, language)}</span>
             </div>
             {pendingInstall.system_package_manager ? (
-              <div>
-                <dt>{ui.systemPackageManager}</dt>
-                <dd>{systemPackageManagerLabel(pendingInstall.system_package_manager)}</dd>
+              <div className="previewMetaRow">
+                <span className="previewMetaLabel">{ui.systemPackageManager}</span>
+                <span className="previewMetaValue">{systemPackageManagerLabel(pendingInstall.system_package_manager)}</span>
               </div>
             ) : null}
-          </dl>
+          </div>
           {pendingInstall.notes.length > 0 ? (
             <ul className="previewNotes">
               {pendingInstall.notes.map((note) => (
@@ -1476,24 +1541,30 @@ function Inspector({
           {pendingInstall.requires_user_confirmation ? (
             <p className="mutedText">{ui.installPreviewConfirmation}</p>
           ) : null}
+          {installRetrying ? <p className="previewFailureHint">{ui.installRetryHint}</p> : null}
           <div className="previewActions">
-            <TooltipButton label={ui.cancel} onClick={onCancelInstall} disabled={busy} className="ghostButton actionButton">
+            <TooltipButton
+              label={ui.cancel}
+              onClick={onCancelInstall}
+              disabled={busy}
+              className="ghostButton actionButton previewCancelAction"
+            >
               <RotateCcw size={16} />
               <span>{ui.cancel}</span>
             </TooltipButton>
             <TooltipButton
-              label={confirmInstallAvailability.reason ?? ui.confirmInstall}
+              label={confirmInstallAvailability.reason ?? (installRetrying ? ui.retryInstall : ui.confirmInstall)}
               onClick={onConfirmInstall}
               disabled={!confirmInstallAvailability.enabled}
-              className="primaryButton actionButton"
+              className="primaryButton actionButton previewConfirmAction"
             >
               <Download size={16} />
-              <span>{ui.confirmInstall}</span>
+              <span>{installRetrying ? ui.retryInstall : ui.confirmInstall}</span>
             </TooltipButton>
           </div>
         </div>
       ) : null}
-      {inspectorActionSection}
+      {showInspectorActions ? inspectorActionSection : null}
       {inspectorInfoSection}
     </aside>
   );
@@ -1513,7 +1584,8 @@ function StatusDock({
   const presentation = buildStatusDockPresentation(taskProgress, busy, taskStatus, language);
   const progressPercent = presentation.progressPercent;
   const progressValuePercent = progressPercent == null ? null : progressPercent === 0 ? 6 : progressPercent;
-  const taskRunning = taskProgress != null && taskProgress.stage !== "finished" && taskProgress.stage !== "failed";
+  const progressClassName = presentation.progressMode === "indeterminate" ? "taskProgressTrack busy" : "taskProgressTrack";
+  const progressValueClassName = presentation.progressMode === "indeterminate" ? "taskProgressValue busy" : "taskProgressValue";
 
   return (
     <footer
@@ -1535,19 +1607,13 @@ function StatusDock({
             {presentation.detail}
           </span>
         ) : null}
-        <span className={presentation.failed ? "statePill danger" : "statePill subtle"}>
-          {presentation.pillLabel}
-        </span>
       </div>
+      <span className={presentation.failed ? "taskProgressPercent danger statusDockPercent" : "taskProgressPercent statusDockPercent"}>
+        {presentation.pillLabel}
+      </span>
       {presentation.showProgress ? (
         <div
-          className={
-            presentation.progressMode === "indeterminate"
-              ? "taskProgressTrack busy"
-              : taskRunning
-                ? "taskProgressTrack active"
-                : "taskProgressTrack"
-          }
+          className={progressClassName}
           role="progressbar"
           aria-label={presentation.detail}
           aria-valuemin={0}
@@ -1556,13 +1622,7 @@ function StatusDock({
           aria-valuetext={presentation.progressMode === "indeterminate" ? presentation.pillLabel : undefined}
         >
           <div
-            className={
-              presentation.progressMode === "indeterminate"
-                ? "taskProgressValue busy"
-                : taskRunning
-                  ? "taskProgressValue active"
-                  : "taskProgressValue"
-            }
+            className={progressValueClassName}
             style={presentation.progressMode === "indeterminate" ? undefined : { width: `${progressValuePercent ?? 0}%` }}
           />
         </div>

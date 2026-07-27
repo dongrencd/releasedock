@@ -56,8 +56,10 @@ type Copy = {
   uninstallAbility: string;
   installPreview: string;
   installPreviewConfirmation: string;
+  installRetryHint: string;
   cancel: string;
   confirmInstall: string;
+  retryInstall: string;
   openRelease: string;
   openInstallLocation: string;
   openInstallerFile: string;
@@ -65,6 +67,10 @@ type Copy = {
   removeTracked: string;
   noSelection: string;
   settingsTitleSmall: string;
+  settingsOverview: string;
+  settingsOverviewHelp: string;
+  settingsActions: string;
+  settingsActionsHelp: string;
   installRoot: string;
   installRootHelp: string;
   usingDefaultInstallRoot: string;
@@ -220,8 +226,10 @@ const copy: Record<Language, Copy> = {
     uninstallAbility: "Uninstall",
     installPreview: "Install preview",
     installPreviewConfirmation: "This installer needs confirmation before it runs.",
+    installRetryHint: "The last install failed. Review the error above and retry from the same preview.",
     cancel: "Cancel",
     confirmInstall: "Confirm install",
+    retryInstall: "Retry install",
     openRelease: "Open release",
     openInstallLocation: "Open install location",
     openInstallerFile: "Open installer file",
@@ -229,6 +237,10 @@ const copy: Record<Language, Copy> = {
     removeTracked: "Remove tracking",
     noSelection: "No app selected",
     settingsTitleSmall: "4 local settings",
+    settingsOverview: "Overview",
+    settingsOverviewHelp: "The values below match the configuration stored on disk.",
+    settingsActions: "Actions",
+    settingsActionsHelp: "Reload discards local edits and pulls the saved settings back in.",
     installRoot: "Install root",
     installRootHelp: "Downloaded installers and managed apps live under this root.",
     usingDefaultInstallRoot: "Using default install root",
@@ -384,8 +396,10 @@ const copy: Record<Language, Copy> = {
     uninstallAbility: "卸载",
     installPreview: "安装预览",
     installPreviewConfirmation: "这个安装包需要在系统权限确认后继续执行。",
+    installRetryHint: "上一次安装失败。查看上面的错误后，可以直接在这里重试。",
     cancel: "取消",
     confirmInstall: "确认安装",
+    retryInstall: "重试安装",
     openRelease: "打开 Release",
     openInstallLocation: "打开安装目录",
     openInstallerFile: "打开安装包位置",
@@ -393,6 +407,10 @@ const copy: Record<Language, Copy> = {
     removeTracked: "移除跟踪",
     noSelection: "暂无可展示的软件",
     settingsTitleSmall: "4 个本地配置项",
+    settingsOverview: "配置摘要",
+    settingsOverviewHelp: "下方内容对应当前已保存到磁盘的配置。",
+    settingsActions: "操作",
+    settingsActionsHelp: "重新载入会丢弃本地未保存修改，并重新读取已保存的设置。",
     installRoot: "软件安装位置",
     installRootHelp: "下载缓存和自动管理的软件会放在这个位置下的 `apps` 目录中。",
     usingDefaultInstallRoot: "使用默认安装目录",

@@ -101,6 +101,7 @@ export type TaskProgressStage =
   | "failed";
 
 export type TaskProgressLike = {
+  repoId: string;
   action: TaskProgressAction;
   stage: TaskProgressStage;
   message: string;
@@ -126,6 +127,16 @@ export type StatusDockPresentation = {
   progressMode: "determinate" | "indeterminate";
   progressPercent: number | null;
 };
+
+export function isFailedInstallProgress(taskProgress: TaskProgressLike | null, repoId: string | null): boolean {
+  return Boolean(
+    taskProgress &&
+      repoId &&
+      taskProgress.action === "install" &&
+      taskProgress.stage === "failed" &&
+      taskProgress.repoId === repoId
+  );
+}
 
 export function isManagedPathKind(kind?: ManagedApp["installPathKind"]): boolean {
   return kind === "managedPath";

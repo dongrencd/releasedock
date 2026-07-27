@@ -406,6 +406,10 @@ input {
   min-height: 0;
 }
 
+.contentGrid.emptyDashboardGrid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .dashboardView {
   display: grid;
   min-height: 0;
@@ -447,17 +451,35 @@ input {
 
 .settingsPanel {
   display: grid;
-  gap: 8px;
+  gap: 12px;
   padding: 10px 20px 12px;
-  justify-items: start;
+  justify-items: stretch;
+}
+
+.settingsLayout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+  gap: 16px;
+  align-items: start;
+  width: 100%;
+}
+
+.settingsMain {
+  min-width: 0;
+}
+
+.settingsSidebar {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
 }
 
 .settingsForm {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px 12px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
   align-items: start;
-  width: min(100%, 1120px);
+  width: 100%;
   padding: 12px;
   border: 1px solid #d8dee8;
   border-radius: 8px;
@@ -557,17 +579,68 @@ input {
   grid-column: 1 / -1;
 }
 
-.settingsActions {
+.settingsCard {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.settingsCardHeader {
+  display: grid;
+  gap: 4px;
+}
+
+.settingsCardEyebrow {
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.settingsCardHeader p {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.settingsSummaryList {
+  display: grid;
+  gap: 10px;
+}
+
+.settingsSummaryRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.settingsSummaryRow > span:first-child {
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.settingsSummaryValue {
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: right;
+  word-break: break-word;
+}
+
+.settingsSidebarActions {
   display: flex;
   gap: 10px;
   justify-content: flex-start;
-  width: min(100%, 1120px);
-  padding: 0 0 2px;
 }
 
 .statusDock {
   display: grid;
-  grid-template-columns: minmax(220px, auto) minmax(0, 1fr);
+  grid-template-columns: minmax(220px, 1.1fr) minmax(0, 1.9fr) auto;
   gap: 8px 16px;
   align-items: center;
   padding: 10px 24px;
@@ -592,6 +665,10 @@ input {
   gap: 10px;
 }
 
+.statusDockCopy > div {
+  min-width: 0;
+}
+
 .statusDockCopy strong,
 .statusDockDetail {
   font-size: 13px;
@@ -599,7 +676,7 @@ input {
 }
 
 .statusDockCopy strong,
-.statusDockDetail span:first-child {
+.taskProgressMessage {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -607,7 +684,12 @@ input {
 
 .statusDockDetail {
   justify-content: flex-end;
-  gap: 10px;
+  justify-self: end;
+}
+
+.statusDockPercent {
+  justify-self: end;
+  font-variant-numeric: tabular-nums;
 }
 
 .statusDot {
@@ -794,6 +876,8 @@ h2 {
 
 .appTable {
   display: grid;
+  align-content: start;
+  align-items: start;
   gap: 8px;
   min-height: 220px;
 }
@@ -960,6 +1044,15 @@ h2 {
   background: #ccfbf1;
 }
 
+.rowAction.confirming {
+  color: #92400e;
+  background: #fef3c7;
+}
+
+.rowAction.confirming:hover:not(:disabled) {
+  background: #fde68a;
+}
+
 .rowAction:focus-visible {
   outline: 2px solid #0f766e;
   outline-offset: 2px;
@@ -1002,10 +1095,33 @@ h2 {
 }
 
 .taskProgressMessage {
+  min-width: 0;
   color: #334155;
   font-size: 13px;
   line-height: 1.45;
   word-break: break-word;
+}
+
+.taskProgressPercent {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  min-width: 58px;
+  min-height: 28px;
+  padding: 0 12px;
+  border-radius: 999px;
+  color: #475569;
+  background: #f8fafc;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.taskProgressPercent.danger {
+  color: #b91c1c;
+  background: #fee2e2;
 }
 
 .taskProgressTrack {
@@ -1039,19 +1155,6 @@ h2 {
   animation:
     taskProgressShift 1.15s linear infinite,
     taskProgressGlow 1.15s linear infinite;
-}
-
-.taskProgressTrack.active {
-  background: linear-gradient(90deg, #dbe7e5 0%, #e8f4f2 50%, #dbe7e5 100%);
-  background-size: 200% 100%;
-  animation: taskTrackPulse 1.8s linear infinite;
-}
-
-.taskProgressTrack.active .taskProgressValue {
-  min-width: 24px;
-  background: linear-gradient(90deg, #0f766e 0%, #16a394 50%, #0f766e 100%);
-  background-size: 200% 100%;
-  animation: taskProgressShift 1.25s linear infinite;
 }
 
 .statusDock.failed .taskProgressTrack {
@@ -1375,9 +1478,72 @@ h2 {
   background: #f8fafc;
 }
 
+.installPreview.pendingInstall {
+  border-color: #f6c55f;
+  background: #fffbeb;
+}
+
+.installPreview.pendingInstall .blockTitle {
+  color: #b45309;
+}
+
+.installPreview.pendingInstall .previewLine {
+  color: #92400e;
+}
+
+.installPreview.pendingInstall .previewMetaLabel {
+  color: #a16207;
+}
+
+.installPreview.pendingInstall .previewMetaValue {
+  color: #78350f;
+}
+
+.installPreview.pendingInstall .mutedText {
+  color: #92400e;
+}
+
+.previewFailureHint {
+  margin: 0;
+  padding: 8px 10px;
+  border-left: 3px solid #fca5a5;
+  border-radius: 6px;
+  color: #991b1b;
+  background: #fff7f7;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .previewLine {
   color: #243044;
   font-weight: 600;
+}
+
+.previewMeta {
+  display: grid;
+  gap: 8px;
+}
+
+.previewMetaRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.previewMetaLabel {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.previewMetaValue {
+  color: #243044;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: right;
+  word-break: break-word;
 }
 
 .previewNotes {
@@ -1398,6 +1564,34 @@ h2 {
 
 .previewActions .actionButton {
   width: 100%;
+}
+
+.previewCancelAction {
+  border-color: #d8dee8;
+  color: #334155;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+}
+
+.previewCancelAction:hover:not(:disabled) {
+  border-color: #cbd5e1;
+  background: linear-gradient(180deg, #ffffff 0%, #eef2f7 100%);
+}
+
+.previewConfirmAction {
+  border-color: #b45309;
+  color: #ffffff;
+  background: linear-gradient(180deg, #d97706 0%, #b45309 100%);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.14) inset,
+    0 8px 16px rgba(180, 83, 9, 0.18);
+}
+
+.previewConfirmAction:hover:not(:disabled) {
+  border-color: #c2410c;
+  background: linear-gradient(180deg, #ea580c 0%, #c2410c 100%);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.16) inset,
+    0 10px 18px rgba(180, 83, 9, 0.22);
 }
 
 .detailList {
@@ -1459,12 +1653,41 @@ h2 {
   font-size: 14px;
 }
 
+.inspectorPrimaryAction {
+  border-color: #0f766e;
+  color: #ffffff;
+  background: linear-gradient(180deg, #14907f 0%, #0f766e 100%);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.12) inset,
+    0 8px 18px rgba(15, 118, 110, 0.18);
+}
+
+.inspectorPrimaryAction:hover:not(:disabled) {
+  background: linear-gradient(180deg, #16a394 0%, #0f766e 100%);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.14) inset,
+    0 10px 20px rgba(15, 118, 110, 0.2);
+}
+
 .inspectorActionsGroup.secondaryActionGroup {
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
 }
 
 .inspectorActionsGroup.secondaryActionGroup .actionButton {
   width: 100%;
+}
+
+.inspectorSecondaryAction {
+  border-color: #d8dee8;
+  color: #243044;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.85) inset;
+}
+
+.inspectorSecondaryAction:hover:not(:disabled) {
+  border-color: #99d4ce;
+  color: #0f766e;
+  background: linear-gradient(180deg, #ffffff 0%, #f0fdfa 100%);
 }
 
 .inspectorActionsGroup.dangerActionGroup {
@@ -1482,6 +1705,17 @@ h2 {
 
 .inspectorActions .dangerButton {
   justify-content: center;
+}
+
+.inspectorDangerAction {
+  border-color: #f5c2c7;
+  color: #b91c1c;
+  background: linear-gradient(180deg, #ffffff 0%, #fff7f7 100%);
+}
+
+.inspectorDangerAction:hover:not(:disabled) {
+  border-color: #f3aab2;
+  background: linear-gradient(180deg, #ffffff 0%, #fff1f2 100%);
 }
 
 .inspectorActions .actionButton svg {
@@ -1555,6 +1789,10 @@ h2 {
     justify-content: flex-start;
   }
 
+  .settingsLayout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .settingsForm {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -1573,6 +1811,11 @@ h2 {
 
   .statusDockDetail {
     justify-content: flex-start;
+    justify-self: flex-start;
+  }
+
+  .statusDockPercent {
+    justify-self: flex-start;
   }
 
   .listToolsActions {

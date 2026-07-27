@@ -14,6 +14,7 @@ import {
   getInspectorDetailItems,
   getLifecycleHistoryEntries,
   hasSecondaryInspectorActions,
+  isFailedInstallProgress,
   installManagementKindLabel,
   getDetailPathLabel,
   isRemovableNoRelease,
@@ -837,6 +838,7 @@ describe("buildStatusDockPresentation", () => {
   it("keeps zero percent visible and marks finished work as complete", () => {
     const zero = buildStatusDockPresentation(
       {
+        repoId: "owner/repo",
         action: "install",
         stage: "preparing",
         message: "Preparing to install",
@@ -853,6 +855,7 @@ describe("buildStatusDockPresentation", () => {
 
     const finished = buildStatusDockPresentation(
       {
+        repoId: "owner/repo",
         action: "uninstall",
         stage: "finished",
         message: "Done",
@@ -868,9 +871,29 @@ describe("buildStatusDockPresentation", () => {
     expect(finished.pillLabel).toBe("100%");
   });
 
+  it("reports middle download percentages directly", () => {
+    const presentation = buildStatusDockPresentation(
+      {
+        repoId: "owner/repo",
+        action: "install",
+        stage: "downloading",
+        message: "Downloading asset",
+        percent: 77
+      },
+      false,
+      "Installing",
+      language
+    );
+
+    expect(presentation.progressMode).toBe("determinate");
+    expect(presentation.progressPercent).toBe(77);
+    expect(presentation.pillLabel).toBe("77%");
+  });
+
   it("clamps out-of-range percentages and keeps failures visible", () => {
     const clamped = buildStatusDockPresentation(
       {
+        repoId: "owner/repo",
         action: "install",
         stage: "downloading",
         message: "Downloading asset",
@@ -886,6 +909,7 @@ describe("buildStatusDockPresentation", () => {
 
     const failed = buildStatusDockPresentation(
       {
+        repoId: "owner/repo",
         action: "uninstall",
         stage: "failed",
         message: "Remove failed",
@@ -899,5 +923,50 @@ describe("buildStatusDockPresentation", () => {
     expect(failed.failed).toBe(true);
     expect(failed.pillLabel).toBe("Failed");
     expect(failed.progressMode).toBe("determinate");
+  });
+});
+
+describe("isFailedInstallProgress", () => {
+  it("detects a failed install for the same repo", () => {
+    expect(
+      isFailedInstallProgress(
+        {
+          repoId: "owner/repo",
+          action: "install",
+          stage: "failed",
+          message: "Install failed",
+          percent: 42,
+        },
+        "owner/repo"
+      )
+    ).toBe(true);
+  });
+
+  it("ignores other task types and other repos", () => {
+    expect(
+      isFailedInstallProgress(
+        {
+          repoId: "owner/repo",
+          action: "uninstall",
+          stage: "failed",
+          message: "Uninstall failed",
+          percent: 42,
+        },
+        "owner/repo"
+      )
+    ).toBe(false);
+
+    expect(
+      isFailedInstallProgress(
+        {
+          repoId: "owner/repo",
+          action: "install",
+          stage: "failed",
+          message: "Install failed",
+          percent: 42,
+        },
+        "other/repo"
+      )
+    ).toBe(false);
   });
 });

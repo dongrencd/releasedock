@@ -10,7 +10,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::repo::RepoRef;
 
-const GITHUB_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+const GITHUB_API_TIMEOUT: Duration = Duration::from_secs(20);
+const GITHUB_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+const GITHUB_DOWNLOAD_READ_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Release {
@@ -76,17 +78,24 @@ impl ReleaseAsset {
 #[derive(Clone)]
 pub struct ReleaseClient {
     client: reqwest::Client,
+    api_timeout: Duration,
 }
 
 impl ReleaseClient {
     pub fn new(github_token: Option<&str>, proxy_url: Option<&str>) -> Result<Self> {
-        Self::with_timeout(github_token, proxy_url, GITHUB_REQUEST_TIMEOUT)
+        Self::with_timeouts(
+            github_token,
+            proxy_url,
+            GITHUB_API_TIMEOUT,
+            GITHUB_DOWNLOAD_READ_TIMEOUT,
+        )
     }
 
-    fn with_timeout(
+    fn with_timeouts(
         github_token: Option<&str>,
         proxy_url: Option<&str>,
-        timeout: Duration,
+        api_timeout: Duration,
+        download_read_timeout: Duration,
     ) -> Result<Self> {
         let mut headers = HeaderMap::new();
         headers.insert(USER_AGENT, HeaderValue::from_static("releasedock"));
@@ -103,7 +112,8 @@ impl ReleaseClient {
 
         let mut builder = reqwest::Client::builder()
             .default_headers(headers)
-            .timeout(timeout);
+            .connect_timeout(GITHUB_CONNECT_TIMEOUT)
+            .read_timeout(download_read_timeout);
         if let Some(proxy_url) = proxy_url.filter(|value| !value.trim().is_empty()) {
             let proxy =
                 Proxy::all(proxy_url).context("failed to configure proxy for GitHub client")?;
@@ -112,6 +122,7 @@ impl ReleaseClient {
 
         Ok(Self {
             client: builder.build().context("failed to build GitHub client")?,
+            api_timeout,
         })
     }
 
@@ -130,6 +141,7 @@ impl ReleaseClient {
         let response = self
             .client
             .get(url)
+            .timeout(self.api_timeout)
             .send()
             .await
             .context("failed to request latest GitHub release")?;
@@ -154,6 +166,7 @@ impl ReleaseClient {
         let response = self
             .client
             .get(url)
+            .timeout(self.api_timeout)
             .send()
             .await
             .context("failed to request GitHub asset")?;
@@ -206,7 +219,7 @@ impl ReleaseClient {
         while let Some(chunk) = response
             .chunk()
             .await
-            .context("failed to read GitHub asset body")?
+            .context("failed to read GitHub asset body while downloading")?
         {
             file.write_all(&chunk)
                 .with_context(|| format!("failed to write download {}", path.display()))?;
@@ -339,7 +352,7 @@ mod tests {
         StatusCode,
         header::{HeaderMap, HeaderValue},
     };
-    use tokio::{io::AsyncReadExt, net::TcpListener, time::sleep};
+    use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpListener, time::sleep};
 
     #[test]
     fn formats_github_error_with_body_and_headers() {
@@ -410,11 +423,151 @@ mod tests {
         });
 
         let proxy_url = format!("http://{proxy_addr}");
-        let timeout = Duration::from_millis(100);
-        let client = ReleaseClient::with_timeout(None, Some(proxy_url.as_str()), timeout).unwrap();
+        let api_timeout = Duration::from_millis(100);
+        let client = ReleaseClient::with_timeouts(
+            None,
+            Some(proxy_url.as_str()),
+            api_timeout,
+            Duration::from_millis(300),
+        )
+        .unwrap();
         let repo = RepoRef::parse("owner/project").unwrap();
 
         let error = client.latest_release_optional(&repo).await.unwrap_err();
+        let is_timeout = error.chain().any(|cause| {
+            cause
+                .downcast_ref::<reqwest::Error>()
+                .is_some_and(|request_error| request_error.is_timeout())
+        });
+        assert!(is_timeout, "{error:#}");
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn downloads_asset_when_chunks_keep_arriving_before_read_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buffer = [0u8; 1024];
+                let mut received = Vec::new();
+
+                loop {
+                    let read = stream.read(&mut buffer).await.unwrap_or(0);
+                    if read == 0 {
+                        break;
+                    }
+
+                    received.extend_from_slice(&buffer[..read]);
+                    if received.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: application/octet-stream\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+                stream.flush().await.unwrap();
+
+                stream.write_all(b"5\r\nhello\r\n").await.unwrap();
+                stream.flush().await.unwrap();
+                sleep(Duration::from_millis(120)).await;
+
+                stream.write_all(b"1\r\n \r\n").await.unwrap();
+                stream.flush().await.unwrap();
+                sleep(Duration::from_millis(120)).await;
+
+                stream.write_all(b"5\r\nworld\r\n").await.unwrap();
+                stream.flush().await.unwrap();
+                stream.write_all(b"0\r\n\r\n").await.unwrap();
+                stream.flush().await.unwrap();
+            }
+        });
+
+        let client = ReleaseClient::with_timeouts(
+            None,
+            None,
+            Duration::from_millis(500),
+            Duration::from_millis(200),
+        )
+        .unwrap();
+        let download_dir = tempfile::tempdir().unwrap();
+        let download_path = download_dir.path().join("asset.bin");
+
+        client
+            .download_to_path(&format!("http://{addr}/asset"), &download_path, |_, _| {})
+            .await
+            .unwrap();
+
+        let bytes = std::fs::read(&download_path).unwrap();
+        assert_eq!(bytes, b"hello world");
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn times_out_when_asset_body_stalls() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buffer = [0u8; 1024];
+                let mut received = Vec::new();
+
+                loop {
+                    let read = stream.read(&mut buffer).await.unwrap_or(0);
+                    if read == 0 {
+                        break;
+                    }
+
+                    received.extend_from_slice(&buffer[..read]);
+                    if received.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: application/octet-stream\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+                stream.flush().await.unwrap();
+
+                stream.write_all(b"5\r\nhello\r\n").await.unwrap();
+                stream.flush().await.unwrap();
+                sleep(Duration::from_millis(300)).await;
+                stream.write_all(b"5\r\nworld\r\n").await.unwrap();
+                stream.flush().await.unwrap();
+                stream.write_all(b"0\r\n\r\n").await.unwrap();
+                stream.flush().await.unwrap();
+            }
+        });
+
+        let client = ReleaseClient::with_timeouts(
+            None,
+            None,
+            Duration::from_millis(500),
+            Duration::from_millis(100),
+        )
+        .unwrap();
+        let download_dir = tempfile::tempdir().unwrap();
+        let download_path = download_dir.path().join("asset.bin");
+
+        let error = client
+            .download_to_path(&format!("http://{addr}/asset"), &download_path, |_, _| {})
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("while downloading"),
+            "{error:#}"
+        );
         let is_timeout = error.chain().any(|cause| {
             cause
                 .downcast_ref::<reqwest::Error>()

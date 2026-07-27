@@ -1150,7 +1150,7 @@ mod tests {
 
     #[test]
     fn allows_github_release_pages() {
-        let url = url::Url::parse("https://github.com/dongrencd/releasedock/releases/tag/v0.2.0")
+        let url = url::Url::parse("https://github.com/dongrencd/releasedock/releases/tag/v0.2.4")
             .expect("valid URL");
         assert!(validate_github_url(&url).is_ok());
     }
