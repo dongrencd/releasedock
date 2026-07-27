@@ -38,7 +38,7 @@ git tag v0.2.0
 git push origin v0.2.0
 ```
 
-When the tag workflow finishes, the matching release appears on the repository Releases page. Release assets include the Linux CLI executable, Linux desktop executable, Linux Debian package, Linux RPM package, Windows desktop executable, NSIS installer, and MSI.
+When the tag workflow finishes, the matching release appears on the repository Releases page. Release assets include the Linux CLI executable, Linux desktop executable, Linux Debian package, and Linux RPM package.
 
 If a release with the same tag already exists, the publish job fails. Remove the previous tag and release or use a new version number.
 

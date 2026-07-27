@@ -69,7 +69,7 @@ After downloading the CLI artifact, verify it with:
 
 ### GitHub Releases
 
-Tags that match `v*.*.*` create a GitHub Release with the same version and upload the Linux CLI, Linux desktop executable, Linux Debian package, Linux RPM package, Windows desktop executable, NSIS installer, and MSI.
+Tags that match `v*.*.*` create a GitHub Release with the same version and upload the Linux CLI, Linux desktop executable, Linux Debian package, and Linux RPM package.
 
 ```bash
 git tag v0.2.0

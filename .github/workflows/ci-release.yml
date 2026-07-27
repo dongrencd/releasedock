@@ -130,7 +130,6 @@ jobs:
     needs:
       - linux-cli
       - linux-desktop
-      - windows-desktop
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - name: Download Linux CLI
@@ -143,12 +142,6 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: releasedock-linux-x64-desktop
-          path: release-assets
-
-      - name: Download Windows desktop bundle
-        uses: actions/download-artifact@v4
-        with:
-          name: releasedock-windows-x64-desktop
           path: release-assets
 
       - name: Create GitHub Release
