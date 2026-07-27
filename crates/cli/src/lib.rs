@@ -10,9 +10,9 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use releasedock_core::{
     asset_matcher::{Architecture, AssetMatcher, OperatingSystem},
     config::{Config, ConfigStore, Language},
-    install_plan::InstallPlan,
+    install_plan::{InstallManagementKind, InstallPlan},
     installer::{install_from_plan, uninstall_repo},
-    manifest::ManifestStore,
+    manifest::{ManifestStore, SystemPackageManager},
     release::{Release, ReleaseClient},
     repo::RepoRef,
 };
@@ -261,7 +261,12 @@ async fn build_install_plan(
         _ => AssetMatcher::current(),
     };
     let matched = matcher.select_best(&release)?;
-    Ok(InstallPlan::from_match(&repo, &release, &matched, Language::En))
+    Ok(InstallPlan::from_match(
+        &repo,
+        &release,
+        &matched,
+        Language::En,
+    ))
 }
 
 fn list(args: ManifestArgs) -> Result<()> {
@@ -282,8 +287,16 @@ fn list(args: ManifestArgs) -> Result<()> {
         println!("No managed apps");
     } else {
         for app in manifest.apps {
+            let system_package = match (
+                app.system_package_name.as_deref(),
+                app.system_package_manager,
+            ) {
+                (Some(name), Some(manager)) => format!(" / {} ({:?})", name, manager),
+                (Some(name), None) => format!(" / {}", name),
+                _ => String::new(),
+            };
             println!(
-                "{} {} {} [{} / {}]",
+                "{} {} {} [{} / {}{}]",
                 app.id,
                 app.installed_version,
                 app.asset_name,
@@ -292,7 +305,8 @@ fn list(args: ManifestArgs) -> Result<()> {
                     "可卸载"
                 } else {
                     "需系统卸载"
-                }
+                },
+                system_package
             );
         }
     }
@@ -697,6 +711,7 @@ fn confirm_execution(action: &str, plan: &InstallPlan, yes: bool) -> Result<()> 
     println!("  仓库: {}", plan.repo_id);
     println!("  版本: {}", plan.version);
     println!("  资产: {}", plan.asset_name);
+    println!("  管理: {}", plan_management_label(plan));
     for note in &plan.notes {
         println!("  提示: {}", note);
     }
@@ -731,13 +746,15 @@ fn confirm_bulk_execution(action: &str, plans: &[(String, InstallPlan)], yes: bo
 
     println!("准备执行 {}：", action);
     println!("  共 {} 个项目", plans.len());
+    println!("  管理方式: {}", plan_management_summary(plans));
     for (index, (app_id, plan)) in plans.iter().enumerate() {
         println!(
-            "  {}. {} -> {} / {}",
+            "  {}. {} -> {} / {} [{}]",
             index + 1,
             app_id,
             plan.version,
-            plan.asset_name
+            plan.asset_name,
+            plan_management_label(plan)
         );
         for note in &plan.notes {
             println!("     提示: {}", note);
@@ -747,7 +764,7 @@ fn confirm_bulk_execution(action: &str, plans: &[(String, InstallPlan)], yes: bo
         .iter()
         .any(|(_, plan)| plan.requires_user_confirmation)
     {
-        println!("  其中包含系统安装器，执行时会继续触发系统权限确认。");
+        println!("  其中包含系统包或外部安装器，执行时会继续触发系统权限确认。");
     }
 
     print!("继续执行吗？[y/N] ");
@@ -830,6 +847,58 @@ fn install_path_kind_label(kind: releasedock_core::manifest::InstallPathKind) ->
     }
 }
 
+fn plan_management_label(plan: &InstallPlan) -> String {
+    match plan.system_package_manager {
+        Some(manager) => format!(
+            "{} ({})",
+            management_kind_label(plan.management_kind),
+            package_manager_label(manager)
+        ),
+        None => management_kind_label(plan.management_kind).to_string(),
+    }
+}
+
+fn plan_management_summary(plans: &[(String, InstallPlan)]) -> String {
+    let managed_local = plans
+        .iter()
+        .filter(|(_, plan)| matches!(plan.management_kind, InstallManagementKind::ManagedLocal))
+        .count();
+    let system_package = plans
+        .iter()
+        .filter(|(_, plan)| matches!(plan.management_kind, InstallManagementKind::SystemPackage))
+        .count();
+    let external_installer = plans
+        .iter()
+        .filter(|(_, plan)| {
+            matches!(
+                plan.management_kind,
+                InstallManagementKind::ExternalInstaller
+            )
+        })
+        .count();
+
+    format!(
+        "本地托管 {} 个，系统包 {} 个，外部安装器 {} 个",
+        managed_local, system_package, external_installer
+    )
+}
+
+fn management_kind_label(kind: InstallManagementKind) -> &'static str {
+    match kind {
+        InstallManagementKind::ManagedLocal => "本地托管",
+        InstallManagementKind::SystemPackage => "系统包",
+        InstallManagementKind::ExternalInstaller => "外部安装器",
+    }
+}
+
+fn package_manager_label(manager: SystemPackageManager) -> &'static str {
+    match manager {
+        SystemPackageManager::Debian => "apt",
+        SystemPackageManager::Rpm => "dnf",
+        SystemPackageManager::Pacman => "pacman",
+    }
+}
+
 fn read_fixture_release(path: &PathBuf) -> Result<Release> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("failed to read release fixture {}", path.display()))?;
@@ -858,8 +927,15 @@ impl From<CliArch> for Architecture {
 
 #[cfg(test)]
 mod tests {
-    use super::{CheckStatus, failed_check_entry, status_label};
-    use releasedock_core::manifest::InstalledApp;
+    use super::{
+        CheckStatus, failed_check_entry, management_kind_label, package_manager_label,
+        plan_management_summary, status_label,
+    };
+    use releasedock_core::{
+        asset_matcher::InstallType,
+        install_plan::{InstallManagementKind, InstallPlan},
+        manifest::{InstalledApp, SystemPackageManager},
+    };
 
     #[test]
     fn formats_failed_check_entries_with_reason() {
@@ -876,5 +952,76 @@ mod tests {
         assert_eq!(entry.status, CheckStatus::FetchFailed);
         assert_eq!(status_label(entry.status), "获取失败");
         assert!(entry.reason.as_deref().unwrap().contains("network down"));
+    }
+
+    #[test]
+    fn labels_install_management_for_confirmation_output() {
+        assert_eq!(
+            management_kind_label(InstallManagementKind::ManagedLocal),
+            "本地托管"
+        );
+        assert_eq!(
+            management_kind_label(InstallManagementKind::SystemPackage),
+            "系统包"
+        );
+        assert_eq!(
+            management_kind_label(InstallManagementKind::ExternalInstaller),
+            "外部安装器"
+        );
+        assert_eq!(
+            package_manager_label(SystemPackageManager::Pacman),
+            "pacman"
+        );
+    }
+
+    #[test]
+    fn summarizes_bulk_plan_management_kinds() {
+        let plans = vec![
+            (
+                "owner/local".to_string(),
+                sample_plan("owner/local", InstallManagementKind::ManagedLocal, None),
+            ),
+            (
+                "owner/pkg".to_string(),
+                sample_plan(
+                    "owner/pkg",
+                    InstallManagementKind::SystemPackage,
+                    Some(SystemPackageManager::Pacman),
+                ),
+            ),
+            (
+                "owner/installer".to_string(),
+                sample_plan(
+                    "owner/installer",
+                    InstallManagementKind::ExternalInstaller,
+                    None,
+                ),
+            ),
+        ];
+
+        let summary = plan_management_summary(&plans);
+
+        assert!(summary.contains("本地托管 1 个"));
+        assert!(summary.contains("系统包 1 个"));
+        assert!(summary.contains("外部安装器 1 个"));
+    }
+
+    fn sample_plan(
+        repo_id: &str,
+        management_kind: InstallManagementKind,
+        system_package_manager: Option<SystemPackageManager>,
+    ) -> InstallPlan {
+        InstallPlan {
+            repo_id: repo_id.to_string(),
+            repo_url: format!("https://github.com/{repo_id}"),
+            version: "v1.0.0".to_string(),
+            asset_name: "demo.bin".to_string(),
+            download_url: "https://example.invalid/demo.bin".to_string(),
+            install_type: InstallType::Unknown,
+            management_kind,
+            system_package_manager,
+            requires_user_confirmation: management_kind != InstallManagementKind::ManagedLocal,
+            notes: Vec::new(),
+        }
     }
 }

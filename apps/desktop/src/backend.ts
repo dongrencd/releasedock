@@ -7,7 +7,9 @@ export type InstallPlan = {
   version: string;
   asset_name: string;
   download_url: string;
-  install_type: "WindowsInstaller" | "PortableArchive" | "AppImage" | "LinuxPackage" | "Archive" | "Unknown";
+  install_type: "WindowsInstaller" | "PortableArchive" | "AppImage" | "LinuxPackage" | "Executable" | "Archive" | "Unknown";
+  management_kind: "managedLocal" | "systemPackage" | "externalInstaller";
+  system_package_manager?: "Debian" | "Rpm" | "Pacman" | null;
   requires_user_confirmation: boolean;
   notes: string[];
 };
@@ -103,6 +105,10 @@ export async function removeTrackedRepo(repoInput: string): Promise<ManagedApp[]
 
 export async function bulkRemoveTrackedRepos(repoInputs: string[]): Promise<BulkRemoveResult> {
   return invoke<BulkRemoveResult>("bulk_remove_tracked_repos", { repoInputs });
+}
+
+export async function openApp(repoInput: string): Promise<void> {
+  await invoke("open_app", { repoInput });
 }
 
 export async function openUrl(url: string): Promise<void> {

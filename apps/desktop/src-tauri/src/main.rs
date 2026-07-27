@@ -1,3 +1,5 @@
+#![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
+
 use std::{
     collections::HashSet,
     env,
@@ -9,12 +11,12 @@ use std::{
 
 use anyhow::{Context, Result};
 use releasedock_core::{
-    asset_matcher::{Architecture, AssetMatcher, OperatingSystem},
+    asset_matcher::{Architecture, AssetMatcher, InstallType, OperatingSystem},
     config::{background_check_enabled, check_interval_minutes, effective_install_root},
     config::{Config, ConfigStore, Language},
-    installer::{install_from_plan, uninstall_repo as core_uninstall_repo, ProgressReporter, TaskProgress},
-    install_plan::InstallPlan,
-    manifest::{InstallPathKind, ManifestStore},
+    installer::{infer_launch_target, install_from_plan, uninstall_repo as core_uninstall_repo, ProgressReporter, TaskProgress},
+    install_plan::{InstallManagementKind, InstallPlan},
+    manifest::{InstallPathKind, ManifestStore, SystemPackageManager},
     release::{Release, ReleaseClient},
     repo::RepoRef,
 };
@@ -23,6 +25,15 @@ use tauri::{Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
 use tokio::sync::Mutex;
 use tokio::task::{JoinHandle, JoinSet};
+
+#[cfg(target_os = "windows")]
+use std::os::windows::ffi::OsStrExt;
+#[cfg(target_os = "windows")]
+use windows::core::PCWSTR;
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::Shell::ShellExecuteW;
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
 mod background_check;
 mod tracking;
@@ -63,6 +74,10 @@ struct ManagedAppView {
     release_url: Option<String>,
     published_at: Option<String>,
     asset_name: Option<String>,
+    launch_path: Option<String>,
+    system_package_name: Option<String>,
+    system_package_manager: Option<SystemPackageManager>,
+    management_kind: Option<InstallManagementKind>,
     install_path: String,
     install_type: String,
     install_path_kind: InstallPathKind,
@@ -127,6 +142,7 @@ async fn main() -> Result<()> {
             uninstall_repo,
             remove_tracked_repo,
             bulk_remove_tracked_repos,
+            open_app,
             open_url,
             open_path,
             open_system_uninstall_settings
@@ -273,6 +289,11 @@ async fn bulk_remove_tracked_repos(
     bulk_remove_tracked_repos_from_tracking(&app, repo_inputs)
         .await
         .map_err(format_error)
+}
+
+#[tauri::command]
+async fn open_app(repo_input: String) -> Result<(), String> {
+    open_app_in_system(&repo_input).map_err(format_error)
 }
 
 #[tauri::command]
@@ -449,6 +470,8 @@ fn render_app(
     let matcher = AssetMatcher::current();
     match matcher.select_best(&release) {
         Ok(matched) => {
+            let management_kind = management_kind_for_app(&app);
+            let launch_path = resolve_launch_path(&app).map(|value| value.display().to_string());
             let status = if app.installed_version == release.tag_name {
                 AppStatus::Current
             } else {
@@ -470,6 +493,10 @@ fn render_app(
                 release_url: release.html_url.clone().or_else(|| Some(repo.github_url())),
                 published_at: release.published_at.as_ref().map(|value| value.to_rfc3339()),
                 asset_name: Some(matched.asset.name.clone()),
+                launch_path,
+                system_package_name: app.system_package_name.clone(),
+                system_package_manager: app.system_package_manager,
+                management_kind: Some(management_kind),
                 install_path: app.install_path.display().to_string(),
                 install_type: format!("{:?}", app.install_type),
                 install_path_kind: app.install_path_kind,
@@ -491,6 +518,8 @@ fn build_no_release_installed_view(
     repo: RepoRef,
     language: Language,
 ) -> ManagedAppView {
+    let management_kind = management_kind_for_app(&app);
+    let launch_path = resolve_launch_path(&app).map(|value| value.display().to_string());
     ManagedAppView {
         id: app.id,
         name: app.name,
@@ -507,6 +536,10 @@ fn build_no_release_installed_view(
         release_url: Some(repo.github_url()),
         published_at: None,
         asset_name: None,
+        launch_path,
+        system_package_name: app.system_package_name.clone(),
+        system_package_manager: app.system_package_manager,
+        management_kind: Some(management_kind),
         install_path: app.install_path.display().to_string(),
         install_type: format!("{:?}", app.install_type),
         install_path_kind: app.install_path_kind,
@@ -533,6 +566,10 @@ fn render_tracked_repo(repo: RepoRef, release: Release, language: Language) -> M
         release_url: release.html_url.clone().or_else(|| Some(repo.github_url())),
         published_at: release.published_at.as_ref().map(|value| value.to_rfc3339()),
         asset_name: matched.map(|asset| asset.asset.name),
+        launch_path: None,
+        system_package_name: None,
+        system_package_manager: None,
+        management_kind: None,
         install_path: install_path.display().to_string(),
         install_type: "Unknown".to_string(),
         install_path_kind: InstallPathKind::Unknown,
@@ -558,6 +595,10 @@ fn build_no_release_tracked_view(repo: RepoRef, language: Language) -> ManagedAp
         release_url: Some(repo.github_url()),
         published_at: None,
         asset_name: None,
+        launch_path: None,
+        system_package_name: None,
+        system_package_manager: None,
+        management_kind: None,
         install_path: install_path.display().to_string(),
         install_type: "Unknown".to_string(),
         install_path_kind: InstallPathKind::Unknown,
@@ -584,6 +625,10 @@ fn build_failed_view(
         release_url,
         published_at: None,
         asset_name: None,
+        launch_path: None,
+        system_package_name: None,
+        system_package_manager: None,
+        management_kind: None,
         install_path: "unknown".to_string(),
         install_type: "Unknown".to_string(),
         install_path_kind: InstallPathKind::Unknown,
@@ -692,13 +737,25 @@ fn open_path_in_system(path: &str) -> Result<()> {
     open_target_with_platform(path)
 }
 
+fn open_app_in_system(repo_input: &str) -> Result<()> {
+    let repo = RepoRef::parse(repo_input)?;
+    let store = ManifestStore::default()?;
+    let manifest = store.load()?;
+    let Some(app) = manifest.apps.into_iter().find(|app| app.id == repo.id()) else {
+        anyhow::bail!("no managed app matched {}", repo.id());
+    };
+
+    let Some(launch_path) = resolve_launch_path(&app) else {
+        anyhow::bail!("no launch target available for {}", app.id);
+    };
+
+    launch_target_with_platform(&launch_path)
+}
+
 fn open_system_uninstall_settings_in_system() -> Result<()> {
     #[cfg(target_os = "windows")]
     {
-        Command::new("cmd")
-            .args(["/C", "start", "", "ms-settings:appsfeatures"])
-            .spawn()
-            .context("failed to open Windows uninstall settings")?;
+        open_with_windows_shell("ms-settings:appsfeatures")?;
         return Ok(());
     }
 
@@ -854,10 +911,7 @@ pub(crate) fn tr_owned(language: Language, english: &'static str, chinese: &'sta
 fn open_target_with_platform(target: &str) -> Result<()> {
     #[cfg(target_os = "windows")]
     {
-        Command::new("cmd")
-            .args(["/C", "start", "", target])
-            .spawn()
-            .with_context(|| format!("failed to open {target}"))?;
+        open_with_windows_shell(target).with_context(|| format!("failed to open {target}"))?;
         return Ok(());
     }
 
@@ -885,6 +939,107 @@ fn open_target_with_platform(target: &str) -> Result<()> {
     }
 }
 
+fn launch_target_with_platform(target: &Path) -> Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        open_with_windows_shell(target.as_os_str()).with_context(|| format!("failed to launch {}", target.display()))?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if target.is_dir()
+            && target
+                .extension()
+                .and_then(|value| value.to_str())
+                .map(|value| value.eq_ignore_ascii_case("app"))
+                .unwrap_or(false)
+        {
+            Command::new("open")
+                .arg(target)
+                .spawn()
+                .with_context(|| format!("failed to launch {}", target.display()))?;
+            return Ok(());
+        }
+
+        Command::new(target)
+            .spawn()
+            .with_context(|| format!("failed to launch {}", target.display()))?;
+        return Ok(());
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Command::new(target)
+            .spawn()
+            .with_context(|| format!("failed to launch {}", target.display()))?;
+        return Ok(());
+    }
+
+    #[allow(unreachable_code)]
+    {
+        anyhow::bail!("launching apps is not supported on this platform");
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn open_with_windows_shell(target: impl AsRef<std::ffi::OsStr>) -> Result<()> {
+    let wide_target = os_str_to_wide_null(target.as_ref());
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            None,
+            PCWSTR::from_raw(wide_target.as_ptr()),
+            None,
+            None,
+            SW_SHOWNORMAL,
+        )
+    };
+
+    if result.0 <= 32 {
+        anyhow::bail!("Windows shell failed to open {}", target.as_ref().to_string_lossy());
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn os_str_to_wide_null(value: &std::ffi::OsStr) -> Vec<u16> {
+    value.encode_wide().chain(std::iter::once(0)).collect()
+}
+
+fn resolve_launch_path(app: &releasedock_core::manifest::InstalledApp) -> Option<PathBuf> {
+    if let Some(launch_path) = &app.launch_path {
+        if launch_path.exists() {
+            return Some(launch_path.clone());
+        }
+    }
+
+    infer_launch_target(
+        &app.install_path,
+        app.install_type,
+        &app.name,
+        &app.asset_name,
+    )
+}
+
+fn management_kind_for_app(app: &releasedock_core::manifest::InstalledApp) -> InstallManagementKind {
+    match app.install_type {
+        InstallType::AppImage | InstallType::PortableArchive | InstallType::Archive | InstallType::Executable => {
+            InstallManagementKind::ManagedLocal
+        }
+        InstallType::LinuxPackage => InstallManagementKind::SystemPackage,
+        InstallType::WindowsInstaller => InstallManagementKind::ExternalInstaller,
+        InstallType::Unknown => {
+            if matches!(app.install_path_kind, InstallPathKind::ManagedPath) {
+                InstallManagementKind::ManagedLocal
+            } else {
+                InstallManagementKind::ExternalInstaller
+            }
+        }
+    }
+}
+
 fn read_fixture_release(path: &PathBuf) -> Result<Release> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("failed to read release fixture {}", path.display()))?;
@@ -903,7 +1058,12 @@ fn format_error(error: anyhow::Error) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_github_url;
+    use std::path::PathBuf;
+
+    use releasedock_core::asset_matcher::InstallType;
+    use releasedock_core::manifest::{InstallPathKind, InstalledApp};
+
+    use super::{management_kind_for_app, validate_github_url};
 
     #[test]
     fn allows_github_release_pages() {
@@ -917,6 +1077,102 @@ mod tests {
         let url = url::Url::parse("https://example.com/releases")
             .expect("valid URL");
         assert!(validate_github_url(&url).is_err());
+    }
+
+    #[test]
+    fn classifies_installed_apps_by_management_kind() {
+        let appimage = InstalledApp::with_install_metadata(
+            "owner/appimage",
+            "AppImage",
+            "v1.0.0",
+            "app.AppImage",
+            PathBuf::from("/tmp/appimage"),
+            InstallType::AppImage,
+            InstallPathKind::ManagedPath,
+            true,
+        );
+        assert!(matches!(management_kind_for_app(&appimage), super::InstallManagementKind::ManagedLocal));
+
+        let executable = InstalledApp::with_install_metadata(
+            "owner/executable",
+            "Executable",
+            "v1.0.0",
+            "releasedock-linux-x64",
+            PathBuf::from("/tmp/executable"),
+            InstallType::Executable,
+            InstallPathKind::ManagedPath,
+            true,
+        );
+        assert!(matches!(management_kind_for_app(&executable), super::InstallManagementKind::ManagedLocal));
+
+        let linux_package = InstalledApp::with_install_metadata(
+            "owner/package",
+            "Package",
+            "v1.0.0",
+            "package.deb",
+            PathBuf::from("/tmp/package"),
+            InstallType::LinuxPackage,
+            InstallPathKind::SystemInstaller,
+            true,
+        );
+        assert!(matches!(management_kind_for_app(&linux_package), super::InstallManagementKind::SystemPackage));
+
+        let windows_installer = InstalledApp::with_install_metadata(
+            "owner/windows",
+            "Windows",
+            "v1.0.0",
+            "setup.exe",
+            PathBuf::from("/tmp/windows"),
+            InstallType::WindowsInstaller,
+            InstallPathKind::SystemInstaller,
+            false,
+        );
+        assert!(matches!(management_kind_for_app(&windows_installer), super::InstallManagementKind::ExternalInstaller));
+
+        let unknown_managed = InstalledApp::with_install_metadata(
+            "owner/legacy",
+            "Legacy",
+            "v1.0.0",
+            "legacy.bin",
+            PathBuf::from("/tmp/legacy"),
+            InstallType::Unknown,
+            InstallPathKind::ManagedPath,
+            true,
+        );
+        assert!(matches!(management_kind_for_app(&unknown_managed), super::InstallManagementKind::ManagedLocal));
+    }
+
+    #[test]
+    fn windows_release_build_uses_gui_subsystem() {
+        let source = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"))
+            .expect("read main.rs");
+        assert!(
+            source.contains(r#"cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")"#),
+            "main.rs should opt into the Windows GUI subsystem for release builds"
+        );
+    }
+
+    #[test]
+    fn windows_open_actions_use_shell_execute_not_cmd() {
+        let source = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"))
+            .expect("read main.rs");
+        let production_source = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("main.rs should contain a test module marker");
+
+        assert!(
+            production_source.contains("ShellExecuteW"),
+            "Windows open paths should use ShellExecuteW"
+        );
+        assert!(
+            !production_source.contains(r#"Command::new("cmd")"#),
+            "Windows open paths should not spawn cmd.exe"
+        );
+        assert!(
+            !production_source.contains("spawn_without_console"),
+            "Windows open paths should not need a console-hiding helper"
+        );
     }
 }
 

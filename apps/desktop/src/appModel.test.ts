@@ -6,9 +6,18 @@ import {
   getBulkRemoveAvailability,
   filterManagedApps,
   getConfirmInstallAvailability,
+  getOpenAppAvailability,
   getOpenReleaseAvailability,
   getPrimaryActionAvailability,
   getRemoveTrackedAvailability,
+  hasInstallableAsset,
+  getInspectorDetailItems,
+  hasSecondaryInspectorActions,
+  installManagementKindLabel,
+  getDetailPathLabel,
+  shouldShowOpenAppSecondary,
+  shouldShowOpenReleaseSecondary,
+  systemPackageManagerLabel,
   getUninstallAvailability,
   parseReleaseNote,
   pruneSelection,
@@ -21,6 +30,14 @@ import {
 const language: Language = "en";
 
 describe("buildUpdateInbox", () => {
+  it("labels install management details for previews", () => {
+    expect(installManagementKindLabel("managedLocal", "zh-CN")).toBe("本地托管");
+    expect(installManagementKindLabel("systemPackage", "zh-CN")).toBe("由系统包管理器托管");
+    expect(installManagementKindLabel("externalInstaller", "en")).toBe("External installer");
+    expect(systemPackageManagerLabel("Pacman")).toBe("Pacman");
+    expect(systemPackageManagerLabel("Rpm")).toBe("RPM");
+  });
+
   it("keeps actionable updates before current apps", () => {
     const inbox = buildUpdateInbox([
       {
@@ -30,7 +47,9 @@ describe("buildUpdateInbox", () => {
         latestVersion: "v1.0.0",
         status: "current",
         source: "GitHub",
-        installPath: "/tmp/current"
+        installPath: "/tmp/current",
+        installPathKind: "ManagedPath",
+        launchPath: "/tmp/current/current"
       },
       {
         id: "owner/update",
@@ -45,10 +64,10 @@ describe("buildUpdateInbox", () => {
 
     expect(inbox[0].id).toBe("owner/update");
     expect(inbox[0].actionLabel).toBe("Update");
-    expect(inbox[1].actionLabel).toBe("Open");
+    expect(inbox[1].actionLabel).toBe("Open app");
   });
 
-  it("labels needs-choice apps as install actions", () => {
+  it("opens the release when a needs-choice app has no installable asset", () => {
     const inbox = buildUpdateInbox([
       {
         id: "owner/choice",
@@ -57,11 +76,173 @@ describe("buildUpdateInbox", () => {
         latestVersion: "v1.1.0",
         status: "needsChoice",
         source: "GitHub",
+        releaseUrl: "https://github.com/owner/choice/releases/tag/v1.1.0",
+        installPath: "/tmp/choice"
+      }
+    ], language);
+
+    expect(inbox[0].actionLabel).toBe("Open release");
+  });
+
+  it("hides the secondary release action when release is already the primary action", () => {
+    const releaseApp = buildUpdateInbox([
+      {
+        id: "owner/choice",
+        name: "Choice",
+        currentVersion: "Not installed",
+        latestVersion: "v1.1.0",
+        status: "needsChoice",
+        source: "GitHub",
+        releaseUrl: "https://github.com/owner/choice/releases/tag/v1.1.0",
+        installPath: "/tmp/choice"
+      }
+    ], language)[0];
+
+    const updateApp = buildUpdateInbox([
+      {
+        id: "owner/update",
+        name: "Update",
+        currentVersion: "v1.0.0",
+        latestVersion: "v1.1.0",
+        status: "updateAvailable",
+        source: "GitHub",
+        installPath: "/tmp/update",
+        installPathKind: "ManagedPath",
+        launchPath: "/tmp/update/update"
+      }
+    ], language)[0];
+
+    expect(shouldShowOpenReleaseSecondary(releaseApp, language)).toBe(false);
+    expect(shouldShowOpenReleaseSecondary(updateApp, language)).toBe(true);
+  });
+
+  it("hides the secondary action group when no secondary action is available", () => {
+    const releaseApp = buildUpdateInbox([
+      {
+        id: "owner/choice",
+        name: "Choice",
+        currentVersion: "Not installed",
+        latestVersion: "v1.1.0",
+        status: "needsChoice",
+        source: "GitHub",
+        releaseUrl: "https://github.com/owner/choice/releases/tag/v1.1.0",
+        installPath: "/tmp/choice"
+      }
+    ], language)[0];
+
+    const updateApp = buildUpdateInbox([
+      {
+        id: "owner/update",
+        name: "Update",
+        currentVersion: "v1.0.0",
+        latestVersion: "v1.1.0",
+        status: "updateAvailable",
+        source: "GitHub",
+        installPath: "/tmp/update",
+        installPathKind: "ManagedPath",
+        launchPath: "/tmp/update/update"
+      }
+    ], language)[0];
+
+    expect(hasSecondaryInspectorActions(releaseApp, language)).toBe(false);
+    expect(hasSecondaryInspectorActions(updateApp, language)).toBe(true);
+  });
+
+  it("keeps install as the action when a needs-choice app has a matched asset", () => {
+    const inbox = buildUpdateInbox([
+      {
+        id: "owner/choice",
+        name: "Choice",
+        currentVersion: "Not installed",
+        latestVersion: "v1.1.0",
+        status: "needsChoice",
+        source: "GitHub",
+        assetName: "choice-windows-x64.zip",
         installPath: "/tmp/choice"
       }
     ], language);
 
     expect(inbox[0].actionLabel).toBe("Install");
+  });
+
+  it("labels the detail path as the default install path when no asset can be installed", () => {
+    const item = buildUpdateInbox([
+      {
+        id: "owner/choice",
+        name: "Choice",
+        currentVersion: "Not installed",
+        latestVersion: "v1.1.0",
+        status: "needsChoice",
+        source: "GitHub",
+        releaseUrl: "https://github.com/owner/choice/releases/tag/v1.1.0",
+        installPath: "/tmp/choice"
+      }
+    ], language)[0];
+
+    expect(getDetailPathLabel(item, language)).toBe("Default install path");
+  });
+
+  it("marks asset and install path as full-width detail rows", () => {
+    const item = buildUpdateInbox([
+      {
+        id: "owner/choice",
+        name: "Choice",
+        currentVersion: "Not installed",
+        latestVersion: "v1.1.0",
+        status: "needsChoice",
+        source: "GitHub",
+        assetName: "choice-windows-x64.zip",
+        installPath: "/tmp/choice"
+      }
+    ], language)[0];
+
+    const details = getInspectorDetailItems(item, language);
+
+    expect(details[0]).toMatchObject({
+      label: "Asset file",
+      value: "choice-windows-x64.zip",
+      fullWidth: true
+    });
+    expect(details[1]).toMatchObject({
+      label: "Install path",
+      value: "/tmp/choice",
+      fullWidth: true
+    });
+  });
+
+  it("detects installable assets only for needs-choice apps", () => {
+    expect(hasInstallableAsset({
+      id: "owner/choice",
+      name: "Choice",
+      currentVersion: "Not installed",
+      latestVersion: "v1.1.0",
+      status: "needsChoice",
+      source: "GitHub",
+      assetName: "choice-windows-x64.zip",
+      installPath: "/tmp/choice"
+    })).toBe(true);
+
+    expect(hasInstallableAsset({
+      id: "owner/choice",
+      name: "Choice",
+      currentVersion: "Not installed",
+      latestVersion: "v1.1.0",
+      status: "needsChoice",
+      source: "GitHub",
+      assetName: "   ",
+      installPath: "/tmp/choice"
+    })).toBe(false);
+
+    expect(hasInstallableAsset({
+      id: "owner/update",
+      name: "Update",
+      currentVersion: "v1.0.0",
+      latestVersion: "v1.1.0",
+      status: "updateAvailable",
+      source: "GitHub",
+      assetName: "update.zip",
+      installPath: "/tmp/update"
+    })).toBe(false);
   });
 
   it("preserves original release note for detail view", () => {
@@ -74,6 +255,8 @@ describe("buildUpdateInbox", () => {
         status: "updateAvailable",
         source: "GitHub",
         installPath: "/tmp/update",
+        installPathKind: "ManagedPath",
+        launchPath: "/tmp/update/update",
         releaseNote: "Fix crash\n\n- Keep original markdown-like text"
       }
     ], language);
@@ -258,11 +441,14 @@ describe("buildUpdateInbox", () => {
         status: "updateAvailable",
         source: "GitHub",
         installPath: "/tmp/update",
+        installPathKind: "ManagedPath",
+        launchPath: "/tmp/update/update",
         releaseUrl: "https://github.com/owner/update/releases/tag/v1.1.0"
       }
     ], language)[0];
 
     expect(getOpenReleaseAvailability(app, false, language)).toEqual({ enabled: true });
+    expect(getOpenAppAvailability(app, false, language)).toEqual({ enabled: true });
     expect(getOpenReleaseAvailability(app, true, language)).toEqual({
       enabled: false,
       reason: "A task is already running"
@@ -276,6 +462,39 @@ describe("buildUpdateInbox", () => {
     });
   });
 
+  it("shows the secondary open-app button only for updateable managed installs", () => {
+    const updateApp = buildUpdateInbox([
+      {
+        id: "owner/update",
+        name: "Update",
+        currentVersion: "v1.0.0",
+        latestVersion: "v1.1.0",
+        status: "updateAvailable",
+        source: "GitHub",
+        installPath: "/tmp/update",
+        installPathKind: "ManagedPath",
+        launchPath: "/tmp/update/update"
+      }
+    ], language)[0];
+
+    const currentApp = buildUpdateInbox([
+      {
+        id: "owner/current",
+        name: "Current",
+        currentVersion: "v1.0.0",
+        latestVersion: "v1.0.0",
+        status: "current",
+        source: "GitHub",
+        installPath: "/tmp/current",
+        installPathKind: "ManagedPath",
+        launchPath: "/tmp/current/current"
+      }
+    ], language)[0];
+
+    expect(shouldShowOpenAppSecondary(updateApp)).toBe(true);
+    expect(shouldShowOpenAppSecondary(currentApp)).toBe(false);
+  });
+
   it("treats no-release tracked repos as removable and openable", () => {
     const app = buildUpdateInbox([
       {
@@ -287,6 +506,7 @@ describe("buildUpdateInbox", () => {
         source: "GitHub",
         installPath: "/tmp/none",
         installPathKind: "Unknown",
+        launchPath: "/tmp/none/app",
         releaseUrl: "https://github.com/owner/none"
       }
     ], language)[0];

@@ -1308,6 +1308,10 @@ h2 {
   background: #f8fafc;
 }
 
+.detailListWide {
+  grid-column: 1 / -1;
+}
+
 .detailList dt {
   color: #64748b;
   font-size: 12px;

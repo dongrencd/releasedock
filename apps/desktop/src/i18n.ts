@@ -44,7 +44,11 @@ type Copy = {
   assetFile: string;
   noAssetAvailable: string;
   installerFile: string;
+  systemPackage: string;
+  systemPackageManager: string;
   installPath: string;
+  defaultInstallPath: string;
+  installManagement: string;
   uninstallAbility: string;
   installPreview: string;
   installPreviewConfirmation: string;
@@ -106,6 +110,7 @@ type Copy = {
     update: string;
     install: string;
     retry: string;
+    openApp: string;
     open: string;
   };
   status: {
@@ -120,6 +125,7 @@ type Copy = {
     PortableArchive: string;
     AppImage: string;
     LinuxPackage: string;
+    Executable: string;
     Archive: string;
     Unknown: string;
   };
@@ -128,12 +134,19 @@ type Copy = {
     SystemInstaller: string;
     Unknown: string;
   };
+  managementKind: {
+    managedLocal: string;
+    systemPackage: string;
+    externalInstaller: string;
+  };
   model: {
     busy: string;
     noRelease: string;
     selectApp: string;
+    noInstallableAsset: string;
     selectAssetBeforeUninstall: string;
     useSystemUninstall: string;
+    noLaunchTarget: string;
     onlyUntracked: string;
     selectAtLeastOne: string;
     skippedCount: (count: number) => string;
@@ -189,7 +202,11 @@ const copy: Record<Language, Copy> = {
     assetFile: "Asset file",
     noAssetAvailable: "No asset available",
     installerFile: "Installer file",
+    systemPackage: "System package",
+    systemPackageManager: "Package manager",
     installPath: "Install path",
+    defaultInstallPath: "Default install path",
+    installManagement: "Management",
     uninstallAbility: "Uninstall",
     installPreview: "Install preview",
     installPreviewConfirmation: "This installer needs confirmation before it runs.",
@@ -251,6 +268,7 @@ const copy: Record<Language, Copy> = {
       update: "Update",
       install: "Install",
       retry: "Retry",
+      openApp: "Open app",
       open: "Open"
     },
     status: {
@@ -265,6 +283,7 @@ const copy: Record<Language, Copy> = {
       PortableArchive: "Portable archive",
       AppImage: "AppImage",
       LinuxPackage: "Linux package",
+      Executable: "Executable",
       Archive: "Archive",
       Unknown: "Unknown"
     },
@@ -273,12 +292,19 @@ const copy: Record<Language, Copy> = {
       SystemInstaller: "System installer",
       Unknown: "Unknown"
     },
+    managementKind: {
+      managedLocal: "Managed locally",
+      systemPackage: "Managed by system package manager",
+      externalInstaller: "External installer"
+    },
     model: {
       busy: "A task is already running",
       noRelease: "No release link available",
       selectApp: "Select an app first",
+      noInstallableAsset: "No installable asset for this platform",
       selectAssetBeforeUninstall: "Pick an asset before uninstalling",
       useSystemUninstall: "Use system uninstall",
+      noLaunchTarget: "No launch target found",
       onlyUntracked: "Only uninstalled tracked items can be removed",
       selectAtLeastOne: "Select at least one uninstalled tracked item",
       skippedCount: (count) => `Skipping ${count} non-removable item(s)`,
@@ -334,7 +360,11 @@ const copy: Record<Language, Copy> = {
     assetFile: "资产文件",
     noAssetAvailable: "暂无资产文件",
     installerFile: "安装包保存位置",
+    systemPackage: "系统包",
+    systemPackageManager: "包管理器",
     installPath: "安装路径",
+    defaultInstallPath: "默认安装路径",
+    installManagement: "管理方式",
     uninstallAbility: "卸载能力",
     installPreview: "安装预览",
     installPreviewConfirmation: "这个安装包需要在系统权限确认后继续执行。",
@@ -396,6 +426,7 @@ const copy: Record<Language, Copy> = {
       update: "更新",
       install: "安装",
       retry: "重试",
+      openApp: "打开软件",
       open: "打开"
     },
     status: {
@@ -410,6 +441,7 @@ const copy: Record<Language, Copy> = {
       PortableArchive: "便携压缩包",
       AppImage: "AppImage",
       LinuxPackage: "Linux 安装包",
+      Executable: "可执行文件",
       Archive: "归档包",
       Unknown: "未知"
     },
@@ -418,12 +450,19 @@ const copy: Record<Language, Copy> = {
       SystemInstaller: "系统安装器",
       Unknown: "未知"
     },
+    managementKind: {
+      managedLocal: "本地托管",
+      systemPackage: "由系统包管理器托管",
+      externalInstaller: "外部安装器"
+    },
     model: {
       busy: "当前有任务在执行",
       noRelease: "当前没有可打开的 Release 链接",
       selectApp: "请先选择一个软件",
+      noInstallableAsset: "当前平台没有可安装资产",
       selectAssetBeforeUninstall: "先选择资产后才能卸载",
       useSystemUninstall: "需使用系统卸载",
+      noLaunchTarget: "未找到可启动目标",
       onlyUntracked: "只有未安装的跟踪项可以移除",
       selectAtLeastOne: "选择至少一个未安装的跟踪项",
       skippedCount: (count) => `将跳过 ${count} 个不可移除项`,
@@ -443,6 +482,89 @@ export function normalizeLanguage(value?: string | null): Language {
 
 export function createUiText(language: Language) {
   return copy[language];
+}
+
+function localizedText(language: Language, en: string, zh: string) {
+  return language === "zh-CN" ? zh : en;
+}
+
+function localizedTemplate(language: Language, en: string, zh: string) {
+  return localizedText(language, en, zh);
+}
+
+// 任务状态文案集中到这里，避免页面里到处散落硬编码英文。
+export function createTaskStatusText(language: Language) {
+  const ui = createUiText(language);
+  return {
+    loadingDashboard: ui.loadingDashboard,
+    checkingLatestRelease: localizedText(language, "Checking latest release", "正在检查最新 release"),
+    checkingLatestReleaseProgress: (completed: number, total: number) =>
+      localizedTemplate(
+        language,
+        `Checking latest release (${completed}/${total})`,
+        `正在检查最新 release（${completed}/${total}）`
+      ),
+    loadedApps: ui.currentStatusLoaded,
+    noApps: ui.currentStatusEmpty,
+    refreshFailed: localizedText(language, "Failed to refresh updates", "刷新更新失败"),
+    failedToLoadSettings: localizedText(language, "Failed to load settings", "加载设置失败"),
+    enterRepo: localizedText(language, "Enter owner/repo or a GitHub URL", "请输入 owner/repo 或 GitHub URL"),
+    addRepoFailed: ui.addRepoFailed,
+    addingRepo: (repo: string) => localizedTemplate(language, `Adding ${repo}`, `正在添加 ${repo}`),
+    addedRepo: ui.addRepoSuccess,
+    autoSavingSettings: localizedText(language, "Auto-saving settings", "自动保存设置"),
+    savingSettings: localizedText(language, "Saving settings", "正在保存设置"),
+    settingsSaved: ui.saveSettingsSuccess,
+    failedToSaveSettings: ui.saveSettingsFailed,
+    generatingInstallPreview: (name: string) =>
+      localizedTemplate(language, `Generating install preview for ${name}`, `正在为 ${name} 生成安装预览`),
+    generatedInstallPreview: (name: string) =>
+      localizedTemplate(language, `Generated install preview for ${name}`, `已生成 ${name} 的安装预览`),
+    failedToBuildInstallPreview: localizedText(language, "Failed to build install preview", "生成安装预览失败"),
+    installing: (name: string) => localizedTemplate(language, `Installing ${name}`, `正在安装 ${name}`),
+    preparingInstall: (name: string) =>
+      localizedTemplate(language, `Preparing to install ${name}`, `正在准备安装 ${name}`),
+    finishedInstalling: (name: string) =>
+      localizedTemplate(language, `Finished installing ${name}`, `已完成安装 ${name}`),
+    installedOrUpdated: (name: string) =>
+      localizedTemplate(language, `Installed or updated ${name}`, `已安装或更新 ${name}`),
+    installFailed: localizedText(language, "Install failed", "安装失败"),
+    uninstalling: (name: string) => localizedTemplate(language, `Uninstalling ${name}`, `正在卸载 ${name}`),
+    finishedUninstalling: (name: string) =>
+      localizedTemplate(language, `Finished uninstalling ${name}`, `已完成卸载 ${name}`),
+    uninstalled: (name: string) => localizedTemplate(language, `Uninstalled ${name}`, `已卸载 ${name}`),
+    uninstallFailed: localizedText(language, "Uninstall failed", "卸载失败"),
+    stoppedTracking: (name: string) => localizedTemplate(language, `Stopped tracking ${name}`, `已停止跟踪 ${name}`),
+    removeTrackingFailed: localizedText(language, "Remove tracking failed", "移除跟踪失败"),
+    selectAtLeastOneRemovableItem: localizedText(language, "Select at least one removable item", "请选择至少一个可移除项"),
+    selectAtLeastOneUninstalledTrackedItem: localizedText(
+      language,
+      "Select at least one uninstalled tracked item",
+      "请选择至少一个未安装的跟踪项"
+    ),
+    removingTracked: (count: number) =>
+      localizedTemplate(language, `Removing ${count} tracked item(s)`, `正在移除 ${count} 个跟踪项`),
+    removedTracked: (removedCount: number, totalCount: number) =>
+      removedCount < totalCount
+        ? localizedTemplate(
+            language,
+            `Removed ${removedCount} tracked item(s), ${totalCount - removedCount} expired`,
+            `已移除 ${removedCount} 个跟踪项，${totalCount - removedCount} 个已失效`
+          )
+        : localizedTemplate(language, `Removed ${removedCount} tracked item(s)`, `已移除 ${removedCount} 个跟踪项`),
+    bulkRemoveFailed: localizedText(language, "Bulk remove failed", "批量移除失败"),
+    noReleaseLinkAvailable: ui.model.noRelease,
+    openedReleasePage: (name: string) => localizedTemplate(language, `Opened ${name} release page`, `已打开 ${name} 的 release 页面`),
+    openedApp: (name: string) => localizedTemplate(language, `Opened ${name}`, `已打开 ${name}`),
+    openFailed: localizedText(language, "Open failed", "打开失败"),
+    noInstallPathAvailable: localizedText(language, "No install path available", "没有可用的安装路径"),
+    openedInstallerFile: (name: string) => localizedTemplate(language, `Opened ${name} installer file`, `已打开 ${name} 的安装包文件`),
+    openedInstallLocation: (name: string) => localizedTemplate(language, `Opened ${name} install location`, `已打开 ${name} 的安装目录`),
+    openFolderFailed: localizedText(language, "Open folder failed", "打开目录失败"),
+    noInstallRootSelected: localizedText(language, "No install root selected", "没有选择安装根目录"),
+    openedInstallRoot: localizedText(language, "Opened install root", "已打开安装根目录"),
+    releaseNoteCopied: localizedText(language, "Release note copied", "已复制 release note")
+  };
 }
 
 export function languageOptions(language: Language) {

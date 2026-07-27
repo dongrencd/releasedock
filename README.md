@@ -1,17 +1,18 @@
 # ReleaseDock
 
-ReleaseDock helps you manage software that you installed from GitHub Releases and later need to update, uninstall, or inspect again. It targets the common workflow where you download `.exe`, `.zip`, `.AppImage`, `.tar.gz`, `.deb`, or `.rpm` files by hand and then lose track of them. It is not a replacement for `winget`, `scoop`, `apt`, `flatpak`, or Homebrew.
+ReleaseDock helps you manage software that you installed from GitHub Releases and later need to update, uninstall, or inspect again. It targets the common workflow where you download `.exe`, `.zip`, `.AppImage`, `.tar.gz`, `.deb`, `.rpm`, or `.pkg.tar.*` files by hand and then lose track of them. It is not a replacement for `winget`, `scoop`, `apt`, `flatpak`, or Homebrew.
 
 ## Overview
 
 The project is already usable in its first release:
 
 - Rust core: repository parsing, release data models, release notes, asset matching, install plans, manifests, and runtime configuration.
-- CLI: `install` can use a live GitHub latest release or fixtures, `--json` prints the install plan only, `--yes` skips interactive confirmation, `config` manages the GitHub token, proxy, and install root, `check` compares installed apps with the latest release, `list` reads the manifest, and `update` / `uninstall` use the real execution path.
-- Desktop GUI: Tauri 2 + React dashboard with real manifest loading, GitHub release refresh, release note viewing, install preview and confirmation, install execution, uninstall and tracking removal, visible install progress, install-location shortcuts, and a settings page for token, proxy, language, and install root. The default UI language is English.
+- CLI: `install` can use a live GitHub latest release or fixtures, `--json` prints the install plan only, `--yes` skips interactive confirmation, interactive confirmations show the selected management mode, `config` manages the GitHub token, proxy, and install root, `check` compares installed apps with the latest release, `list` reads the manifest, and `update` / `uninstall` use the real execution path.
+- Desktop GUI: Tauri 2 + React dashboard with real manifest loading, GitHub release refresh, release note viewing, install preview and confirmation, install execution, update actions for managed apps, uninstall and tracking removal, visible install progress, open-app and open-location shortcuts, and a settings page for token, proxy, language, and install root. The details panel now also shows the management mode and system package manager for installed apps. The default UI language is English, and the task/status strip follows the selected UI language.
 - The sidebar footer shows the product name and subtitle; it does not act as a repository shortcut.
 - Public repositories do not require a token. Private repositories and frequent API calls should use one.
-- The install root stores downloaded installers in `downloads/` and managed software in `apps/`. Windows `.exe` / `.msi` installers are tracked as system installers, so the file is kept for reference while the actual install location is owned by the installer itself.
+- ReleaseDock prefers portable or directly runnable release assets first, including Linux executables without an extension when they are clearly marked for the current platform and architecture, then falls back to system installers when no managed format is available.
+- The install root stores downloaded installers in `downloads/` and managed software in `apps/`. AppImage and archive installs stay under ReleaseDock control and update through staging replacement so a failed update keeps the previous managed contents. Linux `.deb` / `.rpm` / `.pkg.tar.*` installs are tracked with their package name so updates and uninstall use the system package manager. Windows `.exe` / `.msi` installers are still tracked as system installers, so the file is kept for reference while the actual install location is owned by the installer itself.
 
 ## Technology
 
@@ -57,6 +58,7 @@ bash scripts/linux/build-desktop.sh
 Pushes to `main` and manual `CI Release Artifacts` runs publish download artifacts in GitHub Actions:
 
 - `releasedock-linux-x64`: Linux CLI.
+- `releasedock-linux-x64-desktop`: Linux desktop build, including the executable plus Debian and RPM bundles when available.
 - `releasedock-windows-x64-desktop`: Windows desktop build, including the app bundle and installers when available.
 
 After downloading the CLI artifact, verify it with:
@@ -67,7 +69,7 @@ After downloading the CLI artifact, verify it with:
 
 ### GitHub Releases
 
-Tags that match `v*.*.*` create a GitHub Release with the same version and upload the Linux CLI, Windows desktop executable, NSIS installer, and MSI.
+Tags that match `v*.*.*` create a GitHub Release with the same version and upload the Linux CLI, Linux desktop executable, Linux Debian package, Linux RPM package, Windows desktop executable, NSIS installer, and MSI.
 
 ```bash
 git tag v0.2.0

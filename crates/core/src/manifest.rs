@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
-use crate::asset_matcher::InstallType;
+use crate::asset_matcher::{InstallType, is_linux_executable_asset_name};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Manifest {
@@ -27,6 +27,12 @@ pub struct InstalledApp {
     pub installed_at: DateTime<Utc>,
     pub asset_name: String,
     pub install_path: PathBuf,
+    #[serde(default)]
+    pub launch_path: Option<PathBuf>,
+    #[serde(default)]
+    pub system_package_name: Option<String>,
+    #[serde(default)]
+    pub system_package_manager: Option<SystemPackageManager>,
     #[serde(default = "default_install_type")]
     pub install_type: InstallType,
     #[serde(default = "default_install_path_kind")]
@@ -41,6 +47,14 @@ pub enum InstallPathKind {
     ManagedPath,
     SystemInstaller,
     Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SystemPackageManager {
+    Debian,
+    Rpm,
+    Pacman,
 }
 
 pub struct ManifestStore {
@@ -107,6 +121,9 @@ impl InstalledApp {
             installed_at: Utc::now(),
             asset_name: asset_name.into(),
             install_path,
+            launch_path: None,
+            system_package_name: None,
+            system_package_manager: None,
             install_type,
             install_path_kind,
             uninstall_supported,
@@ -132,10 +149,22 @@ impl InstalledApp {
             self.install_type,
             InstallType::WindowsInstaller | InstallType::LinuxPackage
         ) {
-            self.uninstall_supported = false;
             self.install_path_kind = InstallPathKind::SystemInstaller;
+            self.uninstall_supported = matches!(
+                self.install_type,
+                InstallType::LinuxPackage if self.system_package_name.is_some()
+            );
         } else if matches!(self.install_path_kind, InstallPathKind::ManagedPath) {
             self.uninstall_supported = true;
+        }
+
+        if self.launch_path.is_none()
+            && matches!(
+                self.install_type,
+                InstallType::AppImage | InstallType::Executable
+            )
+        {
+            self.launch_path = Some(self.install_path.clone());
         }
     }
 }
@@ -245,6 +274,9 @@ fn infer_install_type(asset_name: &str) -> InstallType {
     }
     if lowered.ends_with(".appimage") {
         return InstallType::AppImage;
+    }
+    if is_linux_executable_asset_name(&lowered) {
+        return InstallType::Executable;
     }
     if lowered.ends_with(".zip") {
         return InstallType::PortableArchive;

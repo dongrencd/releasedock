@@ -8,6 +8,7 @@ import {
   ExternalLink,
   FolderOpen,
   Layers3,
+  Play,
   Plus,
   Eye,
   EyeOff,
@@ -26,6 +27,7 @@ import {
   installRepo,
   loadConfig,
   loadDashboard,
+  openApp,
   openUrl,
   openPath,
   previewInstall,
@@ -39,22 +41,31 @@ import {
   buildUpdateInbox,
   getBulkRemoveAvailability,
   getConfirmInstallAvailability,
+  getOpenAppAvailability,
   getOpenReleaseAvailability,
   getPrimaryActionAvailability,
   getRemoveTrackedAvailability,
+  hasInstallableAsset,
+  getInspectorDetailItems,
   parseReleaseNote,
   pruneSelection,
   getUninstallAvailability,
   filterManagedApps,
+  installManagementKindLabel,
   inboxFilters,
   isActionRequired,
+  hasSecondaryInspectorActions,
   selectVisibleIds,
+  systemPackageManagerLabel,
+  shouldShowOpenReleaseSecondary,
   toggleSelection,
   type InboxFilter,
   type InboxItem,
-  type ManagedApp
+  type ManagedApp,
+  shouldShowOpenAppSecondary
 } from "./appModel";
 import {
+  createTaskStatusText,
   createUiText,
   formatPublishedAt,
   isWindowsPlatform,
@@ -110,7 +121,7 @@ export function App() {
   const [showGithubToken, setShowGithubToken] = useState(false);
   const [configLoaded, setConfigLoaded] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
-  const [taskStatus, setTaskStatus] = useState("Loading GitHub Release data");
+  const [taskStatus, setTaskStatus] = useState(createTaskStatusText("en").loadingDashboard);
   const [error, setError] = useState<string | null>(null);
   // 后台检查发现的更新数（来自托盘后台检查）
   const [backgroundUpdateCount, setBackgroundUpdateCount] = useState(0);
@@ -119,7 +130,9 @@ export function App() {
   const dashboardOrder = useRef<Map<string, number>>(new Map());
 
   const language = normalizeLanguage(configDraft.language);
+  const languageRef = useRef(language);
   const ui = createUiText(language);
+  const taskText = createTaskStatusText(language);
   const visibleApps = filterManagedApps(apps, filter, searchQuery);
   const inbox = buildUpdateInbox(visibleApps, language);
   const selected = inbox.find((item) => item.id === selectedId) ?? inbox[0] ?? null;
@@ -129,6 +142,10 @@ export function App() {
   const displayInstallRoot = installRoot || effectiveInstallRoot;
   const usingDefaultInstallRoot = installRoot.length === 0 && effectiveInstallRoot.length > 0;
   const bulkRemoveAvailability = getBulkRemoveAvailability(apps, selectedIds, busy, language);
+
+  useEffect(() => {
+    languageRef.current = language;
+  }, [language]);
 
   function sortAppsByDashboardOrder(nextApps: ManagedApp[]) {
     const order = dashboardOrder.current;
@@ -223,7 +240,8 @@ export function App() {
         return;
       }
 
-      setTaskStatus(`Checking latest release (${event.payload.completed}/${event.payload.total})`);
+      const statusText = createTaskStatusText(languageRef.current);
+      setTaskStatus(statusText.checkingLatestReleaseProgress(event.payload.completed, event.payload.total));
     }).then((dispose) => {
       unlistenProgress = dispose;
     });
@@ -301,7 +319,8 @@ export function App() {
     setTaskProgress(null);
   }
 
-  async function refreshDashboard() {
+  async function refreshDashboard(statusLanguage: Language = languageRef.current) {
+    const statusText = createTaskStatusText(statusLanguage);
     clearTaskProgress();
     const refreshId = dashboardRefreshId.current + 1;
     dashboardRefreshId.current = refreshId;
@@ -309,7 +328,7 @@ export function App() {
     setLoading(true);
     setError(null);
     setPendingInstall(null);
-    setTaskStatus("Checking latest release");
+    setTaskStatus(statusText.checkingLatestRelease);
     try {
       const data = await loadDashboard(refreshId);
       if (dashboardRefreshId.current !== refreshId) {
@@ -318,14 +337,14 @@ export function App() {
       dashboardOrder.current = new Map(data.map((app, index) => [app.id, index]));
       setApps(data);
       setSelectedId((current) => (current && data.some((item) => item.id === current) ? current : data[0]?.id ?? null));
-      setTaskStatus(data.length > 0 ? `Loaded ${data.length} apps` : "No managed apps yet");
+      setTaskStatus(data.length > 0 ? statusText.loadedApps(data.length) : statusText.noApps);
     } catch (caught) {
       if (dashboardRefreshId.current !== refreshId) {
         return;
       }
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
-      setTaskStatus("Failed to refresh updates");
+      setTaskStatus(statusText.refreshFailed);
     } finally {
       if (dashboardRefreshId.current === refreshId) {
         setLoading(false);
@@ -350,23 +369,27 @@ export function App() {
       lastSavedConfigKey.current = configDraftKey(draft);
       setConfigDraft(draft);
       setConfigLoaded(true);
+      languageRef.current = draft.language;
+      return draft.language;
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
-      setTaskStatus("Failed to load settings");
+      setTaskStatus(taskText.failedToLoadSettings);
+      return null;
     }
   }
 
   async function refreshWorkspace() {
-    await Promise.all([refreshDashboard(), refreshConfig()]);
+    const configLanguage = await refreshConfig();
+    await refreshDashboard(configLanguage ?? languageRef.current);
   }
 
   async function handleAddRepo() {
     const trimmed = repoInput.trim();
     if (!trimmed) {
       clearTaskProgress();
-      setError("Enter owner/repo or a GitHub URL");
-      setTaskStatus("Failed to add repository");
+      setError(taskText.enterRepo);
+      setTaskStatus(taskText.addRepoFailed);
       return;
     }
 
@@ -374,17 +397,17 @@ export function App() {
     setBusy(true);
     setError(null);
     setPendingInstall(null);
-    setTaskStatus(`Adding ${trimmed}`);
+    setTaskStatus(taskText.addingRepo(trimmed));
     try {
       const data = await addRepo(trimmed);
       setApps(data);
       setSelectedId(normalizeRepoId(trimmed));
       setRepoInput("");
-      setTaskStatus(`Added ${trimmed}`);
+      setTaskStatus(taskText.addedRepo(trimmed));
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
-      setTaskStatus("Failed to add repository");
+      setTaskStatus(taskText.addRepoFailed);
     } finally {
       setBusy(false);
     }
@@ -400,7 +423,7 @@ export function App() {
     pendingConfigSaves.current += 1;
     setConfigSaving(true);
     setError(null);
-    setTaskStatus(mode === "auto" ? "Auto-saving settings" : "Saving settings");
+    setTaskStatus(mode === "auto" ? taskText.autoSavingSettings : taskText.savingSettings);
     try {
       const saved = await saveConfig({
         githubToken: draft.githubToken.trim() || null,
@@ -423,12 +446,12 @@ export function App() {
       lastSavedConfigKey.current = configDraftKey(savedDraft);
       if (currentConfigKey.current === draftKey) {
         setConfigDraft(savedDraft);
-        setTaskStatus("Settings saved");
+        setTaskStatus(taskText.settingsSaved);
       }
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
-      setTaskStatus("Failed to save settings");
+      setTaskStatus(taskText.failedToSaveSettings);
     } finally {
       pendingConfigSaves.current = Math.max(0, pendingConfigSaves.current - 1);
       if (pendingConfigSaves.current === 0) {
@@ -438,7 +461,17 @@ export function App() {
   }
 
   async function handlePrimaryAction(item: InboxItem) {
+    if (item.status === "needsChoice" && !hasInstallableAsset(item)) {
+      await handleOpenRelease(item);
+      return;
+    }
+
     if (item.status === "current" || item.status === "noRelease") {
+      if (item.installPathKind === "ManagedPath" && item.launchPath) {
+        await handleOpenApp(item);
+        return;
+      }
+
       await handleOpenRelease(item);
       return;
     }
@@ -451,15 +484,15 @@ export function App() {
     clearTaskProgress();
     setBusy(true);
     setError(null);
-    setTaskStatus(`Generating install preview for ${item.name}`);
+    setTaskStatus(taskText.generatingInstallPreview(item.name));
     try {
       const plan = await previewInstall(item.id);
       setPendingInstall(plan);
-      setTaskStatus(`Generated install preview for ${item.name}`);
+      setTaskStatus(taskText.generatedInstallPreview(item.name));
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
-      setTaskStatus("Failed to build install preview");
+      setTaskStatus(taskText.failedToBuildInstallPreview);
     } finally {
       setBusy(false);
     }
@@ -469,12 +502,12 @@ export function App() {
     activeTaskProgress.current = { repoId: item.id, action: "install" };
     setBusy(true);
     setError(null);
-    setTaskStatus(`Installing ${item.name}`);
+    setTaskStatus(taskText.installing(item.name));
     setTaskProgress({
       repoId: item.id,
       action: "install",
       stage: "preparing",
-      message: `Preparing to install ${item.name}`,
+      message: taskText.preparingInstall(item.name),
       percent: 0
     });
     try {
@@ -486,14 +519,14 @@ export function App() {
         repoId: item.id,
         action: "install",
         stage: "finished",
-        message: `Finished installing ${item.name}`,
+        message: taskText.finishedInstalling(item.name),
         percent: 100
       });
-      setTaskStatus(`Installed or updated ${item.name}`);
+      setTaskStatus(taskText.installedOrUpdated(item.name));
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
-      setTaskStatus("Install failed");
+      setTaskStatus(taskText.installFailed);
       setTaskProgress((current) =>
         current && current.repoId === item.id
           ? {
@@ -520,7 +553,7 @@ export function App() {
       repoId: item.id,
       action: "uninstall",
       stage: "locatingRecord",
-      message: `Uninstalling ${item.name}`,
+      message: taskText.uninstalling(item.name),
       percent: 0
     });
     try {
@@ -532,14 +565,14 @@ export function App() {
         repoId: item.id,
         action: "uninstall",
         stage: "finished",
-        message: `Finished uninstalling ${item.name}`,
+        message: taskText.finishedUninstalling(item.name),
         percent: 100
       });
-      setTaskStatus(`Uninstalled ${item.name}`);
+      setTaskStatus(taskText.uninstalled(item.name));
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
-      setTaskStatus("Uninstall failed");
+      setTaskStatus(taskText.uninstallFailed);
       setTaskProgress((current) =>
         current && current.repoId === item.id
           ? {
@@ -568,11 +601,11 @@ export function App() {
       setApps(data);
       setSelectedId(data.find((app) => app.id === item.id)?.id ?? data[0]?.id ?? null);
       setPendingInstall(null);
-      setTaskStatus(`Stopped tracking ${item.name}`);
+      setTaskStatus(taskText.stoppedTracking(item.name));
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
-      setTaskStatus("Remove tracking failed");
+      setTaskStatus(taskText.removeTrackingFailed);
     } finally {
       setBusy(false);
     }
@@ -581,8 +614,8 @@ export function App() {
   async function handleBulkRemoveTracked() {
     if (!bulkRemoveAvailability.enabled) {
       clearTaskProgress();
-      setError(bulkRemoveAvailability.reason ?? "Select at least one removable item");
-      setTaskStatus("Bulk remove failed");
+      setError(bulkRemoveAvailability.reason ?? taskText.selectAtLeastOneRemovableItem);
+      setTaskStatus(taskText.bulkRemoveFailed);
       return;
     }
 
@@ -591,8 +624,8 @@ export function App() {
     );
     if (targets.length === 0) {
       clearTaskProgress();
-      setError("Select at least one uninstalled tracked item");
-      setTaskStatus("Bulk remove failed");
+      setError(taskText.selectAtLeastOneUninstalledTrackedItem);
+      setTaskStatus(taskText.bulkRemoveFailed);
       return;
     }
 
@@ -600,16 +633,12 @@ export function App() {
     setBusy(true);
     setError(null);
     setPendingInstall(null);
-    setTaskStatus(`Removing ${targets.length} tracked item(s)`);
+    setTaskStatus(taskText.removingTracked(targets.length));
 
     try {
       const result = await bulkRemoveTrackedRepos(targets.map((target) => target.id));
       setApps(result.apps);
-      setTaskStatus(
-        result.removedCount < targets.length
-          ? `Removed ${result.removedCount} tracked item(s), ${targets.length - result.removedCount} expired`
-          : `Removed ${result.removedCount} tracked item(s)`
-      );
+      setTaskStatus(taskText.removedTracked(result.removedCount, targets.length));
       setSelectedIds((current) => pruneSelection(current, result.apps));
       setSelectedId((current) => {
         if (current && result.apps.some((app) => app.id === current)) {
@@ -621,7 +650,7 @@ export function App() {
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
-      setTaskStatus("Bulk remove failed");
+      setTaskStatus(taskText.bulkRemoveFailed);
     } finally {
       setBusy(false);
     }
@@ -630,53 +659,75 @@ export function App() {
   async function handleOpenRelease(item: InboxItem | null) {
     if (!item?.releaseUrl) {
       clearTaskProgress();
-      setTaskStatus("No release link available");
+      setTaskStatus(taskText.noReleaseLinkAvailable);
       return;
     }
     clearTaskProgress();
     try {
       await openUrl(item.releaseUrl);
-      setTaskStatus(`Opened ${item.name} release page`);
+      setTaskStatus(taskText.openedReleasePage(item.name));
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
-      setTaskStatus("Open failed");
+      setTaskStatus(taskText.openFailed);
+    }
+  }
+
+  async function handleOpenApp(item: InboxItem | null) {
+    if (!item || item.installPathKind !== "ManagedPath" || !item.launchPath) {
+      clearTaskProgress();
+      setTaskStatus(ui.model.noLaunchTarget);
+      return;
+    }
+
+    clearTaskProgress();
+    try {
+      await openApp(item.id);
+      setTaskStatus(taskText.openedApp(item.name));
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setError(message);
+      setTaskStatus(taskText.openFailed);
     }
   }
 
   async function handleOpenInstallPath(item: InboxItem | null) {
-    if (!item?.installPath || item.installPath === "unknown" || item.status === "needsChoice" || item.installPathKind !== "ManagedPath") {
+    if (!item?.installPath || item.installPath === "unknown" || item.status === "needsChoice" || item.installPathKind === "Unknown") {
       clearTaskProgress();
-      setTaskStatus("No install path available");
+      setTaskStatus(taskText.noInstallPathAvailable);
       return;
     }
 
     clearTaskProgress();
     try {
       await openPath(item.installPath);
-      setTaskStatus(`Opened ${item.name} install location`);
+      setTaskStatus(
+        item.installPathKind === "SystemInstaller"
+          ? taskText.openedInstallerFile(item.name)
+          : taskText.openedInstallLocation(item.name)
+      );
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
-      setTaskStatus("Open folder failed");
+      setTaskStatus(taskText.openFolderFailed);
     }
   }
 
   async function handleOpenInstallRoot() {
     if (!displayInstallRoot) {
       clearTaskProgress();
-      setTaskStatus("No install root selected");
+      setTaskStatus(taskText.noInstallRootSelected);
       return;
     }
 
     clearTaskProgress();
     try {
       await openPath(displayInstallRoot);
-      setTaskStatus("Opened install root");
+      setTaskStatus(taskText.openedInstallRoot);
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
-      setTaskStatus("Open folder failed");
+      setTaskStatus(taskText.openFolderFailed);
     }
   }
 
@@ -687,7 +738,7 @@ export function App() {
     }
     clearTaskProgress();
     void navigator.clipboard.writeText(note);
-    setTaskStatus("Release note copied");
+    setTaskStatus(taskText.releaseNoteCopied);
   }
 
   return (
@@ -888,6 +939,9 @@ export function App() {
                 language={language}
                 onOpenInstallPath={() => {
                   void handleOpenInstallPath(selected);
+                }}
+                onOpenApp={() => {
+                  void handleOpenApp(selected);
                 }}
                 onCopyReleaseNote={handleCopyReleaseNote}
                 onOpenRelease={() => {
@@ -1138,6 +1192,7 @@ function Inspector({
   item,
   busy,
   language,
+  onOpenApp,
   onOpenInstallPath,
   onOpenRelease,
   onCopyReleaseNote,
@@ -1151,6 +1206,7 @@ function Inspector({
   item: InboxItem | null;
   busy: boolean;
   language: Language;
+  onOpenApp: () => void;
   onOpenInstallPath: () => void;
   onOpenRelease: () => void;
   onCopyReleaseNote: (note?: string) => void;
@@ -1162,11 +1218,14 @@ function Inspector({
   pendingInstall: InstallPlan | null;
 }) {
   const openReleaseAvailability = getOpenReleaseAvailability(item, busy, language);
+  const openAppAvailability = getOpenAppAvailability(item, busy, language);
   const primaryActionAvailability = getPrimaryActionAvailability(item, busy, language);
   const confirmInstallAvailability = getConfirmInstallAvailability(item, busy, language);
   const uninstallAvailability = getUninstallAvailability(item, busy, language);
   const removeTrackedAvailability = getRemoveTrackedAvailability(item, busy, language);
   const ui = createUiText(language);
+  const detailItems = getInspectorDetailItems(item, language);
+  const showSecondaryInspectorActions = hasSecondaryInspectorActions(item, language);
 
   if (!item) {
     return (
@@ -1219,14 +1278,12 @@ function Inspector({
       </div>
 
       <dl className="detailList">
-        <div>
-          <dt>{ui.assetFile}</dt>
-          <dd className="mono wrapText">{item.assetName ?? ui.noAssetAvailable}</dd>
-        </div>
-        <div>
-          <dt>{item.installPathKind === "SystemInstaller" ? ui.installerFile : ui.installPath}</dt>
-          <dd className="mono wrapText">{item.installPath}</dd>
-        </div>
+        {detailItems.map((detail, index) => (
+          <div key={`${detail.label}-${index}`} className={detail.fullWidth ? "detailListWide" : undefined}>
+            <dt>{detail.label}</dt>
+            <dd className={detail.monospace ? "mono wrapText" : "wrapText"}>{detail.value}</dd>
+          </div>
+        ))}
       </dl>
 
       {pendingInstall ? (
@@ -1238,6 +1295,18 @@ function Inspector({
           <p className="previewLine">
             {pendingInstall.asset_name} · {installTypeLabel(pendingInstall.install_type, language)}
           </p>
+          <dl className="detailList">
+            <div>
+              <dt>{ui.installManagement}</dt>
+              <dd>{installManagementKindLabel(pendingInstall.management_kind, language)}</dd>
+            </div>
+            {pendingInstall.system_package_manager ? (
+              <div>
+                <dt>{ui.systemPackageManager}</dt>
+                <dd>{systemPackageManagerLabel(pendingInstall.system_package_manager)}</dd>
+              </div>
+            ) : null}
+          </dl>
           {pendingInstall.notes.length > 0 ? (
             <ul className="previewNotes">
               {pendingInstall.notes.map((note) => (
@@ -1275,35 +1344,56 @@ function Inspector({
               disabled={!primaryActionAvailability.enabled}
               aria-label={primaryActionAvailability.reason ?? item.actionLabel}
             >
-              <Download size={16} />
+              {item.actionLabel === ui.action.openApp ? (
+                <Play size={16} />
+              ) : item.actionLabel === ui.openRelease ? (
+                <ExternalLink size={16} />
+              ) : (
+                <Download size={16} />
+              )}
               <span>{item.actionLabel}</span>
             </button>
           </div>
 
-          {/* 次要动作放第二组：打开 Release、打开安装目录 */}
-          <div className="inspectorActionsGroup">
-            <button
-              type="button"
-              className="ghostButton actionButton wide"
-              onClick={onOpenRelease}
-              disabled={!openReleaseAvailability.enabled}
-              aria-label={openReleaseAvailability.reason ?? ui.openRelease}
-            >
-              <ExternalLink size={16} />
-              <span>{ui.openRelease}</span>
-            </button>
-            {item.status !== "needsChoice" && item.installPathKind === "ManagedPath" ? (
-              <button
-                type="button"
-                className="ghostButton actionButton wide"
-                onClick={onOpenInstallPath}
-                aria-label={ui.openInstallLocation}
-              >
-                <FolderOpen size={16} />
-                <span>{ui.openInstallLocation}</span>
-              </button>
-            ) : null}
-          </div>
+          {/* 次要动作放第二组：打开软件、打开 Release、打开安装目录 */}
+          {showSecondaryInspectorActions ? (
+            <div className="inspectorActionsGroup">
+              {shouldShowOpenAppSecondary(item) ? (
+                <TooltipButton
+                  label={openAppAvailability.reason ?? ui.action.openApp}
+                  onClick={onOpenApp}
+                  disabled={!openAppAvailability.enabled}
+                  className="ghostButton actionButton wide"
+                >
+                  <Play size={16} />
+                  <span>{ui.action.openApp}</span>
+                </TooltipButton>
+              ) : null}
+              {shouldShowOpenReleaseSecondary(item, language) ? (
+                <button
+                  type="button"
+                  className="ghostButton actionButton wide"
+                  onClick={onOpenRelease}
+                  disabled={!openReleaseAvailability.enabled}
+                  aria-label={openReleaseAvailability.reason ?? ui.openRelease}
+                >
+                  <ExternalLink size={16} />
+                  <span>{ui.openRelease}</span>
+                </button>
+              ) : null}
+              {item.status !== "needsChoice" && item.installPathKind !== "Unknown" ? (
+                <button
+                  type="button"
+                  className="ghostButton actionButton wide"
+                  onClick={onOpenInstallPath}
+                  aria-label={item.installPathKind === "SystemInstaller" ? ui.openInstallerFile : ui.openInstallLocation}
+                >
+                  <FolderOpen size={16} />
+                  <span>{item.installPathKind === "SystemInstaller" ? ui.openInstallerFile : ui.openInstallLocation}</span>
+                </button>
+              ) : null}
+            </div>
+          ) : null}
 
           {/* 危险动作放最后：移除跟踪、卸载、打开系统卸载 */}
           <div className="inspectorActionsGroup">
@@ -1682,6 +1772,8 @@ function installTypeLabel(value: InstallPlan["install_type"], language: Language
       return ui.installType.AppImage;
     case "LinuxPackage":
       return ui.installType.LinuxPackage;
+    case "Executable":
+      return ui.installType.Executable;
     case "Archive":
       return ui.installType.Archive;
     case "Unknown":

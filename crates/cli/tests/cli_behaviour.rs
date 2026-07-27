@@ -42,15 +42,43 @@ fn install_outputs_json_plan_from_fixture() {
         ])
         .assert()
         .success()
-        .stdout(contains("\"asset_name\":\"demo-windows-x64.exe\""))
-        .stdout(contains("\"requires_user_confirmation\":true"));
+        .stdout(contains("\"asset_name\":\"demo-windows-x64.zip\""))
+        .stdout(contains("\"install_type\":\"PortableArchive\""))
+        .stdout(contains("\"requires_user_confirmation\":false"));
+}
+
+#[test]
+fn install_outputs_json_plan_from_linux_executable_fixture() {
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/release_linux_executable.json"
+    );
+
+    Command::cargo_bin("releasedock")
+        .unwrap()
+        .args([
+            "install",
+            "dongrencd/releasedock",
+            "--release-fixture",
+            fixture,
+            "--os",
+            "linux",
+            "--arch",
+            "x64",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("\"asset_name\":\"releasedock-linux-x64\""))
+        .stdout(contains("\"install_type\":\"Executable\""))
+        .stdout(contains("\"requires_user_confirmation\":false"));
 }
 
 #[test]
 fn install_requires_yes_in_non_interactive_mode() {
     let fixture = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/release_windows.json"
+        "/tests/fixtures/release_windows_installer.json"
     );
     let temp = tempfile::tempdir().unwrap();
     let manifest = temp.path().join("apps.json");
@@ -63,12 +91,58 @@ fn install_requires_yes_in_non_interactive_mode() {
             "owner/project",
             "--release-fixture",
             fixture,
+            "--os",
+            "windows",
+            "--arch",
+            "x64",
             "--manifest",
             manifest.to_str().unwrap(),
         ])
         .assert()
         .failure()
         .stderr(contains("请使用 --yes"));
+}
+
+#[test]
+fn install_rejects_windows_checksum_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let fixture = temp.path().join("release_windows_txt_only.json");
+    fs::write(
+        &fixture,
+        r#"{
+          "tag_name": "v1.2.3",
+          "name": "TXT only release",
+          "body": "",
+          "html_url": "https://github.com/owner/project/releases/tag/v1.2.3",
+          "published_at": "2026-07-21T10:20:30Z",
+          "prerelease": false,
+          "assets": [
+            {
+              "name": "checksums-windows.txt",
+              "browser_download_url": "https://github.com/owner/project/releases/download/v1.2.3/checksums-windows.txt",
+              "size": 100
+            }
+          ]
+        }"#,
+    )
+    .unwrap();
+
+    Command::cargo_bin("releasedock")
+        .unwrap()
+        .args([
+            "install",
+            "owner/project",
+            "--release-fixture",
+            fixture.to_str().unwrap(),
+            "--os",
+            "windows",
+            "--arch",
+            "x64",
+            "--json",
+        ])
+        .assert()
+        .failure()
+        .stderr(contains("no release asset matches the current platform"));
 }
 
 #[test]
@@ -289,7 +363,7 @@ fn info_outputs_release_note_from_fixture() {
         .success()
         .stdout(contains("Stable release"))
         .stdout(contains("Fix crash and improve startup."))
-        .stdout(contains("demo-windows-x64.exe"));
+        .stdout(contains("demo-windows-x64.zip"));
 }
 
 #[test]

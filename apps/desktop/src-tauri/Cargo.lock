@@ -3136,6 +3136,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "url",
+ "windows",
 ]
 
 [[package]]

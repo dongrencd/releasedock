@@ -1,8 +1,8 @@
 use releasedock_core::{
     asset_matcher::{Architecture, AssetMatcher, OperatingSystem},
     config::Language,
-    install_plan::InstallPlan,
-    manifest::{InstallPathKind, InstalledApp, ManifestStore},
+    install_plan::{InstallManagementKind, InstallPlan},
+    manifest::{InstallPathKind, InstalledApp, ManifestStore, SystemPackageManager},
     release::{Release, ReleaseAsset},
     repo::RepoRef,
 };
@@ -28,7 +28,7 @@ fn rejects_non_github_urls() {
 }
 
 #[test]
-fn prefers_windows_x64_installer_over_zip() {
+fn prefers_windows_portable_archive_over_installer() {
     let release = Release::fixture(
         "v1.2.3",
         vec![
@@ -42,8 +42,57 @@ fn prefers_windows_x64_installer_over_zip() {
         .select_best(&release)
         .unwrap();
 
-    assert_eq!(matched.asset.name, "demo-windows-x64.exe");
+    assert_eq!(matched.asset.name, "demo-windows-x64.zip");
     assert!(matched.score > 0);
+}
+
+#[test]
+fn recognizes_linux_executable_assets_without_extensions() {
+    let release = Release::fixture(
+        "v1.2.3",
+        vec![ReleaseAsset::fixture("releasedock-linux-x64")],
+    );
+
+    let matched = AssetMatcher::new(OperatingSystem::Linux, Architecture::X64)
+        .select_best(&release)
+        .unwrap();
+
+    assert_eq!(matched.asset.name, "releasedock-linux-x64");
+    assert_eq!(
+        matched.install_type,
+        releasedock_core::asset_matcher::InstallType::Executable
+    );
+}
+
+#[test]
+fn rejects_linux_assets_without_extension_or_arch_keyword() {
+    let release = Release::fixture("v1.2.3", vec![ReleaseAsset::fixture("releasedock-linux")]);
+
+    let result = AssetMatcher::new(OperatingSystem::Linux, Architecture::X64).select_best(&release);
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn rejects_windows_checksum_files_as_installable_assets() {
+    let release = Release::fixture(
+        "v1.2.3",
+        vec![ReleaseAsset::fixture("checksums-windows.txt")],
+    );
+
+    let result =
+        AssetMatcher::new(OperatingSystem::Windows, Architecture::X64).select_best(&release);
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn rejects_linux_auxiliary_assets_without_extensions() {
+    let release = Release::fixture("v1.2.3", vec![ReleaseAsset::fixture("checksums-linux-x64")]);
+
+    let result = AssetMatcher::new(OperatingSystem::Linux, Architecture::X64).select_best(&release);
+
+    assert!(result.is_err());
 }
 
 #[test]
@@ -62,6 +111,41 @@ fn prefers_linux_appimage_for_desktop_apps() {
         .unwrap();
 
     assert_eq!(matched.asset.name, "demo-x86_64.AppImage");
+}
+
+#[test]
+fn prefers_linux_archive_over_system_package() {
+    let release = Release::fixture(
+        "v2.0.0",
+        vec![
+            ReleaseAsset::fixture("demo-linux-amd64.tar.gz"),
+            ReleaseAsset::fixture("demo-linux-amd64.deb"),
+        ],
+    );
+
+    let matched = AssetMatcher::new(OperatingSystem::Linux, Architecture::X64)
+        .select_best(&release)
+        .unwrap();
+
+    assert_eq!(matched.asset.name, "demo-linux-amd64.tar.gz");
+}
+
+#[test]
+fn recognizes_linux_pacman_packages() {
+    let release = Release::fixture(
+        "v2.0.0",
+        vec![ReleaseAsset::fixture("demo-linux-x86_64.pkg.tar.zst")],
+    );
+
+    let matched = AssetMatcher::new(OperatingSystem::Linux, Architecture::X64)
+        .select_best(&release)
+        .unwrap();
+
+    assert_eq!(matched.asset.name, "demo-linux-x86_64.pkg.tar.zst");
+    assert_eq!(
+        matched.install_type,
+        releasedock_core::asset_matcher::InstallType::LinuxPackage
+    );
 }
 
 #[test]
@@ -151,6 +235,42 @@ fn upgrades_legacy_manifest_entries_to_current_install_metadata() {
 }
 
 #[test]
+fn upgrades_legacy_linux_executable_manifest_entries() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ManifestStore::at_path(temp.path().join("apps.json"));
+    std::fs::write(
+        store.path(),
+        r#"{
+          "schema_version": 1,
+          "apps": [
+            {
+              "id": "owner/project",
+              "name": "project",
+              "repo_url": "https://github.com/owner/project",
+              "installed_version": "v1.0.0",
+              "installed_at": "2026-07-21T10:20:30Z",
+              "asset_name": "releasedock-linux-x64",
+              "install_path": "/tmp/project/releasedock-linux-x64"
+            }
+          ]
+        }"#,
+    )
+    .unwrap();
+
+    let manifest = store.load().unwrap();
+    assert_eq!(manifest.schema_version, 2);
+    assert_eq!(
+        manifest.apps[0].install_type,
+        releasedock_core::asset_matcher::InstallType::Executable
+    );
+    assert_eq!(
+        manifest.apps[0].launch_path.as_deref(),
+        Some(std::path::Path::new("/tmp/project/releasedock-linux-x64"))
+    );
+    assert!(manifest.apps[0].uninstall_supported);
+}
+
+#[test]
 fn rejects_uninstall_for_system_installer_entries() {
     let temp = tempfile::tempdir().unwrap();
     let store = ManifestStore::at_path(temp.path().join("apps.json"));
@@ -167,8 +287,9 @@ fn rejects_uninstall_for_system_installer_entries() {
         )])
         .unwrap();
 
-    let error = releasedock_core::installer::uninstall_repo(&store, "owner/project", Language::En, None)
-        .unwrap_err();
+    let error =
+        releasedock_core::installer::uninstall_repo(&store, "owner/project", Language::En, None)
+            .unwrap_err();
     assert!(error.to_string().contains("system installer"));
     assert_eq!(store.load().unwrap().apps.len(), 1);
 }
@@ -209,7 +330,32 @@ fn linux_package_install_plan_requires_confirmation() {
     assert!(
         plan.notes
             .iter()
-            .any(|note| note.contains("Linux .deb/.rpm packages"))
+            .any(|note| note.contains("Linux system packages"))
+    );
+    assert_eq!(plan.management_kind, InstallManagementKind::SystemPackage);
+    assert_eq!(
+        plan.system_package_manager,
+        Some(SystemPackageManager::Debian)
+    );
+}
+
+#[test]
+fn linux_pacman_install_plan_records_package_manager() {
+    let repo = RepoRef::parse("owner/project").unwrap();
+    let release = Release::fixture(
+        "v1.0.0",
+        vec![ReleaseAsset::fixture("project-linux-amd64.pkg.tar.zst")],
+    );
+    let matched = AssetMatcher::new(OperatingSystem::Linux, Architecture::X64)
+        .select_best(&release)
+        .unwrap();
+
+    let plan = InstallPlan::from_match(&repo, &release, &matched, Language::En);
+
+    assert_eq!(plan.management_kind, InstallManagementKind::SystemPackage);
+    assert_eq!(
+        plan.system_package_manager,
+        Some(SystemPackageManager::Pacman)
     );
 }
 

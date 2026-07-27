@@ -1,15 +1,16 @@
-use std::{fs, io::Write, path::Path};
+use std::{fs, io::Write, path::Path, time::Duration};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use reqwest::{
-    Proxy,
+    Proxy, StatusCode,
     header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, RETRY_AFTER, USER_AGENT},
-    StatusCode,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::repo::RepoRef;
+
+const GITHUB_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Release {
@@ -79,6 +80,14 @@ pub struct ReleaseClient {
 
 impl ReleaseClient {
     pub fn new(github_token: Option<&str>, proxy_url: Option<&str>) -> Result<Self> {
+        Self::with_timeout(github_token, proxy_url, GITHUB_REQUEST_TIMEOUT)
+    }
+
+    fn with_timeout(
+        github_token: Option<&str>,
+        proxy_url: Option<&str>,
+        timeout: Duration,
+    ) -> Result<Self> {
         let mut headers = HeaderMap::new();
         headers.insert(USER_AGENT, HeaderValue::from_static("releasedock"));
         headers.insert(
@@ -92,7 +101,9 @@ impl ReleaseClient {
             headers.insert(AUTHORIZATION, value);
         }
 
-        let mut builder = reqwest::Client::builder().default_headers(headers);
+        let mut builder = reqwest::Client::builder()
+            .default_headers(headers)
+            .timeout(timeout);
         if let Some(proxy_url) = proxy_url.filter(|value| !value.trim().is_empty()) {
             let proxy =
                 Proxy::all(proxy_url).context("failed to configure proxy for GitHub client")?;
@@ -159,7 +170,12 @@ impl ReleaseClient {
             .context("failed to read GitHub asset body")
     }
 
-    pub async fn download_to_path<F>(&self, url: &str, path: &Path, mut on_progress: F) -> Result<()>
+    pub async fn download_to_path<F>(
+        &self,
+        url: &str,
+        path: &Path,
+        mut on_progress: F,
+    ) -> Result<()>
     where
         F: FnMut(u64, Option<u64>),
     {
@@ -176,8 +192,9 @@ impl ReleaseClient {
         }
 
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create download directory {}", parent.display()))?;
+            fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create download directory {}", parent.display())
+            })?;
         }
 
         let mut file = fs::File::create(path)
@@ -232,7 +249,10 @@ fn format_github_response_error(
     if let Some(reset) = header_value(headers, "x-ratelimit-reset") {
         extras.push(format!("rate limit reset {reset}"));
     }
-    if let Some(retry_after) = headers.get(RETRY_AFTER).and_then(|value| value.to_str().ok()) {
+    if let Some(retry_after) = headers
+        .get(RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+    {
         extras.push(format!("retry after {retry_after}"));
     }
 
@@ -259,7 +279,10 @@ fn summarize_github_body(body: &str) -> Option<String> {
                 parts.push(message.to_string());
             }
         }
-        if let Some(documentation_url) = value.get("documentation_url").and_then(|value| value.as_str()) {
+        if let Some(documentation_url) = value
+            .get("documentation_url")
+            .and_then(|value| value.as_str())
+        {
             let documentation_url = documentation_url.trim();
             if !documentation_url.is_empty() {
                 parts.push(documentation_url.to_string());
@@ -270,9 +293,16 @@ fn summarize_github_body(body: &str) -> Option<String> {
         }
     }
 
-    Some(trimmed.lines().map(str::trim).filter(|line| !line.is_empty()).collect::<Vec<_>>().join(" "))
-        .filter(|text| !text.is_empty())
-        .map(|text| shorten(&text, 240))
+    Some(
+        trimmed
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+    .filter(|text| !text.is_empty())
+    .map(|text| shorten(&text, 240))
 }
 
 fn shorten(text: &str, limit: usize) -> String {
@@ -301,11 +331,15 @@ fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::format_github_response_error;
+    use std::time::Duration;
+
+    use super::{ReleaseClient, format_github_response_error};
+    use crate::repo::RepoRef;
     use reqwest::{
         StatusCode,
         header::{HeaderMap, HeaderValue},
     };
+    use tokio::{io::AsyncReadExt, net::TcpListener, time::sleep};
 
     #[test]
     fn formats_github_error_with_body_and_headers() {
@@ -324,7 +358,10 @@ mod tests {
 
         assert!(message.contains("GitHub latest release request failed with 403 Forbidden"));
         assert!(message.contains("Request forbidden by administrative rules."));
-        assert!(message.contains("https://docs.github.com/rest/releases/releases#get-the-latest-release"));
+        assert!(
+            message
+                .contains("https://docs.github.com/rest/releases/releases#get-the-latest-release")
+        );
         assert!(message.contains("request id abc123"));
         assert!(message.contains("rate limit remaining 0"));
         assert!(message.contains("rate limit reset 1234567890"));
@@ -337,11 +374,54 @@ mod tests {
         headers.insert("x-github-request-id", HeaderValue::from_static("abc123"));
 
         let body = "line one\n\nline two ".repeat(40);
-        let message = format_github_response_error("GitHub asset", StatusCode::BAD_GATEWAY, &headers, &body);
+        let message =
+            format_github_response_error("GitHub asset", StatusCode::BAD_GATEWAY, &headers, &body);
 
         assert!(message.starts_with("GitHub asset request failed with 502 Bad Gateway"));
         assert!(message.contains("line one"));
         assert!(message.contains("request id abc123"));
         assert!(message.len() < 600);
+    }
+
+    #[tokio::test]
+    async fn times_out_when_proxy_does_not_reply() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buffer = [0u8; 1024];
+                let mut received = Vec::new();
+
+                loop {
+                    let read = stream.read(&mut buffer).await.unwrap_or(0);
+                    if read == 0 {
+                        break;
+                    }
+
+                    received.extend_from_slice(&buffer[..read]);
+                    if received.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+
+                sleep(Duration::from_secs(5)).await;
+            }
+        });
+
+        let proxy_url = format!("http://{proxy_addr}");
+        let timeout = Duration::from_millis(100);
+        let client = ReleaseClient::with_timeout(None, Some(proxy_url.as_str()), timeout).unwrap();
+        let repo = RepoRef::parse("owner/project").unwrap();
+
+        let error = client.latest_release_optional(&repo).await.unwrap_err();
+        let is_timeout = error.chain().any(|cause| {
+            cause
+                .downcast_ref::<reqwest::Error>()
+                .is_some_and(|request_error| request_error.is_timeout())
+        });
+        assert!(is_timeout, "{error:#}");
+
+        server.abort();
     }
 }
