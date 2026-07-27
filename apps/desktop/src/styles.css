@@ -170,9 +170,9 @@ input {
 .topbar {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px 16px;
+  column-gap: 18px;
   align-items: center;
-  padding: 16px 24px;
+  padding: 14px 24px;
   border-bottom: 1px solid #d8dee8;
   background: #ffffff;
 }
@@ -198,11 +198,20 @@ input {
   letter-spacing: 0.04em;
 }
 
+.topbarRight {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  min-width: 0;
+}
+
 .topbarMeta {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   justify-content: flex-end;
+  min-width: 0;
 }
 
 .statePill {
@@ -243,7 +252,6 @@ input {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 10px;
-  grid-column: 2;
 }
 
 .topbarButton {
@@ -393,31 +401,15 @@ input {
 
 .contentGrid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(380px, 420px);
-  gap: 18px;
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 400px);
+  gap: 14px;
   min-height: 0;
 }
 
 .dashboardView {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  gap: 16px;
   min-height: 0;
-  padding: 18px 24px 20px;
-}
-
-.addRepoPanel {
-  display: grid;
-  gap: 14px;
-  padding: 16px 18px;
-  border: 1px solid #d8dee8;
-  border-radius: 8px;
-  background: #ffffff;
-}
-
-.panelHeading {
-  display: grid;
-  gap: 4px;
+  padding: 12px 20px 14px;
 }
 
 .repoControl {
@@ -428,20 +420,44 @@ input {
 }
 
 .addRepoButton {
-  min-height: 40px;
+  min-height: 38px;
   padding: 0 14px;
   white-space: nowrap;
 }
 
+.workbenchHeader {
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.workbenchHeaderActions {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.workbenchHeaderActions .sectionMeta {
+  justify-content: flex-end;
+}
+
 .settingsPanel {
   display: grid;
-  gap: 10px;
-  padding: 12px 18px 16px;
+  gap: 8px;
+  padding: 10px 20px 12px;
+  justify-items: start;
 }
 
 .settingsForm {
   display: grid;
-  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+  align-items: start;
+  width: min(100%, 1120px);
   padding: 12px;
   border: 1px solid #d8dee8;
   border-radius: 8px;
@@ -470,6 +486,11 @@ input {
   border: 0;
   border-radius: 0;
   background: transparent;
+}
+
+.fieldRow.wide,
+.backgroundCheckRow {
+  grid-column: 1 / -1;
 }
 
 .fieldActions {
@@ -539,8 +560,9 @@ input {
 .settingsActions {
   display: flex;
   gap: 10px;
-  justify-content: flex-end;
-  padding: 0 18px 2px;
+  justify-content: flex-start;
+  width: min(100%, 1120px);
+  padding: 0 0 2px;
 }
 
 .statusDock {
@@ -624,7 +646,7 @@ input {
 }
 
 .inboxPanel {
-  padding: 18px;
+  padding: 16px;
   min-width: 0;
   overflow: visible;
 }
@@ -632,7 +654,7 @@ input {
 .sectionHeader {
   display: flex;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
   align-items: flex-start;
 }
 
@@ -697,27 +719,31 @@ h2 {
 }
 
 .listTools {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: start;
-  margin: 14px 0 12px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 10px 12px;
+  align-items: center;
+  margin: 8px 0 10px;
 }
 
 .listToolsPrimary,
 .listToolsActions {
-  display: grid;
-  gap: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 10px;
   min-width: 0;
 }
 
 .listToolsPrimary {
+  flex: 1 1 320px;
   min-width: 0;
 }
 
 .listToolsActions {
-  justify-items: end;
-  align-content: start;
+  flex: 0 1 auto;
+  justify-content: flex-end;
+  align-items: center;
 }
 
 .selectionSummary {
@@ -775,8 +801,8 @@ h2 {
 .tableHead,
 .tableRow {
   display: grid;
-  grid-template-columns: 30px minmax(220px, 1.4fr) 96px 96px 110px 92px;
-  gap: 12px;
+  grid-template-columns: 30px minmax(200px, 1.4fr) 92px 92px 104px 90px;
+  gap: 10px;
   align-items: center;
 }
 
@@ -788,9 +814,9 @@ h2 {
 }
 
 .tableRow {
-  min-height: 58px;
+  min-height: 54px;
   width: 100%;
-  padding: 8px 12px;
+  padding: 7px 12px;
   border: 1px solid transparent;
   border-radius: 8px;
   color: #18212f;
@@ -911,8 +937,11 @@ h2 {
 .rowAction {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  min-width: 72px;
   min-height: 30px;
   padding: 0 10px;
+  border: 0;
   border-radius: 999px;
   color: #0f766e;
   background: #f0fdfa;
@@ -920,6 +949,26 @@ h2 {
   font-weight: 700;
   line-height: 1;
   white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease,
+    opacity 140ms ease;
+}
+
+.rowAction:hover:not(:disabled) {
+  background: #ccfbf1;
+}
+
+.rowAction:focus-visible {
+  outline: 2px solid #0f766e;
+  outline-offset: 2px;
+}
+
+.rowAction:disabled {
+  color: #64748b;
+  background: #e2e8f0;
+  cursor: not-allowed;
 }
 
 .emptyState,
@@ -945,7 +994,7 @@ h2 {
   align-content: start;
   min-width: 0;
   gap: 14px;
-  padding: 16px;
+  padding: 14px;
   overflow: auto;
   position: sticky;
   top: 16px;
@@ -1067,6 +1116,65 @@ h2 {
   display: grid;
   gap: 10px;
   margin-top: 14px;
+}
+
+.historyBlock {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.historyList {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.historyItem {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.historyItem.failed {
+  border-color: #f5c2c7;
+  background: #fff7f7;
+}
+
+.historyItemHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.historyItemHeader strong {
+  min-width: 0;
+  color: #18212f;
+  font-size: 13px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.historyItemMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  align-items: center;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.historyItemError {
+  color: #b91c1c;
+  word-break: break-word;
 }
 
 .releaseNoteHeader {
@@ -1329,16 +1437,16 @@ h2 {
 
 .inspectorActions {
   display: grid;
-  gap: 12px;
-  margin-top: 12px;
+  gap: 10px;
+  margin-top: 10px;
 }
 
 /* 按动作优先级分组：主动作 / 次要 / 危险，组间用分隔线区分 */
 .inspectorActionsGroup {
   display: grid;
-  gap: 10px;
-  padding-top: 12px;
-  border-top: 1px solid #e2e8f0;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid #edf2f7;
 }
 
 .inspectorActionsGroup:first-child {
@@ -1346,9 +1454,26 @@ h2 {
   border-top: 0;
 }
 
+.inspectorActionsGroup.primaryActionGroup .actionButton {
+  min-height: 40px;
+  font-size: 14px;
+}
+
+.inspectorActionsGroup.secondaryActionGroup {
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.inspectorActionsGroup.secondaryActionGroup .actionButton {
+  width: 100%;
+}
+
+.inspectorActionsGroup.dangerActionGroup {
+  gap: 8px;
+}
+
 .inspectorActions .actionButton,
 .previewActions .actionButton {
-  min-height: 38px;
+  min-height: 36px;
 }
 
 .inspectorActions .actionButton {
@@ -1360,8 +1485,14 @@ h2 {
 }
 
 .inspectorActions .actionButton svg {
-  width: 16px;
-  height: 16px;
+  width: 15px;
+  height: 15px;
+}
+
+@media (max-width: 560px) {
+  .inspectorActionsGroup.secondaryActionGroup {
+    grid-template-columns: 1fr;
+  }
 }
 
 .blockTitle,
@@ -1411,10 +1542,24 @@ h2 {
 
   .topbar {
     grid-template-columns: minmax(0, 1fr);
+    row-gap: 12px;
+  }
+
+  .topbarRight {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .workbenchHeaderActions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .settingsForm {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .topbarActions {
-    grid-column: auto;
     justify-content: flex-start;
   }
 
@@ -1430,17 +1575,9 @@ h2 {
     justify-content: flex-start;
   }
 
-  .listTools {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
   .listToolsActions {
-    justify-items: start;
+    justify-content: flex-start;
     width: 100%;
-  }
-
-  .addRepoPanel {
-    gap: 12px;
   }
 
   .repoControl {
@@ -1461,9 +1598,18 @@ h2 {
 /* 后台检查设置区 */
 .backgroundCheckRow {
   grid-template-columns: minmax(0, 1fr);
-  gap: 12px;
+  gap: 10px;
 }
 
+.backgroundCheckHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 0;
+}
+
+.backgroundCheckHeader > span:first-child,
 .backgroundCheckRow > span:first-child {
   color: #334155;
   font-size: 13px;
@@ -1471,36 +1617,42 @@ h2 {
 }
 
 .backgroundCheckControls {
-  display: grid;
-  grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+  display: flex;
   align-items: center;
+  justify-content: flex-start;
   gap: 12px;
+  min-width: 0;
 }
 
-@media (max-width: 1180px) {
-  .backgroundCheckControls {
-    grid-template-columns: minmax(0, 1fr);
-  }
+.backgroundCheckControls .intervalField {
+  flex-wrap: wrap;
 }
 
 .toggleRow {
   position: relative;
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 10px;
-  width: max-content;
+  gap: 12px;
+  width: auto;
+  min-width: 0;
 }
 
 .toggleRow > span {
   color: #475569;
   font-size: 12px;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .toggleRow input[type="checkbox"] {
   appearance: none;
+  -webkit-appearance: none;
+  display: inline-block;
+  box-sizing: border-box;
   width: 42px;
   height: 24px;
+  min-width: 42px;
+  min-height: 24px;
   border-radius: 999px;
   background: #d8dee8;
   cursor: pointer;
@@ -1528,12 +1680,6 @@ h2 {
 
 .toggleRow input[type="checkbox"]:checked::before {
   transform: translateX(18px);
-}
-
-.intervalRow {
-  display: flex;
-  justify-content: flex-end;
-  min-width: 0;
 }
 
 .intervalField {

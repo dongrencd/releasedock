@@ -20,7 +20,10 @@ use crate::{
     asset_matcher::InstallType,
     config::{Config, Language, effective_install_root},
     install_plan::InstallPlan,
-    manifest::{InstallPathKind, InstalledApp, ManifestStore, SystemPackageManager},
+    manifest::{
+        InstallPathKind, InstalledApp, LifecycleAction, LifecycleEvent, ManifestStore,
+        SystemPackageManager,
+    },
     release::ReleaseClient,
     repo::RepoRef,
 };
@@ -28,6 +31,54 @@ use crate::{
 pub type ProgressReporter = Arc<dyn Fn(TaskProgress) + Send + Sync>;
 
 static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn record_lifecycle_success(
+    manifest_store: &ManifestStore,
+    repo: &RepoRef,
+    action: LifecycleAction,
+    summary: String,
+    version: Option<String>,
+    asset_name: Option<String>,
+    install_path: Option<PathBuf>,
+    install_path_kind: Option<InstallPathKind>,
+) {
+    let event = LifecycleEvent::succeeded(
+        repo.id(),
+        repo.name.clone(),
+        action,
+        summary,
+        version,
+        asset_name,
+        install_path,
+        install_path_kind,
+    );
+    let _ = manifest_store.append_lifecycle_event(event);
+}
+
+fn record_lifecycle_failure(
+    manifest_store: &ManifestStore,
+    repo: &RepoRef,
+    action: LifecycleAction,
+    summary: String,
+    error: String,
+    version: Option<String>,
+    asset_name: Option<String>,
+    install_path: Option<PathBuf>,
+    install_path_kind: Option<InstallPathKind>,
+) {
+    let event = LifecycleEvent::failed(
+        repo.id(),
+        repo.name.clone(),
+        action,
+        summary,
+        error,
+        version,
+        asset_name,
+        install_path,
+        install_path_kind,
+    );
+    let _ = manifest_store.append_lifecycle_event(event);
+}
 
 #[derive(Debug, Clone)]
 pub struct InstallOutcome {
@@ -193,6 +244,38 @@ pub async fn install_from_plan(
         .load()
         .ok()
         .and_then(|manifest| manifest.apps.into_iter().find(|app| app.id == repo.id()));
+    let lifecycle_summary = match previous_app.as_ref() {
+        Some(app) if app.installed_version != plan.version => {
+            format!(
+                "{} {} {}",
+                tr(language, "Updated", "已更新"),
+                repo.name,
+                plan.version
+            )
+        }
+        _ => format!(
+            "{} {} {}",
+            tr(language, "Installed", "已安装"),
+            repo.name,
+            plan.version
+        ),
+    };
+    let lifecycle_failure_summary = match previous_app.as_ref() {
+        Some(app) if app.installed_version != plan.version => {
+            format!(
+                "{} {} {}",
+                tr(language, "Failed to update", "更新失败"),
+                repo.name,
+                plan.version
+            )
+        }
+        _ => format!(
+            "{} {} {}",
+            tr(language, "Failed to install", "安装失败"),
+            repo.name,
+            plan.version
+        ),
+    };
     report_progress(
         progress.as_ref(),
         TaskProgress {
@@ -216,11 +299,28 @@ pub async fn install_from_plan(
         progress.clone(),
         &repo,
     )
-    .await?;
+    .await
+    .map_err(|error| {
+        record_lifecycle_failure(
+            manifest_store,
+            &repo,
+            match previous_app.as_ref() {
+                Some(app) if app.installed_version != plan.version => LifecycleAction::Update,
+                _ => LifecycleAction::Install,
+            },
+            lifecycle_failure_summary.clone(),
+            error.to_string(),
+            Some(plan.version.clone()),
+            Some(plan.asset_name.clone()),
+            None,
+            None,
+        );
+        error
+    })?;
     let (install_path, install_path_kind, uninstall_supported, system_package_metadata) =
         match plan.install_type {
-            InstallType::AppImage | InstallType::Executable => (
-                install_managed_executable(
+            InstallType::AppImage | InstallType::Executable => {
+                let install_path = install_managed_executable(
                     &download_path,
                     &repo,
                     manifest_store,
@@ -228,13 +328,30 @@ pub async fn install_from_plan(
                     runtime_config,
                     language,
                     progress.as_ref(),
-                )?,
-                InstallPathKind::ManagedPath,
-                true,
-                None,
-            ),
-            InstallType::PortableArchive | InstallType::Archive => (
-                extract_archive(
+                )
+                .map_err(|error| {
+                    record_lifecycle_failure(
+                        manifest_store,
+                        &repo,
+                        match previous_app.as_ref() {
+                            Some(app) if app.installed_version != plan.version => {
+                                LifecycleAction::Update
+                            }
+                            _ => LifecycleAction::Install,
+                        },
+                        lifecycle_failure_summary.clone(),
+                        error.to_string(),
+                        Some(plan.version.clone()),
+                        Some(plan.asset_name.clone()),
+                        None,
+                        Some(InstallPathKind::ManagedPath),
+                    );
+                    error
+                })?;
+                (install_path, InstallPathKind::ManagedPath, true, None)
+            }
+            InstallType::PortableArchive | InstallType::Archive => {
+                let install_path = extract_archive(
                     &download_path,
                     &repo,
                     manifest_store,
@@ -242,13 +359,30 @@ pub async fn install_from_plan(
                     runtime_config,
                     language,
                     progress.as_ref(),
-                )?,
-                InstallPathKind::ManagedPath,
-                true,
-                None,
-            ),
-            InstallType::WindowsInstaller => (
-                install_windows_installer(
+                )
+                .map_err(|error| {
+                    record_lifecycle_failure(
+                        manifest_store,
+                        &repo,
+                        match previous_app.as_ref() {
+                            Some(app) if app.installed_version != plan.version => {
+                                LifecycleAction::Update
+                            }
+                            _ => LifecycleAction::Install,
+                        },
+                        lifecycle_failure_summary.clone(),
+                        error.to_string(),
+                        Some(plan.version.clone()),
+                        Some(plan.asset_name.clone()),
+                        None,
+                        Some(InstallPathKind::ManagedPath),
+                    );
+                    error
+                })?;
+                (install_path, InstallPathKind::ManagedPath, true, None)
+            }
+            InstallType::WindowsInstaller => {
+                let install_path = install_windows_installer(
                     &download_path,
                     &repo,
                     manifest_store,
@@ -256,11 +390,28 @@ pub async fn install_from_plan(
                     runtime_config,
                     language,
                     progress.as_ref(),
-                )?,
-                InstallPathKind::SystemInstaller,
-                false,
-                None,
-            ),
+                )
+                .map_err(|error| {
+                    record_lifecycle_failure(
+                        manifest_store,
+                        &repo,
+                        match previous_app.as_ref() {
+                            Some(app) if app.installed_version != plan.version => {
+                                LifecycleAction::Update
+                            }
+                            _ => LifecycleAction::Install,
+                        },
+                        lifecycle_failure_summary.clone(),
+                        error.to_string(),
+                        Some(plan.version.clone()),
+                        Some(plan.asset_name.clone()),
+                        None,
+                        Some(InstallPathKind::SystemInstaller),
+                    );
+                    error
+                })?;
+                (install_path, InstallPathKind::SystemInstaller, false, None)
+            }
             InstallType::LinuxPackage => {
                 let (install_path, system_package_metadata) = install_linux_package(
                     &download_path,
@@ -270,7 +421,26 @@ pub async fn install_from_plan(
                     runtime_config,
                     language,
                     progress.as_ref(),
-                )?;
+                )
+                .map_err(|error| {
+                    record_lifecycle_failure(
+                        manifest_store,
+                        &repo,
+                        match previous_app.as_ref() {
+                            Some(app) if app.installed_version != plan.version => {
+                                LifecycleAction::Update
+                            }
+                            _ => LifecycleAction::Install,
+                        },
+                        lifecycle_failure_summary.clone(),
+                        error.to_string(),
+                        Some(plan.version.clone()),
+                        Some(plan.asset_name.clone()),
+                        None,
+                        Some(InstallPathKind::SystemInstaller),
+                    );
+                    error
+                })?;
                 (
                     install_path,
                     InstallPathKind::SystemInstaller,
@@ -289,6 +459,16 @@ pub async fn install_from_plan(
         &repo.name,
         &plan.asset_name,
     );
+    let lifecycle_action = previous_app
+        .as_ref()
+        .map(|app| {
+            if app.installed_version == plan.version {
+                LifecycleAction::Install
+            } else {
+                LifecycleAction::Update
+            }
+        })
+        .unwrap_or(LifecycleAction::Install);
 
     let mut app = InstalledApp::with_install_metadata(
         repo.id(),
@@ -305,7 +485,30 @@ pub async fn install_from_plan(
         app.system_package_name = Some(system_package_metadata.package_name);
         app.system_package_manager = Some(system_package_metadata.manager);
     }
-    manifest_store.upsert_app(app.clone())?;
+    manifest_store.upsert_app(app.clone()).map_err(|error| {
+        record_lifecycle_failure(
+            manifest_store,
+            &repo,
+            lifecycle_action.clone(),
+            lifecycle_failure_summary.clone(),
+            error.to_string(),
+            Some(plan.version.clone()),
+            Some(plan.asset_name.clone()),
+            Some(install_path.clone()),
+            Some(install_path_kind),
+        );
+        error
+    })?;
+    record_lifecycle_success(
+        manifest_store,
+        &repo,
+        lifecycle_action.clone(),
+        lifecycle_summary,
+        Some(plan.version.clone()),
+        Some(plan.asset_name.clone()),
+        Some(install_path.clone()),
+        Some(install_path_kind),
+    );
     if let Some(previous_app) = previous_app {
         if matches!(previous_app.install_path_kind, InstallPathKind::ManagedPath)
             && previous_app.install_path != app.install_path
@@ -367,6 +570,7 @@ pub fn uninstall_repo(
     let Some(app) = manifest.apps.into_iter().find(|app| app.id == repo_id) else {
         return Ok(None);
     };
+    let repo = RepoRef::parse(&app.repo_url)?;
 
     report_progress(
         progress.as_ref(),
@@ -388,6 +592,22 @@ pub fn uninstall_repo(
     );
 
     if !app.uninstall_supported {
+        record_lifecycle_failure(
+            manifest_store,
+            &repo,
+            LifecycleAction::Uninstall,
+            format!("{} {}", tr(language, "Failed to uninstall", "卸载失败："), app.name),
+            tr(
+                language,
+                "was installed by a system installer and must be removed from the system package manager",
+                "是由系统安装器安装的，必须通过系统卸载"
+            )
+            .to_string(),
+            Some(app.installed_version.clone()),
+            Some(app.asset_name.clone()),
+            Some(app.install_path.clone()),
+            Some(app.install_path_kind),
+        );
         anyhow::bail!(
             "{} {}",
             app.id,
@@ -421,13 +641,46 @@ pub fn uninstall_repo(
             .ok_or_else(|| {
                 anyhow::anyhow!("missing Linux system package manager for {}", app.id)
             })?;
-        let status = uninstall_linux_package(&package_name, manager)?;
+        let status = uninstall_linux_package(&package_name, manager).map_err(|error| {
+            record_lifecycle_failure(
+                manifest_store,
+                &repo,
+                LifecycleAction::Uninstall,
+                format!(
+                    "{} {}",
+                    tr(language, "Failed to uninstall", "卸载失败："),
+                    app.name
+                ),
+                error.to_string(),
+                Some(app.installed_version.clone()),
+                Some(app.asset_name.clone()),
+                Some(app.install_path.clone()),
+                Some(app.install_path_kind),
+            );
+            error
+        })?;
         if !status.success() {
-            anyhow::bail!(
+            let error = anyhow::anyhow!(
                 "Linux package remover exited with status {} for {}",
                 status,
                 package_name
             );
+            record_lifecycle_failure(
+                manifest_store,
+                &repo,
+                LifecycleAction::Uninstall,
+                format!(
+                    "{} {}",
+                    tr(language, "Failed to uninstall", "卸载失败："),
+                    app.name
+                ),
+                error.to_string(),
+                Some(app.installed_version.clone()),
+                Some(app.asset_name.clone()),
+                Some(app.install_path.clone()),
+                Some(app.install_path_kind),
+            );
+            return Err(error);
         }
     }
 
@@ -449,7 +702,35 @@ pub fn uninstall_repo(
             percent: Some(70),
         },
     );
-    remove_path(&app.install_path)?;
+    if let Err(error) = remove_path(&app.install_path) {
+        let repo = RepoRef::parse(&app.repo_url)?;
+        record_lifecycle_failure(
+            manifest_store,
+            &repo,
+            LifecycleAction::Uninstall,
+            format!(
+                "{} {}",
+                tr(language, "Failed to uninstall", "卸载失败："),
+                app.name
+            ),
+            error.to_string(),
+            Some(app.installed_version.clone()),
+            Some(app.asset_name.clone()),
+            Some(app.install_path.clone()),
+            Some(app.install_path_kind),
+        );
+        return Err(error);
+    }
+    record_lifecycle_success(
+        manifest_store,
+        &repo,
+        LifecycleAction::Uninstall,
+        format!("{} {}", tr(language, "Uninstalled", "已卸载"), app.name),
+        Some(app.installed_version.clone()),
+        Some(app.asset_name.clone()),
+        Some(app.install_path.clone()),
+        Some(app.install_path_kind),
+    );
     report_progress(
         progress.as_ref(),
         TaskProgress {
@@ -1143,7 +1424,8 @@ pub fn infer_launch_target(
     asset_name: &str,
 ) -> Option<PathBuf> {
     match install_type {
-        InstallType::AppImage | InstallType::Executable => return Some(install_path.to_path_buf()),
+        InstallType::AppImage => return Some(install_path.to_path_buf()),
+        InstallType::Executable => return None,
         InstallType::WindowsInstaller | InstallType::LinuxPackage => return None,
         _ => {}
     }
@@ -1615,7 +1897,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn executable_install_tracks_launch_path_and_executable_bit() {
+    async fn executable_install_does_not_track_launch_path_but_keeps_executable_bit() {
         let temp = tempfile::tempdir().unwrap();
         let manifest = ManifestStore::at_path(temp.path().join("apps.json"));
         let fixture = temp.path().join("releasedock-linux-x64");
@@ -1628,10 +1910,7 @@ mod tests {
 
         assert_eq!(outcome.install_type, InstallType::Executable);
         assert_eq!(outcome.install_path, outcome.app.install_path);
-        assert_eq!(
-            outcome.app.launch_path.as_deref(),
-            Some(outcome.install_path.as_path())
-        );
+        assert!(outcome.app.launch_path.is_none());
         assert!(outcome.install_path.exists());
         assert_eq!(
             fs::read(&outcome.install_path).unwrap(),
@@ -1652,10 +1931,7 @@ mod tests {
         let stored = manifest.load().unwrap();
         assert_eq!(stored.apps.len(), 1);
         assert_eq!(stored.apps[0].install_type, InstallType::Executable);
-        assert_eq!(
-            stored.apps[0].launch_path.as_deref(),
-            Some(outcome.install_path.as_path())
-        );
+        assert!(stored.apps[0].launch_path.is_none());
     }
 
     #[test]

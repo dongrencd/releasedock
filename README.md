@@ -8,7 +8,7 @@ The project is already usable in its first release:
 
 - Rust core: repository parsing, release data models, release notes, asset matching, install plans, manifests, and runtime configuration.
 - CLI: `install` can use a live GitHub latest release or fixtures, `--json` prints the install plan only, `--yes` skips interactive confirmation, interactive confirmations show the selected management mode, `config` manages the GitHub token, proxy, and install root, `check` compares installed apps with the latest release, `list` reads the manifest, and `update` / `uninstall` use the real execution path.
-- Desktop GUI: Tauri 2 + React dashboard with real manifest loading, GitHub release refresh, release note viewing, install preview and confirmation, install execution, update actions for managed apps, uninstall and tracking removal, visible install progress, open-app and open-location shortcuts, and a settings page for token, proxy, language, and install root. The details panel now also shows the management mode and system package manager for installed apps. The default UI language is English, and the task/status strip follows the selected UI language.
+- Desktop GUI: Tauri 2 + React dashboard with real manifest loading, GitHub release refresh, release note viewing, install preview and confirmation, install execution, update actions for managed apps, uninstall and tracking removal, visible install progress, open-app and open-location shortcuts, and a settings page for token, proxy, language, and install root. The details panel now also shows the management mode, system package manager, and recent lifecycle history for installed apps. The default UI language is English, and the task/status strip follows the selected UI language.
 - The sidebar footer shows the product name and subtitle; it does not act as a repository shortcut.
 - Public repositories do not require a token. Private repositories and frequent API calls should use one.
 - ReleaseDock prefers portable or directly runnable release assets first, including Linux executables without an extension when they are clearly marked for the current platform and architecture, then falls back to system installers when no managed format is available.
@@ -20,7 +20,7 @@ The project is already usable in its first release:
 - CLI: Rust + `clap`
 - Desktop: Tauri 2
 - Frontend: React + TypeScript + Vite
-- Storage: JSON manifest v2
+- Storage: JSON manifest v3
 
 ## Usage
 

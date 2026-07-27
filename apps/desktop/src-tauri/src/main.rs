@@ -1,7 +1,7 @@
 #![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     env,
     fs,
     path::{Path, PathBuf},
@@ -18,7 +18,7 @@ use releasedock_core::{
     config::{Config, ConfigStore, Language},
     installer::{infer_launch_target, install_from_plan, uninstall_repo as core_uninstall_repo, ProgressReporter, TaskProgress},
     install_plan::{InstallManagementKind, InstallPlan},
-    manifest::{InstallPathKind, ManifestStore, SystemPackageManager},
+    manifest::{InstallPathKind, LifecycleEvent, ManifestStore, SystemPackageManager},
     release::{Release, ReleaseClient},
     repo::RepoRef,
 };
@@ -84,6 +84,8 @@ struct ManagedAppView {
     install_type: String,
     install_path_kind: InstallPathKind,
     uninstall_supported: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    recent_activities: Vec<LifecycleEvent>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -147,6 +149,7 @@ async fn main() -> Result<()> {
             open_app,
             open_url,
             open_path,
+            open_install_location,
             open_system_uninstall_settings
         ])
         // 系统托盘：创建图标、菜单
@@ -309,6 +312,11 @@ async fn open_path(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn open_install_location(path: String, install_path_kind: InstallPathKind) -> Result<(), String> {
+    open_install_location_in_system(&path, install_path_kind).map_err(format_error)
+}
+
+#[tauri::command]
 async fn open_system_uninstall_settings() -> Result<(), String> {
     open_system_uninstall_settings_in_system().map_err(format_error)
 }
@@ -319,11 +327,13 @@ async fn build_dashboard(app: &tauri::AppHandle, refresh_id: u64) -> Result<Vec<
     let tracked_store = TrackedRepoStore::default()?;
     tracked_store.seed_if_missing(&[DEFAULT_TRACKED_REPO_ID])?;
     let tracked_repos = tracked_store.load()?;
-    let installed_ids: HashSet<String> = manifest.apps.iter().map(|app| app.id.clone()).collect();
+    let recent_activities = Arc::new(group_recent_activities(&manifest.lifecycle_events));
+    let releasedock_core::manifest::Manifest { apps, .. } = manifest;
+    let installed_ids: HashSet<String> = apps.iter().map(|app| app.id.clone()).collect();
     let runtime_config = runtime_config()?;
     let language = ui_language(&runtime_config);
     let client = release_client(Some(&runtime_config))?;
-    let work_items = build_dashboard_work_items(manifest.apps, tracked_repos, installed_ids);
+    let work_items = build_dashboard_work_items(apps, tracked_repos, installed_ids);
     if work_items.is_empty() {
         return Ok(Vec::new());
     }
@@ -333,7 +343,13 @@ async fn build_dashboard(app: &tauri::AppHandle, refresh_id: u64) -> Result<Vec<
     let mut tasks = JoinSet::new();
     for _ in 0..DASHBOARD_CONCURRENCY {
         if let Some(work_item) = pending.next() {
-            spawn_dashboard_task(&mut tasks, &client, work_item, language);
+            spawn_dashboard_task(
+                &mut tasks,
+                &client,
+                work_item,
+                language,
+                Arc::clone(&recent_activities),
+            );
         }
     }
 
@@ -363,7 +379,13 @@ async fn build_dashboard(app: &tauri::AppHandle, refresh_id: u64) -> Result<Vec<
         );
 
         if let Some(work_item) = pending.next() {
-            spawn_dashboard_task(&mut tasks, &client, work_item, language);
+            spawn_dashboard_task(
+                &mut tasks,
+                &client,
+                work_item,
+                language,
+                Arc::clone(&recent_activities),
+            );
         }
     }
 
@@ -378,9 +400,12 @@ fn spawn_dashboard_task(
     client: &ReleaseClient,
     work_item: DashboardWorkItem,
     language: Language,
+    recent_activities: Arc<HashMap<String, Vec<LifecycleEvent>>>,
 ) {
     let client = client.clone();
-    tasks.spawn(async move { resolve_dashboard_item(client, work_item, language).await });
+    tasks.spawn(async move {
+        resolve_dashboard_item(client, work_item, language, recent_activities).await
+    });
 }
 
 #[derive(Debug)]
@@ -430,6 +455,7 @@ async fn resolve_dashboard_item(
     client: ReleaseClient,
     work_item: DashboardWorkItem,
     language: Language,
+    recent_activities: Arc<HashMap<String, Vec<LifecycleEvent>>>,
 ) -> (usize, ManagedAppView) {
     match work_item {
         DashboardWorkItem::Installed { index, app, repo } => {
@@ -444,7 +470,7 @@ async fn resolve_dashboard_item(
                     language,
                 ),
             };
-            (index, item)
+            (index, attach_recent_activity(item, &recent_activities))
         }
         DashboardWorkItem::Tracked { index, repo } => {
             let item = match client.latest_release_optional(&repo).await {
@@ -458,9 +484,35 @@ async fn resolve_dashboard_item(
                     language,
                 ),
             };
-            (index, item)
+            (index, attach_recent_activity(item, &recent_activities))
         }
     }
+}
+
+fn attach_recent_activity(
+    mut item: ManagedAppView,
+    recent_activities: &HashMap<String, Vec<LifecycleEvent>>,
+) -> ManagedAppView {
+    item.recent_activities = recent_activities
+        .get(&item.id)
+        .cloned()
+        .unwrap_or_default();
+    item
+}
+
+fn group_recent_activities(events: &[LifecycleEvent]) -> HashMap<String, Vec<LifecycleEvent>> {
+    let mut grouped = events.iter().fold(HashMap::new(), |mut map, event| {
+        map.entry(event.repo_id.clone())
+            .or_insert_with(Vec::new)
+            .push(event.clone());
+        map
+    });
+
+    for activities in grouped.values_mut() {
+        activities.reverse();
+    }
+
+    grouped
 }
 
 fn render_app(
@@ -503,6 +555,7 @@ fn render_app(
                 install_type: format!("{:?}", app.install_type),
                 install_path_kind: app.install_path_kind,
                 uninstall_supported: app.uninstall_supported,
+                recent_activities: Vec::new(),
             }
         }
         Err(error) => build_failed_view(
@@ -546,6 +599,7 @@ fn build_no_release_installed_view(
         install_type: format!("{:?}", app.install_type),
         install_path_kind: app.install_path_kind,
         uninstall_supported: app.uninstall_supported,
+        recent_activities: Vec::new(),
     }
 }
 
@@ -576,6 +630,7 @@ fn render_tracked_repo(repo: RepoRef, release: Release, language: Language) -> M
         install_type: "Unknown".to_string(),
         install_path_kind: InstallPathKind::Unknown,
         uninstall_supported: false,
+        recent_activities: Vec::new(),
     }
 }
 
@@ -605,6 +660,7 @@ fn build_no_release_tracked_view(repo: RepoRef, language: Language) -> ManagedAp
         install_type: "Unknown".to_string(),
         install_path_kind: InstallPathKind::Unknown,
         uninstall_supported: false,
+        recent_activities: Vec::new(),
     }
 }
 
@@ -635,6 +691,7 @@ fn build_failed_view(
         install_type: "Unknown".to_string(),
         install_path_kind: InstallPathKind::Unknown,
         uninstall_supported: false,
+        recent_activities: Vec::new(),
     }
 }
 
@@ -737,6 +794,28 @@ fn open_url_in_system(url: &str) -> Result<()> {
 
 fn open_path_in_system(path: &str) -> Result<()> {
     open_target_with_platform(path)
+}
+
+fn open_install_location_in_system(path: &str, install_path_kind: InstallPathKind) -> Result<()> {
+    let target = resolve_open_install_location_target(Path::new(path), install_path_kind)?;
+    let target = target.to_string_lossy().into_owned();
+    open_target_with_platform(&target)
+}
+
+fn resolve_open_install_location_target(path: &Path, install_path_kind: InstallPathKind) -> Result<PathBuf> {
+    match install_path_kind {
+        InstallPathKind::ManagedPath => {
+            if path.is_dir() {
+                Ok(path.to_path_buf())
+            } else {
+                path.parent()
+                    .map(Path::to_path_buf)
+                    .ok_or_else(|| anyhow::anyhow!("install path {} has no parent", path.display()))
+            }
+        }
+        InstallPathKind::SystemInstaller => Ok(path.to_path_buf()),
+        InstallPathKind::Unknown => anyhow::bail!("install path kind is unknown"),
+    }
 }
 
 fn open_app_in_system(repo_input: &str) -> Result<()> {
@@ -1067,7 +1146,7 @@ mod tests {
     use releasedock_core::asset_matcher::InstallType;
     use releasedock_core::manifest::{InstallPathKind, InstalledApp};
 
-    use super::{management_kind_for_app, validate_github_url};
+    use super::{management_kind_for_app, resolve_open_install_location_target, validate_github_url};
 
     #[test]
     fn allows_github_release_pages() {
@@ -1177,6 +1256,37 @@ mod tests {
             !production_source.contains("spawn_without_console"),
             "Windows open paths should not need a console-hiding helper"
         );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn managed_install_path_opens_parent_directory_for_files() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let executable = tempdir.path().join("releasedock-linux-x64");
+        std::fs::write(&executable, b"fake binary").expect("write executable");
+
+        let target = resolve_open_install_location_target(&executable, InstallPathKind::ManagedPath).expect("target");
+        assert_eq!(target, tempdir.path());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn managed_install_path_keeps_directories() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+
+        let target = resolve_open_install_location_target(tempdir.path(), InstallPathKind::ManagedPath).expect("target");
+        assert_eq!(target, tempdir.path());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn system_installer_keeps_file_path() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let installer = tempdir.path().join("setup.deb");
+        std::fs::write(&installer, b"fake package").expect("write installer");
+
+        let target = resolve_open_install_location_target(&installer, InstallPathKind::SystemInstaller).expect("target");
+        assert_eq!(target, installer);
     }
 }
 

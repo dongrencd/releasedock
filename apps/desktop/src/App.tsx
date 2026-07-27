@@ -28,6 +28,7 @@ import {
   loadConfig,
   loadDashboard,
   openApp,
+  openInstallLocation,
   openUrl,
   openPath,
   previewInstall,
@@ -45,8 +46,11 @@ import {
   getOpenReleaseAvailability,
   getPrimaryActionAvailability,
   getRemoveTrackedAvailability,
-  hasInstallableAsset,
   getInspectorDetailItems,
+  getLifecycleHistoryEntries,
+  isManagedPathKind,
+  isSystemInstallerKind,
+  isRemovableNoRelease,
   parseReleaseNote,
   pruneSelection,
   getUninstallAvailability,
@@ -55,9 +59,11 @@ import {
   inboxFilters,
   isActionRequired,
   hasSecondaryInspectorActions,
+  resolvePrimaryActionKind,
   selectVisibleIds,
   systemPackageManagerLabel,
   shouldShowOpenReleaseSecondary,
+  shouldShowInstallLocationAction,
   toggleSelection,
   type InboxFilter,
   type InboxItem,
@@ -211,11 +217,15 @@ export function App() {
     // 后台检查完成事件 — 更新 badge 计数
     void listen<BackgroundCheckEvent>("background-check-complete", (event) => {
       setBackgroundUpdateCount(event.payload.updateCount);
+    }).then((dispose) => {
+      unlistenBackground = dispose;
     });
 
     // 托盘"检查更新"菜单 — 触发前端刷新
     void listen<void>("tray-check-updates", () => {
       void refreshDashboard();
+    }).then((dispose) => {
+      unlistenTrayCheck = dispose;
     });
 
     void listen<DashboardItemEvent>("dashboard-item-updated", (event) => {
@@ -461,40 +471,40 @@ export function App() {
   }
 
   async function handlePrimaryAction(item: InboxItem) {
-    if (item.status === "needsChoice" && !hasInstallableAsset(item)) {
-      await handleOpenRelease(item);
-      return;
-    }
-
-    if (item.status === "current" || item.status === "noRelease") {
-      if (item.installPathKind === "ManagedPath" && item.launchPath) {
+    switch (resolvePrimaryActionKind(item)) {
+      case "openApp":
         await handleOpenApp(item);
         return;
-      }
-
-      await handleOpenRelease(item);
-      return;
-    }
-
-    if (item.status === "failed") {
-      await refreshDashboard();
-      return;
-    }
-
-    clearTaskProgress();
-    setBusy(true);
-    setError(null);
-    setTaskStatus(taskText.generatingInstallPreview(item.name));
-    try {
-      const plan = await previewInstall(item.id);
-      setPendingInstall(plan);
-      setTaskStatus(taskText.generatedInstallPreview(item.name));
-    } catch (caught) {
-      const message = caught instanceof Error ? caught.message : String(caught);
-      setError(message);
-      setTaskStatus(taskText.failedToBuildInstallPreview);
-    } finally {
-      setBusy(false);
+      case "openRelease":
+        await handleOpenRelease(item);
+        return;
+      case "openInstallLocation":
+      case "openInstallerFile":
+        await handleOpenInstallPath(item);
+        return;
+      case "retry":
+        await refreshDashboard();
+        return;
+      case "install":
+      case "update":
+        clearTaskProgress();
+        setBusy(true);
+        setError(null);
+        setTaskStatus(taskText.generatingInstallPreview(item.name));
+        try {
+          const plan = await previewInstall(item.id);
+          setPendingInstall(plan);
+          setTaskStatus(taskText.generatedInstallPreview(item.name));
+        } catch (caught) {
+          const message = caught instanceof Error ? caught.message : String(caught);
+          setError(message);
+          setTaskStatus(taskText.failedToBuildInstallPreview);
+        } finally {
+          setBusy(false);
+        }
+        return;
+      default:
+        return;
     }
   }
 
@@ -588,7 +598,7 @@ export function App() {
   }
 
   async function handleRemoveTracked(item: InboxItem | null) {
-    if (!item || (item.status !== "needsChoice" && !(item.status === "noRelease" && item.installPathKind === "Unknown"))) {
+    if (!item || (item.status !== "needsChoice" && !isRemovableNoRelease(item))) {
       clearTaskProgress();
       return;
     }
@@ -620,7 +630,7 @@ export function App() {
     }
 
     const targets = apps.filter(
-      (app) => selectedIds.includes(app.id) && (app.status === "needsChoice" || (app.status === "noRelease" && app.installPathKind === "Unknown"))
+      (app) => selectedIds.includes(app.id) && (app.status === "needsChoice" || isRemovableNoRelease(app))
     );
     if (targets.length === 0) {
       clearTaskProgress();
@@ -674,7 +684,7 @@ export function App() {
   }
 
   async function handleOpenApp(item: InboxItem | null) {
-    if (!item || item.installPathKind !== "ManagedPath" || !item.launchPath) {
+    if (!item || !isManagedPathKind(item.installPathKind) || !item.launchPath) {
       clearTaskProgress();
       setTaskStatus(ui.model.noLaunchTarget);
       return;
@@ -692,7 +702,7 @@ export function App() {
   }
 
   async function handleOpenInstallPath(item: InboxItem | null) {
-    if (!item?.installPath || item.installPath === "unknown" || item.status === "needsChoice" || item.installPathKind === "Unknown") {
+    if (!item?.installPath || item.installPath === "unknown" || item.status === "needsChoice" || !shouldShowInstallLocationAction(item)) {
       clearTaskProgress();
       setTaskStatus(taskText.noInstallPathAvailable);
       return;
@@ -700,9 +710,9 @@ export function App() {
 
     clearTaskProgress();
     try {
-      await openPath(item.installPath);
+      await openInstallLocation(item.installPath, item.installPathKind);
       setTaskStatus(
-        item.installPathKind === "SystemInstaller"
+        isSystemInstallerKind(item.installPathKind)
           ? taskText.openedInstallerFile(item.name)
           : taskText.openedInstallLocation(item.name)
       );
@@ -781,58 +791,31 @@ export function App() {
             <p className="eyebrow">{activeView === "dashboard" ? ui.updatesEyebrow : ui.settingsEyebrow}</p>
             <h1>{activeView === "dashboard" ? ui.updatesTitle : ui.settingsTitle}</h1>
           </div>
-          <div className="topbarMeta">
-            <span className={hasGithubToken ? "statePill success" : "statePill"}>{hasGithubToken ? ui.configReady : ui.configPublic}</span>
-            {backgroundUpdateCount > 0 ? (
-              <span className="statePill subtle" title={ui.trayBadge(backgroundUpdateCount)}>
-                {ui.trayBadge(backgroundUpdateCount)}
-              </span>
-            ) : null}
-          </div>
-          {activeView === "dashboard" ? (
-            <div className="topbarActions">
+          <div className="topbarRight">
+            <div className="topbarMeta">
+              <span className={hasGithubToken ? "statePill success" : "statePill"}>{hasGithubToken ? ui.configReady : ui.configPublic}</span>
+              {backgroundUpdateCount > 0 ? (
+                <span className="statePill subtle" title={ui.trayBadge(backgroundUpdateCount)}>
+                  {ui.trayBadge(backgroundUpdateCount)}
+                </span>
+              ) : null}
+            </div>
+            {activeView === "dashboard" ? (
               <TooltipButton label={ui.checkUpdates} onClick={() => void refreshDashboard()} disabled={busy || loading} className="ghostButton topbarButton">
                 <RefreshCw size={17} />
                 <span>{ui.checkUpdates}</span>
               </TooltipButton>
-            </div>
-          ) : null}
+            ) : null}
+          </div>
         </header>
 
         {error ? <div className="errorBanner">{error}</div> : null}
 
         {activeView === "dashboard" ? (
           <section className="dashboardView">
-            <section className="addRepoPanel" aria-label={ui.addRepoEyebrow}>
-              <div className="panelHeading">
-                <p className="eyebrow">{ui.addRepoEyebrow}</p>
-                <h2>{ui.addRepoTitle}</h2>
-              </div>
-              <div className="repoControl">
-                <div className="repoBox">
-                  <Plus size={17} />
-                  <input
-                    placeholder={ui.addRepoPlaceholder}
-                    aria-label={ui.addRepoEyebrow}
-                    value={repoInput}
-                    onChange={(event) => setRepoInput(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        void handleAddRepo();
-                      }
-                    }}
-                  />
-                </div>
-                <TooltipButton label={ui.addRepoButton} onClick={() => void handleAddRepo()} disabled={busy} className="primaryButton addRepoButton">
-                  <Plus size={17} />
-                  <span>{ui.addRepoButton}</span>
-                </TooltipButton>
-              </div>
-            </section>
-
             <section className="contentGrid">
               <section className="inboxPanel" aria-label={ui.managedAppsTitle}>
-                <div className="sectionHeader">
+                <div className="sectionHeader workbenchHeader">
                   <div className="sectionTitle">
                     <div className="sectionGlyph">
                       <Layers3 size={16} />
@@ -842,9 +825,31 @@ export function App() {
                       <h2>{ui.managedAppsCount(inbox.length)}</h2>
                     </div>
                   </div>
-                  <div className="sectionMeta">
-                    <span className="statePill subtle">{ui.managedAppsPending(inbox.filter((item) => isActionRequired(item) || item.status === "failed").length)}</span>
-                    <span className="statePill subtle">{ui.filterPrefix}{filterLabel(filter, language)}</span>
+                  <div className="workbenchHeaderActions">
+                    <div className="sectionMeta">
+                      <span className="statePill subtle">{ui.managedAppsPending(inbox.filter((item) => isActionRequired(item) || item.status === "failed").length)}</span>
+                      <span className="statePill subtle">{ui.filterPrefix}{filterLabel(filter, language)}</span>
+                    </div>
+                    <div className="repoControl">
+                      <div className="repoBox">
+                        <Plus size={17} />
+                        <input
+                          placeholder={ui.addRepoPlaceholder}
+                          aria-label={ui.addRepoEyebrow}
+                          value={repoInput}
+                          onChange={(event) => setRepoInput(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              void handleAddRepo();
+                            }
+                          }}
+                        />
+                      </div>
+                      <TooltipButton label={ui.addRepoButton} onClick={() => void handleAddRepo()} disabled={busy} className="primaryButton addRepoButton">
+                        <Plus size={17} />
+                        <span>{ui.addRepoButton}</span>
+                      </TooltipButton>
+                    </div>
                   </div>
                 </div>
 
@@ -921,11 +926,16 @@ export function App() {
                         key={item.id}
                         item={item}
                         language={language}
+                        busy={busy}
                         selected={item.id === selected?.id}
                         checked={selectedIds.includes(item.id)}
                         onSelect={() => setSelectedId(item.id)}
                         onToggleSelection={() => {
                           setSelectedIds((current) => toggleSelection(current, item.id));
+                        }}
+                        onPrimaryAction={() => {
+                          setSelectedId(item.id);
+                          void handlePrimaryAction(item);
                         }}
                       />
                     ))
@@ -970,18 +980,6 @@ export function App() {
           </section>
         ) : (
           <section className="settingsPanel" aria-label={ui.navSettings}>
-            <div className="sectionHeader">
-              <div className="sectionTitle">
-                <div className="sectionGlyph">
-                  <Settings2 size={16} />
-                </div>
-                <div>
-                  <p className="eyebrow">{ui.settingsEyebrow}</p>
-                  <h2>{ui.settingsTitleSmall}</h2>
-                </div>
-              </div>
-            </div>
-
             <div className="settingsForm">
               <label className="fieldRow wide primaryField">
                 <span>{ui.installRoot}</span>
@@ -1064,34 +1062,34 @@ export function App() {
               </label>
 
               <div className="fieldRow backgroundCheckRow">
-                <span>{ui.backgroundCheck}</span>
-                <div className="backgroundCheckControls">
+                <div className="backgroundCheckHeader">
+                  <span>{ui.backgroundCheck}</span>
                   <label className="toggleRow">
                     <input
                       type="checkbox"
                       checked={configDraft.backgroundCheckEnabled}
                       onChange={(event) => setConfigDraft((current) => ({ ...current, backgroundCheckEnabled: event.target.checked }))}
                     />
-                    <span>{configDraft.backgroundCheckEnabled ? ui.configReady : ui.configPublic}</span>
+                    <span>{configDraft.backgroundCheckEnabled ? ui.backgroundCheckEnabled : ui.backgroundCheckDisabled}</span>
                   </label>
-                  <div className="intervalRow">
-                    <label className="intervalField">
-                      <span>{ui.checkInterval}</span>
-                      <input
-                        type="number"
-                        min={1}
-                        value={configDraft.checkIntervalMinutes}
-                        onChange={(event) => {
-                          const value = Number.parseInt(event.target.value, 10);
-                          setConfigDraft((current) => ({
-                            ...current,
-                            checkIntervalMinutes: Number.isNaN(value) || value < 1 ? 1 : value
-                          }));
-                        }}
-                      />
-                      <span className="intervalUnit">{ui.checkIntervalUnit}</span>
-                    </label>
-                  </div>
+                </div>
+                <div className="backgroundCheckControls">
+                  <label className="intervalField">
+                    <span>{ui.checkInterval}</span>
+                    <input
+                      type="number"
+                      min={1}
+                      value={configDraft.checkIntervalMinutes}
+                      onChange={(event) => {
+                        const value = Number.parseInt(event.target.value, 10);
+                        setConfigDraft((current) => ({
+                          ...current,
+                          checkIntervalMinutes: Number.isNaN(value) || value < 1 ? 1 : value
+                        }));
+                      }}
+                    />
+                    <span className="intervalUnit">{ui.checkIntervalUnit}</span>
+                  </label>
                 </div>
                 <small>{ui.backgroundCheckHelp} {ui.checkIntervalHelp}</small>
               </div>
@@ -1134,18 +1132,24 @@ function NavItem({
 function InboxRow({
   item,
   language,
+  busy,
   selected,
   checked,
   onSelect,
-  onToggleSelection
+  onToggleSelection,
+  onPrimaryAction
 }: {
   item: InboxItem;
   language: Language;
+  busy: boolean;
   selected: boolean;
   checked: boolean;
   onSelect: () => void;
   onToggleSelection: () => void;
+  onPrimaryAction: () => void;
 }) {
+  const primaryActionAvailability = getPrimaryActionAvailability(item, busy, language);
+
   return (
     <div
       className={selected ? "tableRow selected" : "tableRow"}
@@ -1181,9 +1185,20 @@ function InboxRow({
       <span className={`statusBadge ${item.status}`} aria-label={statusLabel(item.status, language)}>
         {statusLabel(item.status, language)}
       </span>
-      <span className="rowAction" aria-label={item.actionLabel}>
+      <button
+        type="button"
+        className="rowAction"
+        aria-label={primaryActionAvailability.reason ?? item.actionLabel}
+        title={primaryActionAvailability.reason ?? item.actionLabel}
+        disabled={!primaryActionAvailability.enabled}
+        onClick={(event) => {
+          event.stopPropagation();
+          onSelect();
+          onPrimaryAction();
+        }}
+      >
         {item.actionLabel}
-      </span>
+      </button>
     </div>
   );
 }
@@ -1217,15 +1232,7 @@ function Inspector({
   onCancelInstall: () => void;
   pendingInstall: InstallPlan | null;
 }) {
-  const openReleaseAvailability = getOpenReleaseAvailability(item, busy, language);
-  const openAppAvailability = getOpenAppAvailability(item, busy, language);
-  const primaryActionAvailability = getPrimaryActionAvailability(item, busy, language);
-  const confirmInstallAvailability = getConfirmInstallAvailability(item, busy, language);
-  const uninstallAvailability = getUninstallAvailability(item, busy, language);
-  const removeTrackedAvailability = getRemoveTrackedAvailability(item, busy, language);
   const ui = createUiText(language);
-  const detailItems = getInspectorDetailItems(item, language);
-  const showSecondaryInspectorActions = hasSecondaryInspectorActions(item, language);
 
   if (!item) {
     return (
@@ -1238,16 +1245,139 @@ function Inspector({
     );
   }
 
-  return (
-    <aside className="inspector" aria-label={ui.managedAppsTitle}>
-      <div className="inspectorHead">
-        <div>
-          <h2>{item.name}</h2>
-          <p className="mono">
-            {item.currentVersion} → {item.latestVersion}
-          </p>
-        </div>
+  const openReleaseAvailability = getOpenReleaseAvailability(item, busy, language);
+  const openAppAvailability = getOpenAppAvailability(item, busy, language);
+  const primaryActionAvailability = getPrimaryActionAvailability(item, busy, language);
+  const confirmInstallAvailability = getConfirmInstallAvailability(item, busy, language);
+  const uninstallAvailability = getUninstallAvailability(item, busy, language);
+  const removeTrackedAvailability = getRemoveTrackedAvailability(item, busy, language);
+  const primaryActionKind = resolvePrimaryActionKind(item);
+  const detailItems = getInspectorDetailItems(item, language);
+  const lifecycleHistory = getLifecycleHistoryEntries(item, language);
+  const showSecondaryInspectorActions = hasSecondaryInspectorActions(item, language);
+  const inspectorActionSection = (
+    <div className="inspectorActions" aria-label={ui.managedAppsTitle}>
+      {/* 主动作独占第一组：安装 / 更新 / 打开 / 重试 */}
+      <div className="inspectorActionsGroup primaryActionGroup">
+        <button
+          type="button"
+          className="primaryButton actionButton wide"
+          onClick={onPrimaryAction}
+          disabled={!primaryActionAvailability.enabled}
+          aria-label={primaryActionAvailability.reason ?? item.actionLabel}
+        >
+          {primaryActionKind === "openApp" ? (
+            <Play size={16} />
+          ) : primaryActionKind === "openRelease" ? (
+            <ExternalLink size={16} />
+          ) : primaryActionKind === "openInstallLocation" || primaryActionKind === "openInstallerFile" ? (
+            <FolderOpen size={16} />
+          ) : (
+            <Download size={16} />
+          )}
+          <span>{item.actionLabel}</span>
+        </button>
       </div>
+
+      {/* 次要动作放第二组：打开软件、打开 Release、打开安装目录 */}
+      {showSecondaryInspectorActions ? (
+        <div className="inspectorActionsGroup secondaryActionGroup">
+          {shouldShowOpenAppSecondary(item) ? (
+            <TooltipButton
+              label={openAppAvailability.reason ?? ui.action.openApp}
+              onClick={onOpenApp}
+              disabled={!openAppAvailability.enabled}
+              className="ghostButton actionButton wide"
+            >
+              <Play size={16} />
+              <span>{ui.action.openApp}</span>
+            </TooltipButton>
+          ) : null}
+          {shouldShowOpenReleaseSecondary(item, language) ? (
+            <button
+              type="button"
+              className="ghostButton actionButton wide"
+              onClick={onOpenRelease}
+              disabled={!openReleaseAvailability.enabled}
+              aria-label={openReleaseAvailability.reason ?? ui.openRelease}
+            >
+              <ExternalLink size={16} />
+              <span>{ui.openRelease}</span>
+            </button>
+          ) : null}
+          {shouldShowInstallLocationAction(item) ? (
+            <button
+              type="button"
+              className="ghostButton actionButton wide"
+              onClick={onOpenInstallPath}
+              aria-label={isSystemInstallerKind(item.installPathKind) ? ui.openInstallerFile : ui.openInstallLocation}
+            >
+              <FolderOpen size={16} />
+              <span>{isSystemInstallerKind(item.installPathKind) ? ui.openInstallerFile : ui.openInstallLocation}</span>
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
+      {/* 危险动作放最后：移除跟踪、卸载、打开系统卸载 */}
+      <div className="inspectorActionsGroup dangerActionGroup">
+        {item.status === "needsChoice" || isRemovableNoRelease(item) ? (
+          <button
+            type="button"
+            className="dangerButton actionButton wide"
+            onClick={onRemoveTracked}
+            disabled={!removeTrackedAvailability.enabled}
+            aria-label={removeTrackedAvailability.reason ?? ui.removeTracked}
+          >
+            <Trash2 size={16} />
+            <span>{ui.removeTracked}</span>
+          </button>
+        ) : item.uninstallSupported === false ? (
+          isWindowsPlatform() ? (
+            <TooltipButton
+              label={ui.openSystemUninstall}
+              onClick={() => void openSystemUninstallSettings()}
+              className="dangerButton actionButton wide"
+            >
+              <Trash2 size={16} />
+              <span>{ui.openSystemUninstall}</span>
+            </TooltipButton>
+          ) : (
+            <button
+              type="button"
+              className="ghostButton actionButton wide"
+              disabled
+              aria-label={uninstallAvailability.reason ?? ui.model.useSystemUninstall}
+            >
+              <Trash2 size={16} />
+              <span>{ui.model.useSystemUninstall}</span>
+            </button>
+          )
+        ) : (
+          <button
+            type="button"
+            className="dangerButton actionButton wide"
+            onClick={onUninstall}
+            disabled={!uninstallAvailability.enabled}
+            aria-label={uninstallAvailability.reason ?? ui.uninstallAbility}
+          >
+            <Trash2 size={16} />
+            <span>{ui.uninstallAbility}</span>
+          </button>
+        )}
+      </div>
+    </div>
+  );
+  const inspectorInfoSection = (
+    <>
+      <dl className="detailList">
+        {detailItems.map((detail, index) => (
+          <div key={`${detail.label}-${index}`} className={detail.fullWidth ? "detailListWide" : undefined}>
+            <dt>{detail.label}</dt>
+            <dd className={detail.monospace ? "mono wrapText" : "wrapText"}>{detail.value}</dd>
+          </div>
+        ))}
+      </dl>
 
       <div className="inspectorBlock accent">
         <div className="blockTitle">
@@ -1277,14 +1407,43 @@ function Inspector({
         <ReleaseNoteView note={item.releaseNote?.trim() || ""} emptyText={ui.notes.noReleaseNote} />
       </div>
 
-      <dl className="detailList">
-        {detailItems.map((detail, index) => (
-          <div key={`${detail.label}-${index}`} className={detail.fullWidth ? "detailListWide" : undefined}>
-            <dt>{detail.label}</dt>
-            <dd className={detail.monospace ? "mono wrapText" : "wrapText"}>{detail.value}</dd>
+      {lifecycleHistory.length > 0 ? (
+        <div className="historyBlock">
+          <div className="blockTitle">
+            <Layers3 size={16} />
+            <span>{ui.activityHistory}</span>
           </div>
-        ))}
-      </dl>
+          <ul className="historyList">
+            {lifecycleHistory.map((entry, index) => (
+              <li key={`${entry.recordedAt}-${index}`} className={entry.failed ? "historyItem failed" : "historyItem"}>
+                <div className="historyItemHeader">
+                  <strong>{entry.summary}</strong>
+                  <span className={entry.failed ? "statePill danger" : "statePill success"}>
+                    {entry.failed ? ui.activityFailed : ui.activitySucceeded}
+                  </span>
+                </div>
+                <div className="historyItemMeta">
+                  <span className="mono">{entry.recordedAt}</span>
+                  {entry.error ? <span className="historyItemError">{entry.error}</span> : null}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </>
+  );
+
+  return (
+    <aside className="inspector" aria-label={ui.managedAppsTitle}>
+      <div className="inspectorHead">
+        <div>
+          <h2>{item.name}</h2>
+          <p className="mono">
+            {item.currentVersion} → {item.latestVersion}
+          </p>
+        </div>
+      </div>
 
       {pendingInstall ? (
         <div className="installPreview">
@@ -1333,117 +1492,9 @@ function Inspector({
             </TooltipButton>
           </div>
         </div>
-      ) : (
-        <div className="inspectorActions" aria-label={ui.managedAppsTitle}>
-          {/* 主动作独占第一组：安装 / 更新 / 打开 / 重试 */}
-          <div className="inspectorActionsGroup">
-            <button
-              type="button"
-              className="primaryButton actionButton wide"
-              onClick={onPrimaryAction}
-              disabled={!primaryActionAvailability.enabled}
-              aria-label={primaryActionAvailability.reason ?? item.actionLabel}
-            >
-              {item.actionLabel === ui.action.openApp ? (
-                <Play size={16} />
-              ) : item.actionLabel === ui.openRelease ? (
-                <ExternalLink size={16} />
-              ) : (
-                <Download size={16} />
-              )}
-              <span>{item.actionLabel}</span>
-            </button>
-          </div>
-
-          {/* 次要动作放第二组：打开软件、打开 Release、打开安装目录 */}
-          {showSecondaryInspectorActions ? (
-            <div className="inspectorActionsGroup">
-              {shouldShowOpenAppSecondary(item) ? (
-                <TooltipButton
-                  label={openAppAvailability.reason ?? ui.action.openApp}
-                  onClick={onOpenApp}
-                  disabled={!openAppAvailability.enabled}
-                  className="ghostButton actionButton wide"
-                >
-                  <Play size={16} />
-                  <span>{ui.action.openApp}</span>
-                </TooltipButton>
-              ) : null}
-              {shouldShowOpenReleaseSecondary(item, language) ? (
-                <button
-                  type="button"
-                  className="ghostButton actionButton wide"
-                  onClick={onOpenRelease}
-                  disabled={!openReleaseAvailability.enabled}
-                  aria-label={openReleaseAvailability.reason ?? ui.openRelease}
-                >
-                  <ExternalLink size={16} />
-                  <span>{ui.openRelease}</span>
-                </button>
-              ) : null}
-              {item.status !== "needsChoice" && item.installPathKind !== "Unknown" ? (
-                <button
-                  type="button"
-                  className="ghostButton actionButton wide"
-                  onClick={onOpenInstallPath}
-                  aria-label={item.installPathKind === "SystemInstaller" ? ui.openInstallerFile : ui.openInstallLocation}
-                >
-                  <FolderOpen size={16} />
-                  <span>{item.installPathKind === "SystemInstaller" ? ui.openInstallerFile : ui.openInstallLocation}</span>
-                </button>
-              ) : null}
-            </div>
-          ) : null}
-
-          {/* 危险动作放最后：移除跟踪、卸载、打开系统卸载 */}
-          <div className="inspectorActionsGroup">
-            {item.status === "needsChoice" || (item.status === "noRelease" && item.installPathKind === "Unknown") ? (
-              <button
-                type="button"
-                className="dangerButton actionButton wide"
-                onClick={onRemoveTracked}
-                disabled={!removeTrackedAvailability.enabled}
-                aria-label={removeTrackedAvailability.reason ?? ui.removeTracked}
-              >
-                <Trash2 size={16} />
-                <span>{ui.removeTracked}</span>
-              </button>
-            ) : item.uninstallSupported === false ? (
-              isWindowsPlatform() ? (
-                <TooltipButton
-                  label={ui.openSystemUninstall}
-                  onClick={() => void openSystemUninstallSettings()}
-                  className="dangerButton actionButton wide"
-                >
-                  <Trash2 size={16} />
-                  <span>{ui.openSystemUninstall}</span>
-                </TooltipButton>
-              ) : (
-                <button
-                  type="button"
-                  className="ghostButton actionButton wide"
-                  disabled
-                  aria-label={uninstallAvailability.reason ?? ui.model.useSystemUninstall}
-                >
-                  <Trash2 size={16} />
-                  <span>{ui.model.useSystemUninstall}</span>
-                </button>
-              )
-            ) : (
-              <button
-                type="button"
-                className="dangerButton actionButton wide"
-                onClick={onUninstall}
-                disabled={!uninstallAvailability.enabled}
-                aria-label={uninstallAvailability.reason ?? ui.uninstallAbility}
-              >
-                <Trash2 size={16} />
-                <span>{ui.uninstallAbility}</span>
-              </button>
-            )}
-          </div>
-        </div>
-      )}
+      ) : null}
+      {inspectorActionSection}
+      {inspectorInfoSection}
     </aside>
   );
 }

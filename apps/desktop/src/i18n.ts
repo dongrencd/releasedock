@@ -49,6 +49,10 @@ type Copy = {
   installPath: string;
   defaultInstallPath: string;
   installManagement: string;
+  recentActivity: string;
+  activityHistory: string;
+  activitySucceeded: string;
+  activityFailed: string;
   uninstallAbility: string;
   installPreview: string;
   installPreviewConfirmation: string;
@@ -78,6 +82,8 @@ type Copy = {
   saveSettings: string;
   reloadSettings: string;
   backgroundCheck: string;
+  backgroundCheckEnabled: string;
+  backgroundCheckDisabled: string;
   backgroundCheckHelp: string;
   checkInterval: string;
   checkIntervalUnit: string;
@@ -207,6 +213,10 @@ const copy: Record<Language, Copy> = {
     installPath: "Install path",
     defaultInstallPath: "Default install path",
     installManagement: "Management",
+    recentActivity: "Recent activity",
+    activityHistory: "Activity history",
+    activitySucceeded: "Succeeded",
+    activityFailed: "Failed",
     uninstallAbility: "Uninstall",
     installPreview: "Install preview",
     installPreviewConfirmation: "This installer needs confirmation before it runs.",
@@ -236,6 +246,8 @@ const copy: Record<Language, Copy> = {
     saveSettings: "Save settings",
     reloadSettings: "Reload settings",
     backgroundCheck: "Background check",
+    backgroundCheckEnabled: "Enabled",
+    backgroundCheckDisabled: "Disabled",
     backgroundCheckHelp: "Periodically check GitHub for new releases while the app runs in the tray.",
     checkInterval: "Check interval",
     checkIntervalUnit: "minutes",
@@ -365,7 +377,11 @@ const copy: Record<Language, Copy> = {
     installPath: "安装路径",
     defaultInstallPath: "默认安装路径",
     installManagement: "管理方式",
-    uninstallAbility: "卸载能力",
+    recentActivity: "最近操作",
+    activityHistory: "操作历史",
+    activitySucceeded: "已完成",
+    activityFailed: "失败",
+    uninstallAbility: "卸载",
     installPreview: "安装预览",
     installPreviewConfirmation: "这个安装包需要在系统权限确认后继续执行。",
     cancel: "取消",
@@ -394,6 +410,8 @@ const copy: Record<Language, Copy> = {
     saveSettings: "保存设置",
     reloadSettings: "重新载入",
     backgroundCheck: "后台检查",
+    backgroundCheckEnabled: "已启用",
+    backgroundCheckDisabled: "已关闭",
     backgroundCheckHelp: "应用驻留托盘时定时检查 GitHub 是否有新 release。",
     checkInterval: "检查间隔",
     checkIntervalUnit: "分钟",
@@ -596,4 +614,19 @@ export function formatPublishedAt(value: string | undefined, language: Language)
   return language === "zh-CN"
     ? `发布于 ${date.toLocaleString("zh-CN")}`
     : `Published ${date.toLocaleString("en-US")}`;
+}
+
+export function formatRecordedAt(value: string | undefined, language: Language) {
+  if (!value) {
+    return language === "zh-CN" ? "记录时间未知" : "Recorded time unknown";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return language === "zh-CN"
+    ? `记录于 ${date.toLocaleString("zh-CN")}`
+    : `Recorded ${date.toLocaleString("en-US")}`;
 }

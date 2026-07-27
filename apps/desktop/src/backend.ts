@@ -14,7 +14,7 @@ export type InstallPlan = {
   notes: string[];
 };
 
-export type InstallPathKind = "ManagedPath" | "SystemInstaller" | "Unknown";
+export type InstallPathKind = "managedPath" | "systemInstaller" | "unknown";
 
 export type DesktopConfig = {
   githubToken: string | null;
@@ -117,6 +117,10 @@ export async function openUrl(url: string): Promise<void> {
 
 export async function openPath(path: string): Promise<void> {
   await invoke("open_path", { path });
+}
+
+export async function openInstallLocation(path: string, installPathKind?: InstallPathKind): Promise<void> {
+  await invoke("open_install_location", { path, installPathKind: installPathKind ?? "unknown" });
 }
 
 export async function openSystemUninstallSettings(): Promise<void> {

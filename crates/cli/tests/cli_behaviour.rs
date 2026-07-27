@@ -4,7 +4,9 @@ use std::fs;
 
 use releasedock_core::{
     asset_matcher::InstallType,
-    manifest::{InstallPathKind, InstalledApp, ManifestStore},
+    manifest::{
+        InstallPathKind, InstalledApp, LifecycleAction, LifecycleEvent, Manifest, ManifestStore,
+    },
 };
 
 #[test]
@@ -364,6 +366,62 @@ fn info_outputs_release_note_from_fixture() {
         .stdout(contains("Stable release"))
         .stdout(contains("Fix crash and improve startup."))
         .stdout(contains("demo-windows-x64.zip"));
+}
+
+#[test]
+fn info_outputs_recent_activity_from_default_manifest() {
+    let temp = tempfile::tempdir().unwrap();
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/release_windows.json"
+    );
+    unsafe {
+        std::env::set_var("XDG_DATA_HOME", temp.path());
+    }
+
+    let manifest_path = ManifestStore::default_path().unwrap();
+    let store = ManifestStore::at_path(manifest_path.clone());
+    store
+        .save(&Manifest {
+            schema_version: 3,
+            apps: vec![],
+            lifecycle_events: vec![
+                LifecycleEvent::succeeded(
+                    "owner/project",
+                    "project",
+                    LifecycleAction::Install,
+                    "Installed project v1.0.0",
+                    Some("v1.0.0".to_string()),
+                    Some("project-linux-x86_64.tar.gz".to_string()),
+                    None,
+                    None,
+                ),
+                LifecycleEvent::failed(
+                    "owner/project",
+                    "project",
+                    LifecycleAction::Update,
+                    "Updated project v1.1.0",
+                    "download failed",
+                    Some("v1.1.0".to_string()),
+                    Some("project-linux-x86_64.tar.gz".to_string()),
+                    None,
+                    None,
+                ),
+            ],
+        })
+        .unwrap();
+
+    Command::cargo_bin("releasedock")
+        .unwrap()
+        .env("XDG_DATA_HOME", temp.path())
+        .args(["info", "owner/project", "--release-fixture", fixture])
+        .assert()
+        .success()
+        .stdout(contains("Recent activity:"))
+        .stdout(contains("Updated project v1.1.0"))
+        .stdout(contains("Installed project v1.0.0"))
+        .stdout(contains("download failed"))
+        .stdout(contains("recorded at:"));
 }
 
 #[test]

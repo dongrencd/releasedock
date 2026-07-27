@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -16,6 +17,8 @@ pub struct Manifest {
     pub schema_version: u32,
     #[serde(default)]
     pub apps: Vec<InstalledApp>,
+    #[serde(default)]
+    pub lifecycle_events: Vec<LifecycleEvent>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -41,6 +44,95 @@ pub struct InstalledApp {
     pub uninstall_supported: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum LifecycleAction {
+    Install,
+    Update,
+    Uninstall,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum LifecycleOutcome {
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LifecycleEvent {
+    pub repo_id: String,
+    pub repo_name: String,
+    pub action: LifecycleAction,
+    pub outcome: LifecycleOutcome,
+    pub recorded_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_path_kind: Option<InstallPathKind>,
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl LifecycleEvent {
+    pub fn succeeded(
+        repo_id: impl Into<String>,
+        repo_name: impl Into<String>,
+        action: LifecycleAction,
+        summary: impl Into<String>,
+        version: Option<String>,
+        asset_name: Option<String>,
+        install_path: Option<PathBuf>,
+        install_path_kind: Option<InstallPathKind>,
+    ) -> Self {
+        Self {
+            repo_id: repo_id.into(),
+            repo_name: repo_name.into(),
+            action,
+            outcome: LifecycleOutcome::Succeeded,
+            recorded_at: Utc::now(),
+            version,
+            asset_name,
+            install_path,
+            install_path_kind,
+            summary: summary.into(),
+            error: None,
+        }
+    }
+
+    pub fn failed(
+        repo_id: impl Into<String>,
+        repo_name: impl Into<String>,
+        action: LifecycleAction,
+        summary: impl Into<String>,
+        error: impl Into<String>,
+        version: Option<String>,
+        asset_name: Option<String>,
+        install_path: Option<PathBuf>,
+        install_path_kind: Option<InstallPathKind>,
+    ) -> Self {
+        Self {
+            repo_id: repo_id.into(),
+            repo_name: repo_name.into(),
+            action,
+            outcome: LifecycleOutcome::Failed,
+            recorded_at: Utc::now(),
+            version,
+            asset_name,
+            install_path,
+            install_path_kind,
+            summary: summary.into(),
+            error: Some(error.into()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum InstallPathKind {
@@ -64,21 +156,74 @@ pub struct ManifestStore {
 impl Manifest {
     pub fn empty() -> Self {
         Self {
-            schema_version: 2,
+            schema_version: 3,
             apps: Vec::new(),
+            lifecycle_events: Vec::new(),
         }
     }
 
     pub fn normalize(mut self) -> Self {
-        if self.schema_version < 2 {
-            self.schema_version = 2;
+        if self.schema_version < 3 {
+            self.schema_version = 3;
         }
 
         for app in &mut self.apps {
             app.normalize_legacy();
         }
 
+        self.retain_recent_lifecycle_events(5);
+
         self
+    }
+
+    pub fn latest_lifecycle_event(&self, repo_id: &str) -> Option<&LifecycleEvent> {
+        self.lifecycle_events
+            .iter()
+            .rev()
+            .find(|event| event.repo_id == repo_id)
+    }
+
+    pub fn recent_lifecycle_events(&self, repo_id: &str, limit: usize) -> Vec<&LifecycleEvent> {
+        if limit == 0 {
+            return Vec::new();
+        }
+
+        self.lifecycle_events
+            .iter()
+            .rev()
+            .filter(|event| event.repo_id == repo_id)
+            .take(limit)
+            .collect()
+    }
+
+    pub fn append_lifecycle_event(&mut self, event: LifecycleEvent) {
+        self.lifecycle_events.push(event);
+        self.retain_recent_lifecycle_events(5);
+    }
+
+    fn retain_recent_lifecycle_events(&mut self, limit_per_repo: usize) {
+        if limit_per_repo == 0 {
+            self.lifecycle_events.clear();
+            return;
+        }
+
+        let mut seen_counts: HashMap<String, usize> = HashMap::new();
+        let mut retained_indices = Vec::new();
+
+        for (index, event) in self.lifecycle_events.iter().enumerate().rev() {
+            let count = seen_counts.entry(event.repo_id.clone()).or_insert(0);
+            if *count >= limit_per_repo {
+                continue;
+            }
+            *count += 1;
+            retained_indices.push(index);
+        }
+
+        retained_indices.sort_unstable();
+        self.lifecycle_events = retained_indices
+            .into_iter()
+            .map(|index| self.lifecycle_events[index].clone())
+            .collect();
     }
 }
 
@@ -158,12 +303,9 @@ impl InstalledApp {
             self.uninstall_supported = true;
         }
 
-        if self.launch_path.is_none()
-            && matches!(
-                self.install_type,
-                InstallType::AppImage | InstallType::Executable
-            )
-        {
+        if matches!(self.install_type, InstallType::Executable) {
+            self.launch_path = None;
+        } else if self.launch_path.is_none() && matches!(self.install_type, InstallType::AppImage) {
             self.launch_path = Some(self.install_path.clone());
         }
     }
@@ -203,16 +345,21 @@ impl ManifestStore {
     }
 
     pub fn save_apps(&self, apps: &[InstalledApp]) -> Result<()> {
-        self.save(&Manifest {
-            schema_version: 2,
-            apps: apps.to_vec(),
-        })
+        let mut manifest = self.load()?;
+        manifest.apps = apps.to_vec();
+        self.save(&manifest)
     }
 
     pub fn upsert_app(&self, app: InstalledApp) -> Result<()> {
         let mut manifest = self.load()?;
         manifest.apps.retain(|existing| existing.id != app.id);
         manifest.apps.push(app);
+        self.save(&manifest)
+    }
+
+    pub fn append_lifecycle_event(&self, event: LifecycleEvent) -> Result<()> {
+        let mut manifest = self.load()?;
+        manifest.append_lifecycle_event(event);
         self.save(&manifest)
     }
 
@@ -249,7 +396,7 @@ impl ManifestStore {
 }
 
 fn default_schema_version() -> u32 {
-    1
+    3
 }
 
 fn default_install_type() -> InstallType {

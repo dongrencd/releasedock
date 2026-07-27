@@ -476,6 +476,37 @@ async fn info(args: InfoArgs) -> Result<()> {
     if let Some(url) = release.html_url.as_deref() {
         println!("URL: {url}");
     }
+
+    let recent_activities = ManifestStore::default()
+        .ok()
+        .and_then(|store| store.load().ok())
+        .map(|manifest| {
+            manifest
+                .recent_lifecycle_events(&repo.id(), 5)
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if !recent_activities.is_empty() {
+        println!();
+        println!("Recent activity:");
+        for event in recent_activities {
+            println!("  - {}", event.summary);
+            println!("    recorded at: {}", event.recorded_at.to_rfc3339());
+            if let Some(version) = event.version.as_deref() {
+                println!("    version: {version}");
+            }
+            if let Some(asset_name) = event.asset_name.as_deref() {
+                println!("    asset: {asset_name}");
+            }
+            if let Some(error) = event.error.as_deref() {
+                println!("    error: {error}");
+            }
+        }
+    }
+
     println!();
     println!("Release note:");
     println!(

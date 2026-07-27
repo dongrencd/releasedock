@@ -1,4 +1,4 @@
-import { createUiText, type Language } from "./i18n";
+import { createUiText, formatRecordedAt, type Language } from "./i18n";
 
 export type AppStatus = "updateAvailable" | "current" | "needsChoice" | "noRelease" | "failed";
 
@@ -20,8 +20,23 @@ export type ManagedApp = {
   managementKind?: InstallManagementKind | null;
   installPath: string;
   installType?: "WindowsInstaller" | "PortableArchive" | "AppImage" | "LinuxPackage" | "Executable" | "Archive" | "Unknown";
-  installPathKind?: "ManagedPath" | "SystemInstaller" | "Unknown";
+  installPathKind?: "managedPath" | "systemInstaller" | "unknown";
   uninstallSupported?: boolean;
+  recentActivities?: LifecycleActivity[] | null;
+};
+
+export type LifecycleActivity = {
+  repoId: string;
+  repoName: string;
+  action: "install" | "update" | "uninstall";
+  outcome: "succeeded" | "failed";
+  recordedAt: string;
+  version?: string | null;
+  assetName?: string | null;
+  installPath?: string | null;
+  installPathKind?: ManagedApp["installPathKind"] | null;
+  summary: string;
+  error?: string | null;
 };
 
 export type InstallManagementKind = "managedLocal" | "systemPackage" | "externalInstaller";
@@ -49,6 +64,13 @@ export type InspectorDetailItem = {
   value: string;
   fullWidth?: boolean;
   monospace?: boolean;
+};
+
+export type LifecycleHistoryEntry = {
+  summary: string;
+  recordedAt: string;
+  failed: boolean;
+  error?: string | null;
 };
 
 // 公开筛选以用户任务语义命名，而不是直接映射内部状态名。
@@ -85,6 +107,15 @@ export type TaskProgressLike = {
   percent?: number | null;
 };
 
+export type PrimaryActionKind =
+  | "install"
+  | "update"
+  | "openApp"
+  | "openRelease"
+  | "openInstallLocation"
+  | "openInstallerFile"
+  | "retry";
+
 export type StatusDockPresentation = {
   eyebrow: string;
   headline: string;
@@ -95,6 +126,30 @@ export type StatusDockPresentation = {
   progressMode: "determinate" | "indeterminate";
   progressPercent: number | null;
 };
+
+export function isManagedPathKind(kind?: ManagedApp["installPathKind"]): boolean {
+  return kind === "managedPath";
+}
+
+export function isSystemInstallerKind(kind?: ManagedApp["installPathKind"]): boolean {
+  return kind === "systemInstaller";
+}
+
+export function isUnknownInstallPathKind(kind?: ManagedApp["installPathKind"]): boolean {
+  return !kind || kind === "unknown";
+}
+
+export function shouldShowInstallLocationAction(item: ManagedApp | null): boolean {
+  if (!item) {
+    return false;
+  }
+
+  return item.status !== "needsChoice" && !isUnknownInstallPathKind(item.installPathKind);
+}
+
+export function isRemovableNoRelease(item: ManagedApp): boolean {
+  return item.status === "noRelease" && isUnknownInstallPathKind(item.installPathKind);
+}
 
 export function inboxFilters(language: Language): Array<{ id: InboxFilter; label: string }> {
   const ui = createUiText(language);
@@ -111,7 +166,7 @@ export function inboxFilters(language: Language): Array<{ id: InboxFilter; label
 // 用于公开筛选 actionRequired，以及顶部"需处理"统计。
 export function isActionRequired(app: ManagedApp): boolean {
   return app.status === "needsChoice"
-    || (app.status === "noRelease" && app.installPathKind === "Unknown");
+    || isRemovableNoRelease(app);
 }
 
 export function hasInstallableAsset(app: ManagedApp): boolean {
@@ -385,7 +440,7 @@ export function getOpenAppAvailability(
     return { enabled: false, reason: ui.model.noLaunchTarget };
   }
 
-  if (item.installPathKind !== "ManagedPath") {
+  if (!isManagedPathKind(item.installPathKind)) {
     return { enabled: false, reason: ui.model.noLaunchTarget };
   }
 
@@ -394,6 +449,36 @@ export function getOpenAppAvailability(
   }
 
   return { enabled: true };
+}
+
+export function resolvePrimaryActionKind(item: ManagedApp | null): PrimaryActionKind | null {
+  if (!item) {
+    return null;
+  }
+
+  switch (item.status) {
+    case "updateAvailable":
+      return "update";
+    case "needsChoice":
+      return hasInstallableAsset(item) ? "install" : "openRelease";
+    case "noRelease":
+    case "current":
+      if (isManagedPathKind(item.installPathKind) && item.launchPath) {
+        return "openApp";
+      }
+
+      if (shouldShowInstallLocationAction(item)) {
+        return isSystemInstallerKind(item.installPathKind)
+          ? "openInstallerFile"
+          : "openInstallLocation";
+      }
+
+      return "openRelease";
+    case "failed":
+      return "retry";
+  }
+
+  return null;
 }
 
 // 次级 Release 动作只在主按钮不是 Release 时出现，避免重复出口。
@@ -411,7 +496,7 @@ export function shouldShowOpenAppSecondary(item: InboxItem | null): boolean {
     return false;
   }
 
-  return item.status === "updateAvailable" && item.installPathKind === "ManagedPath" && Boolean(item.launchPath);
+  return item.status === "updateAvailable" && isManagedPathKind(item.installPathKind) && Boolean(item.launchPath);
 }
 
 export function getDetailPathLabel(item: ManagedApp | null, language: Language): string {
@@ -425,7 +510,7 @@ export function getDetailPathLabel(item: ManagedApp | null, language: Language):
     return ui.defaultInstallPath;
   }
 
-  return item.installPathKind === "SystemInstaller" ? ui.installerFile : ui.installPath;
+  return isSystemInstallerKind(item.installPathKind) ? ui.installerFile : ui.installPath;
 }
 
 export function getInspectorDetailItems(item: ManagedApp | null, language: Language): InspectorDetailItem[] {
@@ -475,6 +560,22 @@ export function getInspectorDetailItems(item: ManagedApp | null, language: Langu
   return items;
 }
 
+export function getLifecycleHistoryEntries(
+  item: ManagedApp | null,
+  language: Language
+): LifecycleHistoryEntry[] {
+  if (!item?.recentActivities?.length) {
+    return [];
+  }
+
+  return item.recentActivities.map((activity) => ({
+    summary: activity.summary,
+    recordedAt: formatRecordedAt(activity.recordedAt, language),
+    failed: activity.outcome === "failed",
+    error: activity.error
+  }));
+}
+
 export function hasSecondaryInspectorActions(item: InboxItem | null, language: Language): boolean {
   if (!item) {
     return false;
@@ -482,7 +583,7 @@ export function hasSecondaryInspectorActions(item: InboxItem | null, language: L
 
   return shouldShowOpenAppSecondary(item)
     || shouldShowOpenReleaseSecondary(item, language)
-    || (item.status !== "needsChoice" && item.installPathKind !== "Unknown");
+    || shouldShowInstallLocationAction(item);
 }
 
 export function getPrimaryActionAvailability(
@@ -499,11 +600,12 @@ export function getPrimaryActionAvailability(
     return { enabled: false, reason: ui.model.selectApp };
   }
 
-  if (item.status === "current" || item.status === "noRelease") {
-    if (item.launchPath && item.installPathKind === "ManagedPath") {
-      return getOpenAppAvailability(item, busy, language);
-    }
+  const actionKind = resolvePrimaryActionKind(item);
+  if (actionKind === "openApp") {
+    return getOpenAppAvailability(item, busy, language);
+  }
 
+  if (actionKind === "openRelease") {
     return getOpenReleaseAvailability(item, busy, language);
   }
 
@@ -566,7 +668,7 @@ export function getRemoveTrackedAvailability(
     return { enabled: false, reason: ui.model.selectApp };
   }
 
-  if (item.status !== "needsChoice" && !(item.status === "noRelease" && item.installPathKind === "Unknown")) {
+  if (!(item.status === "needsChoice" || isRemovableNoRelease(item))) {
     return { enabled: false, reason: ui.model.onlyUntracked };
   }
 
@@ -604,7 +706,7 @@ export function getBulkRemoveAvailability(
   const selectedSet = new Set(selectedIds);
   const selectedApps = apps.filter((app) => selectedSet.has(app.id));
   const candidates = selectedApps.filter(
-    (app) => app.status === "needsChoice" || (app.status === "noRelease" && app.installPathKind === "Unknown")
+    (app) => app.status === "needsChoice" || isRemovableNoRelease(app)
   );
   const skippedCount = selectedApps.length - candidates.length;
 
@@ -661,18 +763,24 @@ export function filterManagedApps(apps: ManagedApp[], filter: InboxFilter, query
 
 function actionForApp(app: ManagedApp, language: Language): InboxItem["actionLabel"] {
   const ui = createUiText(language);
-  switch (app.status) {
-    case "updateAvailable":
+  switch (resolvePrimaryActionKind(app)) {
+    case "install":
+      return ui.action.install;
+    case "update":
       return ui.action.update;
-    case "needsChoice":
-      return hasInstallableAsset(app) ? ui.action.install : ui.openRelease;
-    case "noRelease":
-      return app.installPathKind === "ManagedPath" && app.launchPath ? ui.action.openApp : ui.action.open;
-    case "failed":
+    case "openApp":
+      return ui.action.openApp;
+    case "openRelease":
+      return ui.openRelease;
+    case "openInstallLocation":
+      return ui.openInstallLocation;
+    case "openInstallerFile":
+      return ui.openInstallerFile;
+    case "retry":
       return ui.action.retry;
-    case "current":
-      return app.installPathKind === "ManagedPath" && app.launchPath ? ui.action.openApp : ui.action.open;
   }
+
+  return ui.action.update;
 }
 
 function priorityForStatus(status: AppStatus): number {

@@ -2,7 +2,10 @@ use releasedock_core::{
     asset_matcher::{Architecture, AssetMatcher, OperatingSystem},
     config::Language,
     install_plan::{InstallManagementKind, InstallPlan},
-    manifest::{InstallPathKind, InstalledApp, ManifestStore, SystemPackageManager},
+    manifest::{
+        InstallPathKind, InstalledApp, LifecycleAction, LifecycleEvent, Manifest, ManifestStore,
+        SystemPackageManager,
+    },
     release::{Release, ReleaseAsset},
     repo::RepoRef,
 };
@@ -164,7 +167,7 @@ fn writes_and_reads_manifest_atomically() {
         .unwrap();
 
     let manifest = store.load().unwrap();
-    assert_eq!(manifest.schema_version, 2);
+    assert_eq!(manifest.schema_version, 3);
     assert_eq!(manifest.apps[0].id, "owner/project");
     assert_eq!(manifest.apps[0].installed_version, "v1.0.0");
 }
@@ -226,7 +229,7 @@ fn upgrades_legacy_manifest_entries_to_current_install_metadata() {
     .unwrap();
 
     let manifest = store.load().unwrap();
-    assert_eq!(manifest.schema_version, 2);
+    assert_eq!(manifest.schema_version, 3);
     assert!(!manifest.apps[0].uninstall_supported);
     assert_eq!(
         manifest.apps[0].install_path_kind,
@@ -258,16 +261,132 @@ fn upgrades_legacy_linux_executable_manifest_entries() {
     .unwrap();
 
     let manifest = store.load().unwrap();
-    assert_eq!(manifest.schema_version, 2);
+    assert_eq!(manifest.schema_version, 3);
     assert_eq!(
         manifest.apps[0].install_type,
         releasedock_core::asset_matcher::InstallType::Executable
     );
-    assert_eq!(
-        manifest.apps[0].launch_path.as_deref(),
-        Some(std::path::Path::new("/tmp/project/releasedock-linux-x64"))
-    );
+    assert_eq!(manifest.apps[0].launch_path.as_deref(), None);
     assert!(manifest.apps[0].uninstall_supported);
+}
+
+#[test]
+fn appends_and_reads_recent_lifecycle_events() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ManifestStore::at_path(temp.path().join("apps.json"));
+    let event = LifecycleEvent::succeeded(
+        "owner/project",
+        "project",
+        LifecycleAction::Install,
+        "Installed project v1.0.0",
+        Some("v1.0.0".to_string()),
+        Some("project-linux-x86_64.tar.gz".to_string()),
+        Some(temp.path().join("project")),
+        Some(InstallPathKind::ManagedPath),
+    );
+
+    store.append_lifecycle_event(event.clone()).unwrap();
+
+    let manifest = store.load().unwrap();
+    assert_eq!(manifest.schema_version, 3);
+    assert_eq!(
+        manifest.latest_lifecycle_event("owner/project"),
+        Some(&event)
+    );
+}
+
+#[test]
+fn returns_recent_lifecycle_events_in_reverse_chronological_order() {
+    let mut manifest = Manifest::empty();
+    for index in 0..6 {
+        manifest.append_lifecycle_event(LifecycleEvent::succeeded(
+            "owner/project",
+            "project",
+            LifecycleAction::Update,
+            format!("update {index}"),
+            Some(format!("v1.0.{index}")),
+            Some(format!("project-{index}.tar.gz")),
+            None,
+            None,
+        ));
+    }
+
+    let recent = manifest.recent_lifecycle_events("owner/project", 3);
+    assert_eq!(recent.len(), 3);
+    assert_eq!(recent[0].summary, "update 5");
+    assert_eq!(recent[1].summary, "update 4");
+    assert_eq!(recent[2].summary, "update 3");
+}
+
+#[test]
+fn save_apps_preserves_existing_lifecycle_events() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ManifestStore::at_path(temp.path().join("apps.json"));
+    store
+        .save(&Manifest {
+            schema_version: 3,
+            apps: vec![],
+            lifecycle_events: vec![LifecycleEvent::succeeded(
+                "owner/project",
+                "project",
+                LifecycleAction::Install,
+                "Installed project v1.0.0",
+                Some("v1.0.0".to_string()),
+                Some("project-linux-x86_64.tar.gz".to_string()),
+                None,
+                None,
+            )],
+        })
+        .unwrap();
+
+    store
+        .save_apps(&[InstalledApp::new(
+            "owner/project",
+            "project",
+            "v1.1.0",
+            "project-linux-x86_64.tar.gz",
+            temp.path().join("project"),
+        )])
+        .unwrap();
+
+    let manifest = store.load().unwrap();
+    assert_eq!(manifest.apps.len(), 1);
+    assert_eq!(manifest.apps[0].installed_version, "v1.1.0");
+    assert_eq!(manifest.lifecycle_events.len(), 1);
+    assert_eq!(manifest.lifecycle_events[0].repo_id, "owner/project");
+}
+
+#[test]
+fn keeps_only_recent_lifecycle_events_per_repo() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ManifestStore::at_path(temp.path().join("apps.json"));
+    let mut manifest = Manifest::empty();
+
+    for index in 0..6 {
+        manifest.append_lifecycle_event(LifecycleEvent::succeeded(
+            "owner/project",
+            "project",
+            LifecycleAction::Update,
+            format!("update {index}"),
+            Some(format!("v1.0.{index}")),
+            Some(format!("project-{index}.tar.gz")),
+            None,
+            None,
+        ));
+    }
+
+    store.save(&manifest).unwrap();
+    let manifest = store.load().unwrap();
+
+    assert_eq!(manifest.lifecycle_events.len(), 5);
+    assert_eq!(
+        manifest.lifecycle_events.first().unwrap().summary,
+        "update 1"
+    );
+    assert_eq!(
+        manifest.lifecycle_events.last().unwrap().summary,
+        "update 5"
+    );
 }
 
 #[test]

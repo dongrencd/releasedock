@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type Language } from "./i18n";
+import { createUiText, formatRecordedAt, type Language } from "./i18n";
 import {
   buildStatusDockPresentation,
   buildUpdateInbox,
@@ -12,11 +12,14 @@ import {
   getRemoveTrackedAvailability,
   hasInstallableAsset,
   getInspectorDetailItems,
+  getLifecycleHistoryEntries,
   hasSecondaryInspectorActions,
   installManagementKindLabel,
   getDetailPathLabel,
+  isRemovableNoRelease,
   shouldShowOpenAppSecondary,
   shouldShowOpenReleaseSecondary,
+  shouldShowInstallLocationAction,
   systemPackageManagerLabel,
   getUninstallAvailability,
   parseReleaseNote,
@@ -38,6 +41,90 @@ describe("buildUpdateInbox", () => {
     expect(systemPackageManagerLabel("Rpm")).toBe("RPM");
   });
 
+  it("shows recent lifecycle history in inspector details", () => {
+    const detailItems = getInspectorDetailItems(
+      {
+        id: "owner/current",
+        name: "Current",
+        currentVersion: "v1.0.0",
+        latestVersion: "v1.0.0",
+        status: "current",
+        source: "GitHub",
+        installPath: "/tmp/current",
+        installPathKind: "managedPath",
+        launchPath: "/tmp/current/current",
+        recentActivities: [
+          {
+            repoId: "owner/current",
+            repoName: "Current",
+            action: "install",
+            outcome: "succeeded",
+            recordedAt: "2026-07-21T10:20:30Z",
+            version: "v1.0.0",
+            assetName: "current-linux-x86_64.tar.gz",
+            installPath: "/tmp/current",
+            installPathKind: "managedPath",
+            summary: "Installed Current v1.0.0"
+          },
+          {
+            repoId: "owner/current",
+            repoName: "Current",
+            action: "update",
+            outcome: "failed",
+            recordedAt: "2026-07-22T10:20:30Z",
+            version: "v1.1.0",
+            assetName: "current-linux-x86_64.tar.gz",
+            installPath: "/tmp/current",
+            installPathKind: "managedPath",
+            summary: "Updated Current v1.1.0",
+            error: "download failed"
+          }
+        ]
+      },
+      language
+    );
+
+    expect(detailItems.some((item) => item.label === createUiText(language).recentActivity)).toBe(false);
+
+    const history = getLifecycleHistoryEntries(
+      {
+        id: "owner/current",
+        name: "Current",
+        currentVersion: "v1.0.0",
+        latestVersion: "v1.0.0",
+        status: "current",
+        source: "GitHub",
+        installPath: "/tmp/current",
+        installPathKind: "managedPath",
+        launchPath: "/tmp/current/current",
+        recentActivities: [
+          {
+            repoId: "owner/current",
+            repoName: "Current",
+            action: "install",
+            outcome: "succeeded",
+            recordedAt: "2026-07-21T10:20:30Z",
+            version: "v1.0.0",
+            assetName: "current-linux-x86_64.tar.gz",
+            installPath: "/tmp/current",
+            installPathKind: "managedPath",
+            summary: "Installed Current v1.0.0"
+          }
+        ]
+      },
+      language
+    );
+
+    expect(history).toEqual([
+      {
+        summary: "Installed Current v1.0.0",
+        recordedAt: formatRecordedAt("2026-07-21T10:20:30Z", language),
+        failed: false,
+        error: undefined
+      }
+    ]);
+  });
+
   it("keeps actionable updates before current apps", () => {
     const inbox = buildUpdateInbox([
       {
@@ -48,7 +135,7 @@ describe("buildUpdateInbox", () => {
         status: "current",
         source: "GitHub",
         installPath: "/tmp/current",
-        installPathKind: "ManagedPath",
+        installPathKind: "managedPath",
         launchPath: "/tmp/current/current"
       },
       {
@@ -107,7 +194,7 @@ describe("buildUpdateInbox", () => {
         status: "updateAvailable",
         source: "GitHub",
         installPath: "/tmp/update",
-        installPathKind: "ManagedPath",
+        installPathKind: "managedPath",
         launchPath: "/tmp/update/update"
       }
     ], language)[0];
@@ -139,7 +226,7 @@ describe("buildUpdateInbox", () => {
         status: "updateAvailable",
         source: "GitHub",
         installPath: "/tmp/update",
-        installPathKind: "ManagedPath",
+        installPathKind: "managedPath",
         launchPath: "/tmp/update/update"
       }
     ], language)[0];
@@ -163,6 +250,7 @@ describe("buildUpdateInbox", () => {
     ], language);
 
     expect(inbox[0].actionLabel).toBe("Install");
+    expect(getPrimaryActionAvailability(inbox[0], false, language)).toEqual({ enabled: true });
   });
 
   it("labels the detail path as the default install path when no asset can be installed", () => {
@@ -255,7 +343,7 @@ describe("buildUpdateInbox", () => {
         status: "updateAvailable",
         source: "GitHub",
         installPath: "/tmp/update",
-        installPathKind: "ManagedPath",
+        installPathKind: "managedPath",
         launchPath: "/tmp/update/update",
         releaseNote: "Fix crash\n\n- Keep original markdown-like text"
       }
@@ -321,7 +409,7 @@ describe("buildUpdateInbox", () => {
       status: "noRelease",
       source: "GitHub",
       installPath: "/tmp/none",
-      installPathKind: "Unknown"
+      installPathKind: "unknown"
     })).toBe(true);
 
     // 已安装但仓库无 release 的项不可移除，不算待处理
@@ -333,7 +421,7 @@ describe("buildUpdateInbox", () => {
       status: "noRelease",
       source: "GitHub",
       installPath: "/tmp/installed",
-      installPathKind: "ManagedPath"
+      installPathKind: "managedPath"
     })).toBe(false);
 
     expect(isActionRequired({
@@ -376,7 +464,7 @@ describe("buildUpdateInbox", () => {
         status: "noRelease",
         source: "GitHub",
         installPath: "/tmp/none",
-        installPathKind: "Unknown"
+        installPathKind: "unknown"
       },
       {
         id: "owner/installed-none",
@@ -386,7 +474,7 @@ describe("buildUpdateInbox", () => {
         status: "noRelease",
         source: "GitHub",
         installPath: "/tmp/installed",
-        installPathKind: "ManagedPath"
+        installPathKind: "managedPath"
       },
       {
         id: "owner/current",
@@ -441,7 +529,7 @@ describe("buildUpdateInbox", () => {
         status: "updateAvailable",
         source: "GitHub",
         installPath: "/tmp/update",
-        installPathKind: "ManagedPath",
+        installPathKind: "managedPath",
         launchPath: "/tmp/update/update",
         releaseUrl: "https://github.com/owner/update/releases/tag/v1.1.0"
       }
@@ -462,6 +550,25 @@ describe("buildUpdateInbox", () => {
     });
   });
 
+  it("treats undefined install path kind as unknown for inspector actions", () => {
+    const app = buildUpdateInbox([
+      {
+        id: "owner/legacy",
+        name: "Legacy",
+        currentVersion: "Not installed",
+        latestVersion: "No release",
+        status: "noRelease",
+        source: "GitHub",
+        installPath: "/tmp/legacy"
+      }
+    ], language)[0];
+
+    expect(isRemovableNoRelease(app)).toBe(true);
+    expect(isActionRequired(app)).toBe(true);
+    expect(shouldShowInstallLocationAction(app)).toBe(false);
+    expect(hasSecondaryInspectorActions(app, language)).toBe(false);
+  });
+
   it("shows the secondary open-app button only for updateable managed installs", () => {
     const updateApp = buildUpdateInbox([
       {
@@ -472,7 +579,7 @@ describe("buildUpdateInbox", () => {
         status: "updateAvailable",
         source: "GitHub",
         installPath: "/tmp/update",
-        installPathKind: "ManagedPath",
+        installPathKind: "managedPath",
         launchPath: "/tmp/update/update"
       }
     ], language)[0];
@@ -486,13 +593,57 @@ describe("buildUpdateInbox", () => {
         status: "current",
         source: "GitHub",
         installPath: "/tmp/current",
-        installPathKind: "ManagedPath",
+        installPathKind: "managedPath",
         launchPath: "/tmp/current/current"
       }
     ], language)[0];
 
     expect(shouldShowOpenAppSecondary(updateApp)).toBe(true);
     expect(shouldShowOpenAppSecondary(currentApp)).toBe(false);
+  });
+
+  it("does not offer open-app for executable installs without a launch target", () => {
+    const ui = createUiText(language);
+    const currentApp = buildUpdateInbox([
+      {
+        id: "owner/cli",
+        name: "CLI",
+        currentVersion: "v1.0.0",
+        latestVersion: "v1.0.0",
+        status: "current",
+        source: "GitHub",
+        installPath: "/tmp/cli",
+        installPathKind: "managedPath"
+      }
+    ], language)[0];
+
+    expect(currentApp.actionLabel).toBe("Open install location");
+    expect(getOpenAppAvailability(currentApp, false, language)).toEqual({
+      enabled: false,
+      reason: ui.model.noLaunchTarget
+    });
+    expect(shouldShowOpenAppSecondary(currentApp)).toBe(false);
+  });
+
+  it("uses open-install-location as the primary action when current apps have no launch target", () => {
+    const currentApp = buildUpdateInbox([
+      {
+        id: "owner/cli",
+        name: "CLI",
+        currentVersion: "v1.0.0",
+        latestVersion: "v1.0.0",
+        status: "current",
+        source: "GitHub",
+        installPath: "/tmp/cli",
+        installPathKind: "managedPath"
+      }
+    ], language)[0];
+
+    expect(currentApp.actionLabel).toBe("Open install location");
+  });
+
+  it("uses a plain uninstall label in Chinese", () => {
+    expect(createUiText("zh-CN").uninstallAbility).toBe("卸载");
   });
 
   it("treats no-release tracked repos as removable and openable", () => {
@@ -505,13 +656,13 @@ describe("buildUpdateInbox", () => {
         status: "noRelease",
         source: "GitHub",
         installPath: "/tmp/none",
-        installPathKind: "Unknown",
+        installPathKind: "unknown",
         launchPath: "/tmp/none/app",
         releaseUrl: "https://github.com/owner/none"
       }
     ], language)[0];
 
-    expect(app.actionLabel).toBe("Open");
+    expect(app.actionLabel).toBe("Open release");
     expect(getPrimaryActionAvailability(app, false, language)).toEqual({ enabled: true });
     expect(getRemoveTrackedAvailability(app, false, language)).toEqual({ enabled: true });
     expect(getBulkRemoveAvailability([app], [app.id], false, language)).toEqual({

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createTaskStatusText } from "./i18n";
+import { createTaskStatusText, createUiText } from "./i18n";
 
 describe("createTaskStatusText", () => {
   it("localizes dashboard and action status strings", () => {
@@ -20,5 +20,15 @@ describe("createTaskStatusText", () => {
     expect(en.checkingLatestReleaseProgress(2, 5)).toBe("Checking latest release (2/5)");
     expect(en.installedOrUpdated("micro")).toBe("Installed or updated micro");
     expect(en.selectAtLeastOneUninstalledTrackedItem).toBe("Select at least one uninstalled tracked item");
+  });
+
+  it("labels background check state with real enablement wording", () => {
+    const zh = createUiText("zh-CN");
+    const en = createUiText("en");
+
+    expect(zh.backgroundCheckEnabled).toBe("已启用");
+    expect(zh.backgroundCheckDisabled).toBe("已关闭");
+    expect(en.backgroundCheckEnabled).toBe("Enabled");
+    expect(en.backgroundCheckDisabled).toBe("Disabled");
   });
 });
