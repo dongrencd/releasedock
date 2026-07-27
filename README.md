@@ -59,7 +59,7 @@ Pushes to `main` and manual `CI Release Artifacts` runs publish download artifac
 
 - `releasedock-linux-x64`: Linux CLI.
 - `releasedock-linux-x64-desktop`: Linux desktop build, including the executable plus Debian and RPM bundles when available.
-- `releasedock-windows-x64-desktop`: Windows desktop build, including the app bundle and installers when available.
+- `releasedock-windows-x64-desktop`: Windows desktop build, including the executable plus NSIS and MSI installers when available.
 
 After downloading the CLI artifact, verify it with:
 
@@ -69,7 +69,7 @@ After downloading the CLI artifact, verify it with:
 
 ### GitHub Releases
 
-Tags that match `v*.*.*` create a GitHub Release with the same version and upload the Linux CLI, Linux desktop executable, Linux Debian package, and Linux RPM package.
+Tags that match `v*.*.*` create a GitHub Release with the same version and upload the Linux CLI, Linux desktop executable, Linux Debian package, Linux RPM package, Windows desktop executable, NSIS installer, and MSI.
 
 ```bash
 git tag v0.2.0

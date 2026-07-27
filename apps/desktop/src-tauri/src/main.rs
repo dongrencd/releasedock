@@ -5,9 +5,11 @@ use std::{
     env,
     fs,
     path::{Path, PathBuf},
-    process::Command,
     sync::{Arc, LazyLock},
 };
+
+#[cfg(not(target_os = "windows"))]
+use std::process::Command;
 
 use anyhow::{Context, Result};
 use releasedock_core::{
@@ -996,7 +998,9 @@ fn open_with_windows_shell(target: impl AsRef<std::ffi::OsStr>) -> Result<()> {
         )
     };
 
-    if result.0 <= 32 {
+    // Windows documents ShellExecuteW return values <= 32 as failure codes.
+    let result_code = result.0 as usize;
+    if result_code <= 32 {
         anyhow::bail!("Windows shell failed to open {}", target.as_ref().to_string_lossy());
     }
 

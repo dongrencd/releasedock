@@ -23,7 +23,7 @@ Triggers:
 
 - `releasedock-linux-x64`: Linux CLI executable, runnable with `./releasedock-linux-x64 --help`
 - `releasedock-linux-x64-desktop`: Linux desktop build, including the executable plus Debian and RPM bundles when available
-- `releasedock-windows-x64-desktop`: Windows Tauri desktop build, including the app bundle and installers when available
+- `releasedock-windows-x64-desktop`: Windows Tauri desktop build, including the executable plus NSIS and MSI installers when available
 
 CLI jobs only test and build `releasedock-core` and `releasedock-cli` so command-line artifacts do not need desktop dependencies. The desktop builds run in separate Linux and Windows jobs, and the Linux build uses the shared `scripts/linux/build-desktop.sh` helper so local and CI packaging stay aligned.
 Artifact upload paths use repository-relative `apps/desktop/src-tauri/target/...` paths because `actions/upload-artifact` does not inherit the command step working directory.
@@ -38,7 +38,7 @@ git tag v0.2.0
 git push origin v0.2.0
 ```
 
-When the tag workflow finishes, the matching release appears on the repository Releases page. Release assets include the Linux CLI executable, Linux desktop executable, Linux Debian package, and Linux RPM package.
+When the tag workflow finishes, the matching release appears on the repository Releases page. Release assets include the Linux CLI executable, Linux desktop executable, Linux Debian package, Linux RPM package, Windows desktop executable, NSIS installer, and MSI.
 
 If a release with the same tag already exists, the publish job fails. Remove the previous tag and release or use a new version number.
 
