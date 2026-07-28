@@ -1,10 +1,13 @@
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     asset_matcher::{InstallType, MatchedAsset},
     config::Language,
-    manifest::SystemPackageManager,
+    integrity::IntegrityPlan,
+    manifest::{InstalledApp, SystemPackageManager},
     release::Release,
+    release_policy::{ReleaseDirection, ReleasePolicy},
     repo::RepoRef,
 };
 
@@ -14,6 +17,64 @@ pub enum InstallManagementKind {
     ManagedLocal,
     SystemPackage,
     ExternalInstaller,
+}
+
+/// State used when selecting an update target. The installer validates it
+/// before reading or downloading an artifact, then retains its existing full
+/// app-record comparison before the manifest commit.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "state",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum InstallSelectionGuard {
+    ExpectedAbsent,
+    ExpectedInstalled {
+        installed_version: String,
+        release_policy: ReleasePolicy,
+    },
+}
+
+impl InstallSelectionGuard {
+    pub fn from_app(app: &InstalledApp) -> Self {
+        Self::ExpectedInstalled {
+            installed_version: app.installed_version.clone(),
+            release_policy: app.release_policy.clone(),
+        }
+    }
+
+    /// Validates the repository state captured when a release target was
+    /// selected. Callers run this before artifact access; the installer still
+    /// performs its final full-record comparison under the manifest lock.
+    pub fn validate(&self, installed: Option<&InstalledApp>) -> Result<()> {
+        match self {
+            Self::ExpectedAbsent => {
+                if installed.is_some() {
+                    bail!("stale install plan: expected no installed app");
+                }
+            }
+            Self::ExpectedInstalled {
+                installed_version,
+                release_policy,
+            } => {
+                let Some(installed) = installed else {
+                    bail!("stale install plan: managed app is no longer installed");
+                };
+                if installed.installed_version != *installed_version {
+                    bail!(
+                        "stale install plan: installed version changed from {} to {}",
+                        installed_version,
+                        installed.installed_version
+                    );
+                }
+                if installed.release_policy != *release_policy {
+                    bail!("stale install plan: release policy changed after target selection");
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -27,6 +88,14 @@ pub struct InstallPlan {
     pub management_kind: InstallManagementKind,
     pub system_package_manager: Option<SystemPackageManager>,
     pub requires_user_confirmation: bool,
+    #[serde(default)]
+    pub integrity: IntegrityPlan,
+    #[serde(default)]
+    pub release_direction: ReleaseDirection,
+    #[serde(default)]
+    pub selection_guard: Option<InstallSelectionGuard>,
+    #[serde(default)]
+    pub target_policy: Option<ReleasePolicy>,
     pub notes: Vec<String>,
 }
 
@@ -87,8 +156,32 @@ impl InstallPlan {
             management_kind,
             system_package_manager,
             requires_user_confirmation,
+            integrity: IntegrityPlan::default(),
+            release_direction: ReleaseDirection::Unknown,
+            selection_guard: None,
+            target_policy: None,
             notes,
         }
+    }
+
+    pub fn with_integrity(mut self, integrity: IntegrityPlan) -> Self {
+        self.integrity = integrity;
+        self
+    }
+
+    pub fn with_release_direction(mut self, release_direction: ReleaseDirection) -> Self {
+        self.release_direction = release_direction;
+        self
+    }
+
+    pub fn with_selection_guard(mut self, selection_guard: InstallSelectionGuard) -> Self {
+        self.selection_guard = Some(selection_guard);
+        self
+    }
+
+    pub fn with_target_policy(mut self, target_policy: ReleasePolicy) -> Self {
+        self.target_policy = Some(target_policy);
+        self
     }
 }
 

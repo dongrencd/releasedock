@@ -8,6 +8,7 @@ import {
   ExternalLink,
   FolderOpen,
   Layers3,
+  Pin,
   Play,
   Plus,
   Eye,
@@ -25,51 +26,71 @@ import {
   type DashboardProgressEvent,
   bulkRemoveTrackedRepos,
   installRepo,
+  listReleaseVersions,
   loadConfig,
   loadDashboard,
   openApp,
+  openInstallerFolder,
   openInstallLocation,
   openUrl,
   openPath,
   previewInstall,
+  previewRollback,
   removeTrackedRepo,
   saveConfig,
+  setReleaseIgnored,
+  setReleasePin,
+  testGithubConnectivity,
   uninstallRepo,
+  rollbackRepo,
   openSystemUninstallSettings
 } from "./backend";
 import {
+  buildConfigConnectivityWarning,
+  buildConnectivityTestStatus,
+  buildConnectivityTestViewState,
+  buildNetworkConfigHealth,
+  getNetworkConfigKey,
+  shouldRunAutoConnectivityCheck,
   buildStatusDockPresentation,
   buildUpdateInbox,
-  getBulkRemoveAvailability,
   getConfirmInstallAvailability,
-  getOpenAppAvailability,
-  getOpenReleaseAvailability,
   getPrimaryActionAvailability,
-  getRemoveTrackedAvailability,
+  getRollbackAvailability,
   getInspectorDetailItems,
   getLifecycleHistoryEntries,
+  getSelectionActionAvailability,
+  getSelectionSummary,
+  buildReleaseActionGuidance,
+  buildInspectorStatusSummary,
+  hasInstallableAsset,
   isManagedPathKind,
   isSystemInstallerKind,
   isRemovableNoRelease,
+  isRemovableTrackedItem,
   isFailedInstallProgress,
   parseReleaseNote,
   pruneSelection,
   getUninstallAvailability,
   filterManagedApps,
   installManagementKindLabel,
+  installPreviewIntegrityLabel,
   inboxFilters,
+  isPreviewRequestCurrent,
+  isPreviewResponseCurrent,
   isActionRequired,
-  hasSecondaryInspectorActions,
   resolvePrimaryActionKind,
+  releaseChannelForVersion,
+  resolveLifecycleSelection,
   selectVisibleIds,
   systemPackageManagerLabel,
-  shouldShowOpenReleaseSecondary,
+  shouldShowLifecyclePreviewAction,
   shouldShowInstallLocationAction,
   toggleSelection,
+  type ConnectivityTestViewState,
   type InboxFilter,
   type InboxItem,
-  type ManagedApp,
-  shouldShowOpenAppSecondary
+  type ManagedApp
 } from "./appModel";
 import {
   createTaskStatusText,
@@ -80,7 +101,14 @@ import {
   normalizeLanguage,
   type Language
 } from "./i18n";
-import type { BackgroundCheckEvent, InstallPlan, TaskProgressEvent } from "./backend";
+import type {
+  BackgroundCheckEvent,
+  DesktopConfig,
+  InstallPlan,
+  ReleaseVersion,
+  RollbackPreview,
+  TaskProgressEvent
+} from "./backend";
 
 type ConfigDraft = {
   githubToken: string;
@@ -112,6 +140,11 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [pendingInstall, setPendingInstall] = useState<InstallPlan | null>(null);
+  const [pendingRollback, setPendingRollback] = useState<RollbackPreview | null>(null);
+  const [pendingUninstall, setPendingUninstall] = useState<InboxItem | null>(null);
+  const [releaseVersions, setReleaseVersions] = useState<ReleaseVersion[]>([]);
+  const [versionsLoading, setVersionsLoading] = useState(false);
+  const [selectedVersion, setSelectedVersion] = useState("");
   const [taskProgress, setTaskProgress] = useState<TaskProgressView | null>(null);
   const [configDraft, setConfigDraft] = useState<ConfigDraft>({
     githubToken: "",
@@ -123,11 +156,17 @@ export function App() {
     checkIntervalMinutes: 30
   });
   const currentConfigKey = useRef(configDraftKey(configDraft));
+  const currentNetworkConfigKey = useRef(getNetworkConfigKey(configDraft));
+  const connectivityCheckId = useRef(0);
+  const lastAutoConnectivityKey = useRef<string | null>(null);
   const lastSavedConfigKey = useRef("");
   const pendingConfigSaves = useRef(0);
   const [showGithubToken, setShowGithubToken] = useState(false);
   const [configLoaded, setConfigLoaded] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
+  const [connectivityTesting, setConnectivityTesting] = useState(false);
+  const [connectivityTest, setConnectivityTest] = useState<ConnectivityTestViewState>({ status: "idle" });
+  const [networkFieldsAttention, setNetworkFieldsAttention] = useState(false);
   const [taskStatus, setTaskStatus] = useState(createTaskStatusText("en").loadingDashboard);
   const [error, setError] = useState<string | null>(null);
   // 后台检查发现的更新数（来自托盘后台检查）
@@ -135,6 +174,10 @@ export function App() {
   const activeTaskProgress = useRef<TaskProgressContext>(null);
   const dashboardRefreshId = useRef(0);
   const dashboardOrder = useRef<Map<string, number>>(new Map());
+  const previewRequestId = useRef(0);
+  const selectedRepoIdRef = useRef<string | null>(selectedId);
+  const githubTokenInput = useRef<HTMLInputElement>(null);
+  const proxyUrlInput = useRef<HTMLInputElement>(null);
 
   const language = normalizeLanguage(configDraft.language);
   const languageRef = useRef(language);
@@ -147,15 +190,33 @@ export function App() {
   const pendingInstallRepoId = pendingInstall?.repo_id ?? null;
   const installRetrying = isFailedInstallProgress(taskProgress, pendingInstallRepoId);
   const hasGithubToken = configDraft.githubToken.trim().length > 0;
+  const configConnectivityWarning = buildConfigConnectivityWarning(configDraft, language, connectivityTest);
+  const networkConfigHealth = buildNetworkConfigHealth(configDraft, language, connectivityTest);
+  const connectivityTestStatus = buildConnectivityTestStatus(connectivityTest, language, configDraft);
   const installRoot = configDraft.installRoot.trim();
   const effectiveInstallRoot = configDraft.effectiveInstallRoot.trim();
   const displayInstallRoot = installRoot || effectiveInstallRoot;
   const usingDefaultInstallRoot = installRoot.length === 0 && effectiveInstallRoot.length > 0;
-  const bulkRemoveAvailability = getBulkRemoveAvailability(apps, selectedIds, busy, language);
+  const selectionActionAvailability = getSelectionActionAvailability(apps, selectedIds, busy, language);
+  const selectionSummary = getSelectionSummary(apps, selectedIds, selectionActionAvailability, language);
 
   useEffect(() => {
     languageRef.current = language;
   }, [language]);
+
+  useEffect(() => {
+    if (!networkFieldsAttention) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setNetworkFieldsAttention(false);
+    }, 3200);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [networkFieldsAttention]);
 
   function sortAppsByDashboardOrder(nextApps: ManagedApp[]) {
     const order = dashboardOrder.current;
@@ -164,6 +225,30 @@ export function App() {
       const rightIndex = order.get(right.id) ?? Number.MAX_SAFE_INTEGER;
       return leftIndex - rightIndex || left.name.localeCompare(right.name);
     });
+  }
+
+  function selectRepo(repoId: string) {
+    if (selectedRepoIdRef.current !== repoId) {
+      selectedRepoIdRef.current = repoId;
+      previewRequestId.current += 1;
+    }
+    setSelectedId(repoId);
+  }
+
+  function beginPreviewRequest(repoId: string) {
+    selectRepo(repoId);
+    previewRequestId.current += 1;
+    return previewRequestId.current;
+  }
+
+  function applyLifecycleDashboard(nextApps: ManagedApp[], repoId: string) {
+    setApps(nextApps);
+    const updated = nextApps.find((app) => app.id === repoId) ?? null;
+    const nextSelection = resolveLifecycleSelection(
+      updated,
+      releaseVersions.map((version) => version.tagName)
+    );
+    setSelectedVersion(nextSelection.selectedVersion);
   }
 
   useEffect(() => {
@@ -177,8 +262,63 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    const selectedRepoId = selected?.id ?? null;
+    if (selectedRepoIdRef.current !== selectedRepoId) {
+      selectedRepoIdRef.current = selectedRepoId;
+      previewRequestId.current += 1;
+    }
     setPendingInstall(null);
-  }, [selectedId]);
+    setPendingRollback(null);
+    setPendingUninstall(null);
+    setReleaseVersions([]);
+    const initialSelection = resolveLifecycleSelection(selected, []);
+    setSelectedVersion(initialSelection.selectedVersion);
+    if (!selected?.id) {
+      return;
+    }
+
+    let cancelled = false;
+    setVersionsLoading(true);
+    void listReleaseVersions(selected.id)
+      .then((versions) => {
+        if (cancelled) {
+          return;
+        }
+        setReleaseVersions(versions);
+        const nextSelection = resolveLifecycleSelection(
+          selected,
+          versions.map((version) => version.tagName)
+        );
+        setSelectedVersion(nextSelection.selectedVersion);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setReleaseVersions([]);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setVersionsLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selected?.id]);
+
+  useEffect(() => {
+    const nextSelection = resolveLifecycleSelection(
+      selected,
+      releaseVersions.map((version) => version.tagName)
+    );
+    setSelectedVersion(nextSelection.selectedVersion);
+  }, [
+    selected?.latestVersion,
+    selected?.releasePolicy?.channel,
+    selected?.releasePolicy?.pinnedVersion,
+    releaseVersions
+  ]);
 
   useEffect(() => {
     if (loading) {
@@ -190,6 +330,7 @@ export function App() {
 
   useEffect(() => {
     currentConfigKey.current = configDraftKey(configDraft);
+    currentNetworkConfigKey.current = getNetworkConfigKey(configDraft);
   }, [configDraft]);
 
   useEffect(() => {
@@ -381,10 +522,12 @@ export function App() {
         checkIntervalMinutes: data.checkIntervalMinutes ?? 30
       };
       lastSavedConfigKey.current = configDraftKey(draft);
+      currentConfigKey.current = configDraftKey(draft);
+      currentNetworkConfigKey.current = getNetworkConfigKey(draft);
       setConfigDraft(draft);
       setConfigLoaded(true);
       languageRef.current = draft.language;
-      return draft.language;
+      return draft;
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
@@ -394,8 +537,12 @@ export function App() {
   }
 
   async function refreshWorkspace() {
-    const configLanguage = await refreshConfig();
-    await refreshDashboard(configLanguage ?? languageRef.current);
+    const draft = await refreshConfig();
+    if (draft && shouldRunAutoConnectivityCheck(draft, lastAutoConnectivityKey.current)) {
+      lastAutoConnectivityKey.current = getNetworkConfigKey(draft);
+      void runGithubConnectivityCheck(draft, "auto");
+    }
+    await refreshDashboard(draft?.language ?? languageRef.current);
   }
 
   async function handleAddRepo() {
@@ -439,15 +586,7 @@ export function App() {
     setError(null);
     setTaskStatus(mode === "auto" ? taskText.autoSavingSettings : taskText.savingSettings);
     try {
-      const saved = await saveConfig({
-        githubToken: draft.githubToken.trim() || null,
-        proxyUrl: draft.proxyUrl.trim() || null,
-        installRoot: draft.installRoot.trim() || null,
-        effectiveInstallRoot: draft.effectiveInstallRoot.trim() || null,
-        language: draft.language,
-        backgroundCheckEnabled: draft.backgroundCheckEnabled,
-        checkIntervalMinutes: draft.checkIntervalMinutes
-      });
+      const saved = await saveConfig(desktopConfigFromDraft(draft));
       const savedDraft = {
         githubToken: saved.githubToken ?? "",
         proxyUrl: saved.proxyUrl ?? "",
@@ -459,6 +598,7 @@ export function App() {
       };
       lastSavedConfigKey.current = configDraftKey(savedDraft);
       if (currentConfigKey.current === draftKey) {
+        currentNetworkConfigKey.current = getNetworkConfigKey(savedDraft);
         setConfigDraft(savedDraft);
         setTaskStatus(taskText.settingsSaved);
       }
@@ -491,15 +631,41 @@ export function App() {
         return;
       case "install":
       case "update":
+        const requestId = beginPreviewRequest(item.id);
         clearTaskProgress();
         setBusy(true);
         setError(null);
         setTaskStatus(taskText.generatingInstallPreview(item.name));
         try {
-          const plan = await previewInstall(item.id);
+          const version = item.id === selected?.id ? selectedVersion || item.latestVersion : item.latestVersion;
+          const releaseVersion = item.id === selected?.id
+            ? releaseVersions.find((candidate) => candidate.tagName === version)
+            : null;
+          const channel = item.id === selected?.id
+            ? releaseChannelForVersion(releaseVersion)
+            : item.releasePolicy?.channel ?? "stable";
+          const plan = await previewInstall(item.id, version, channel);
+          if (!isPreviewResponseCurrent(
+            requestId,
+            previewRequestId.current,
+            item.id,
+            selectedRepoIdRef.current,
+            plan.repo_id
+          )) {
+            return;
+          }
           setPendingInstall(plan);
+          setPendingRollback(null);
           setTaskStatus(taskText.generatedInstallPreview(item.name));
         } catch (caught) {
+          if (!isPreviewRequestCurrent(
+            requestId,
+            previewRequestId.current,
+            item.id,
+            selectedRepoIdRef.current
+          )) {
+            return;
+          }
           const message = caught instanceof Error ? caught.message : String(caught);
           setError(message);
           setTaskStatus(taskText.failedToBuildInstallPreview);
@@ -513,6 +679,11 @@ export function App() {
   }
 
   async function handleConfirmInstall(item: InboxItem) {
+    if (!pendingInstall || pendingInstall.repo_id !== item.id) {
+      setPendingInstall(null);
+      setError(taskText.failedToBuildInstallPreview);
+      return;
+    }
     activeTaskProgress.current = { repoId: item.id, action: "install" };
     setBusy(true);
     setError(null);
@@ -525,7 +696,7 @@ export function App() {
       percent: 0
     });
     try {
-      const data = await installRepo(item.id);
+      const data = await installRepo(pendingInstall);
       setApps(data);
       setSelectedId(item.id);
       setPendingInstall(null);
@@ -555,7 +726,185 @@ export function App() {
     }
   }
 
-  async function handleUninstall(item: InboxItem | null) {
+  async function handlePreviewSelectedVersion(item: InboxItem | null) {
+    if (!item || !selectedVersion) {
+      return;
+    }
+    const requestId = beginPreviewRequest(item.id);
+    clearTaskProgress();
+    setBusy(true);
+    setError(null);
+    setTaskStatus(taskText.generatingInstallPreview(item.name));
+    try {
+      const selectedRelease = releaseVersions.find((version) => version.tagName === selectedVersion);
+      const plan = await previewInstall(item.id, selectedVersion, releaseChannelForVersion(selectedRelease));
+      if (!isPreviewResponseCurrent(
+        requestId,
+        previewRequestId.current,
+        item.id,
+        selectedRepoIdRef.current,
+        plan.repo_id
+      )) {
+        return;
+      }
+      setPendingInstall(plan);
+      setPendingRollback(null);
+      setTaskStatus(taskText.generatedInstallPreview(item.name));
+    } catch (caught) {
+      if (!isPreviewRequestCurrent(
+        requestId,
+        previewRequestId.current,
+        item.id,
+        selectedRepoIdRef.current
+      )) {
+        return;
+      }
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setError(message);
+      setTaskStatus(taskText.failedToBuildInstallPreview);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function isInstalledLifecycleItem(item: InboxItem): boolean {
+    return isManagedPathKind(item.installPathKind) || isSystemInstallerKind(item.installPathKind);
+  }
+
+  async function handleSetPinned(item: InboxItem | null, pinned: boolean) {
+    if (!item || !isInstalledLifecycleItem(item) || (pinned && !selectedVersion)) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const data = await setReleasePin(item.id, pinned ? selectedVersion : null);
+      applyLifecycleDashboard(data, item.id);
+      setPendingInstall(null);
+      setTaskStatus(taskText.releasePolicyUpdated);
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setError(message);
+      setTaskStatus(taskText.releasePolicyFailed);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleToggleIgnored(item: InboxItem | null) {
+    if (!item || !isInstalledLifecycleItem(item) || !selectedVersion) {
+      return;
+    }
+    const ignored = !(item.releasePolicy?.ignoredVersions ?? []).includes(selectedVersion);
+    setBusy(true);
+    setError(null);
+    try {
+      const data = await setReleaseIgnored(item.id, selectedVersion, ignored);
+      applyLifecycleDashboard(data, item.id);
+      setPendingInstall(null);
+      setTaskStatus(taskText.releasePolicyUpdated);
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setError(message);
+      setTaskStatus(taskText.releasePolicyFailed);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handlePreviewRollback(item: InboxItem | null) {
+    if (!item || !getRollbackAvailability(item, busy, language).enabled) {
+      return;
+    }
+    const requestId = beginPreviewRequest(item.id);
+    clearTaskProgress();
+    setBusy(true);
+    setError(null);
+    setTaskStatus(taskText.preparingRollback(item.name));
+    try {
+      const preview = await previewRollback(item.id);
+      if (!isPreviewResponseCurrent(
+        requestId,
+        previewRequestId.current,
+        item.id,
+        selectedRepoIdRef.current,
+        preview.repoId
+      )) {
+        return;
+      }
+      setPendingRollback(preview);
+      setPendingInstall(null);
+      setTaskStatus(taskText.preparingRollback(item.name));
+    } catch (caught) {
+      if (!isPreviewRequestCurrent(
+        requestId,
+        previewRequestId.current,
+        item.id,
+        selectedRepoIdRef.current
+      )) {
+        return;
+      }
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setError(message);
+      setTaskStatus(taskText.rollbackFailed);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleConfirmRollback(item: InboxItem | null) {
+    if (!item || !pendingRollback) {
+      return;
+    }
+    if (pendingRollback.repoId !== item.id) {
+      setPendingRollback(null);
+      setError(taskText.rollbackFailed);
+      return;
+    }
+    activeTaskProgress.current = { repoId: item.id, action: "rollback" };
+    setBusy(true);
+    setError(null);
+    setTaskStatus(taskText.rollingBack(item.name));
+    setTaskProgress({
+      repoId: item.id,
+      action: "rollback",
+      stage: "locatingRecord",
+      message: taskText.rollingBack(item.name),
+      percent: 0
+    });
+    try {
+      const data = await rollbackRepo(pendingRollback);
+      setApps(data);
+      setPendingRollback(null);
+      setTaskProgress({
+        repoId: item.id,
+        action: "rollback",
+        stage: "finished",
+        message: taskText.rolledBack(item.name),
+        percent: 100
+      });
+      setTaskStatus(taskText.rolledBack(item.name));
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setError(message);
+      setTaskStatus(taskText.rollbackFailed);
+      setTaskProgress((current) => current ? { ...current, stage: "failed", message } : current);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function requestUninstall(item: InboxItem | null) {
+    if (!item || item.status === "needsChoice" || item.uninstallSupported === false) {
+      return;
+    }
+
+    setPendingInstall(null);
+    setPendingRollback(null);
+    setPendingUninstall(item);
+  }
+
+  async function handleConfirmUninstall(item: InboxItem | null) {
     if (!item || item.status === "needsChoice" || item.uninstallSupported === false) {
       return;
     }
@@ -575,6 +924,8 @@ export function App() {
       setApps(data);
       setSelectedId(data.find((app) => app.id === item.id)?.id ?? data[0]?.id ?? null);
       setPendingInstall(null);
+      setPendingRollback(null);
+      setPendingUninstall(null);
       setTaskProgress({
         repoId: item.id,
         action: "uninstall",
@@ -602,7 +953,7 @@ export function App() {
   }
 
   async function handleRemoveTracked(item: InboxItem | null) {
-    if (!item || (item.status !== "needsChoice" && !isRemovableNoRelease(item))) {
+    if (!item || !isRemovableTrackedItem(item)) {
       clearTaskProgress();
       return;
     }
@@ -625,16 +976,21 @@ export function App() {
     }
   }
 
-  async function handleBulkRemoveTracked() {
-    if (!bulkRemoveAvailability.enabled) {
+  async function handleSelectionAction() {
+    if (!selectionActionAvailability.enabled) {
       clearTaskProgress();
-      setError(bulkRemoveAvailability.reason ?? taskText.selectAtLeastOneRemovableItem);
+      setError(selectionActionAvailability.reason ?? taskText.selectAtLeastOneRemovableItem);
       setTaskStatus(taskText.bulkRemoveFailed);
       return;
     }
 
+    if (selectionActionAvailability.kind === "uninstall") {
+      requestUninstall(inbox.find((item) => item.id === selectionActionAvailability.uninstallTargetId) ?? null);
+      return;
+    }
+
     const targets = apps.filter(
-      (app) => selectedIds.includes(app.id) && (app.status === "needsChoice" || isRemovableNoRelease(app))
+      (app) => selectedIds.includes(app.id) && isRemovableTrackedItem(app)
     );
     if (targets.length === 0) {
       clearTaskProgress();
@@ -727,6 +1083,24 @@ export function App() {
     }
   }
 
+  async function handleOpenInstallerFolder(item: InboxItem | null) {
+    if (!item?.installPath || item.installPath === "unknown" || !isSystemInstallerKind(item.installPathKind)) {
+      clearTaskProgress();
+      setTaskStatus(taskText.noInstallPathAvailable);
+      return;
+    }
+
+    clearTaskProgress();
+    try {
+      await openInstallerFolder(item.installPath);
+      setTaskStatus(taskText.openedInstallerFolder(item.name));
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setError(message);
+      setTaskStatus(taskText.openFolderFailed);
+    }
+  }
+
   async function handleOpenInstallRoot() {
     if (!displayInstallRoot) {
       clearTaskProgress();
@@ -753,6 +1127,80 @@ export function App() {
     clearTaskProgress();
     void navigator.clipboard.writeText(note);
     setTaskStatus(taskText.releaseNoteCopied);
+  }
+
+  function handleCopyValue(label: string, value: string) {
+    if (!value || !navigator.clipboard) {
+      clearTaskProgress();
+      return;
+    }
+    clearTaskProgress();
+    void navigator.clipboard.writeText(value);
+    setTaskStatus(taskText.copiedValue(label));
+  }
+
+  function handleFocusNetworkConfig() {
+    clearTaskProgress();
+    setActiveView("settings");
+    setNetworkFieldsAttention(true);
+    setTaskStatus(configConnectivityWarning?.detail ?? ui.connectivityTestHelp);
+
+    window.setTimeout(() => {
+      const hasProxyUrl = configDraft.proxyUrl.trim().length > 0;
+      const target = !hasProxyUrl
+        ? proxyUrlInput.current
+        : !hasGithubToken
+          ? githubTokenInput.current
+          : proxyUrlInput.current;
+      target?.focus();
+    }, 0);
+  }
+
+  async function runGithubConnectivityCheck(draft: ConfigDraft, mode: "auto" | "manual") {
+    const testedConfigKey = getNetworkConfigKey(draft);
+    const checkId = connectivityCheckId.current + 1;
+    connectivityCheckId.current = checkId;
+
+    if (mode === "manual") {
+      clearTaskProgress();
+      setConnectivityTesting(true);
+      setError(null);
+      setTaskStatus(taskText.testingGithubConnectivity);
+    }
+    setConnectivityTest({ status: "testing", configKey: testedConfigKey });
+
+    try {
+      const result = await testGithubConnectivity(desktopConfigFromDraft(draft));
+      if (connectivityCheckId.current !== checkId) {
+        return;
+      }
+      if (currentNetworkConfigKey.current !== testedConfigKey) {
+        setConnectivityTest({ status: "stale", configKey: testedConfigKey });
+        return;
+      }
+      setConnectivityTest(buildConnectivityTestViewState(result, draft));
+      if (mode === "manual") {
+        setTaskStatus(result.ok ? taskText.githubConnectivitySucceeded : taskText.githubConnectivityFailed);
+      }
+    } catch (caught) {
+      if (connectivityCheckId.current !== checkId) {
+        return;
+      }
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setConnectivityTest({ status: "failed", message, problem: "unknown", configKey: testedConfigKey });
+      if (mode === "manual") {
+        setError(message);
+        setTaskStatus(taskText.githubConnectivityFailed);
+      }
+    } finally {
+      if (mode === "manual") {
+        setConnectivityTesting(false);
+      }
+    }
+  }
+
+  async function handleTestGithubConnectivity() {
+    await runGithubConnectivityCheck(configDraft, "manual");
   }
 
   return (
@@ -800,6 +1248,17 @@ export function App() {
               <>
                 <div className="topbarMeta">
                   <span className={hasGithubToken ? "statePill success" : "statePill"}>{hasGithubToken ? ui.configReady : ui.configPublic}</span>
+                  {configConnectivityWarning ? (
+                    <button
+                      className="statePill warning statePillButton"
+                      type="button"
+                      onClick={handleFocusNetworkConfig}
+                      title={configConnectivityWarning.detail}
+                      aria-label={ui.openNetworkSettings}
+                    >
+                      {configConnectivityWarning.label}
+                    </button>
+                  ) : null}
                   {backgroundUpdateCount > 0 ? (
                     <span className="statePill subtle" title={ui.trayBadge(backgroundUpdateCount)}>
                       {ui.trayBadge(backgroundUpdateCount)}
@@ -886,6 +1345,9 @@ export function App() {
                         </TooltipButton>
                       ))}
                     </div>
+                    <span className={`selectionSummary ${selectionActionAvailability.kind === "mixed" ? "warning" : ""}`}>
+                      {selectionSummary}
+                    </span>
                     <div className="bulkActions">
                       <TooltipButton
                         type="button"
@@ -907,13 +1369,13 @@ export function App() {
                       </TooltipButton>
                       <TooltipButton
                         type="button"
-                        label={bulkRemoveAvailability.reason ?? ui.remove}
-                        onClick={() => void handleBulkRemoveTracked()}
-                        disabled={!bulkRemoveAvailability.enabled}
+                        label={selectionActionAvailability.reason ?? selectionActionAvailability.label}
+                        onClick={() => void handleSelectionAction()}
+                        disabled={!selectionActionAvailability.enabled}
                         className="dangerButton bulkButton"
                       >
                         <Trash2 size={17} />
-                        <span>{ui.remove}</span>
+                        <span>{selectionActionAvailability.label}</span>
                       </TooltipButton>
                     </div>
                   </div>
@@ -937,12 +1399,12 @@ export function App() {
                         checked={selectedIds.includes(item.id)}
                         pendingInstallRepoId={pendingInstallRepoId}
                         installRetrying={installRetrying}
-                        onSelect={() => setSelectedId(item.id)}
+                        onSelect={() => selectRepo(item.id)}
                         onToggleSelection={() => {
                           setSelectedIds((current) => toggleSelection(current, item.id));
                         }}
                         onPrimaryAction={() => {
-                          setSelectedId(item.id);
+                          selectRepo(item.id);
                           if (pendingInstallRepoId === item.id) {
                             void handleConfirmInstall(item);
                             return;
@@ -963,10 +1425,14 @@ export function App() {
                   onOpenInstallPath={() => {
                     void handleOpenInstallPath(selected);
                   }}
+                  onOpenInstallerFolder={() => {
+                    void handleOpenInstallerFolder(selected);
+                  }}
                   onOpenApp={() => {
                     void handleOpenApp(selected);
                   }}
                   onCopyReleaseNote={handleCopyReleaseNote}
+                  onCopyValue={handleCopyValue}
                   onOpenRelease={() => {
                     void handleOpenRelease(selected);
                   }}
@@ -980,15 +1446,39 @@ export function App() {
                       void handleConfirmInstall(selected);
                     }
                   }}
-                  onUninstall={() => {
-                    void handleUninstall(selected);
+                  releaseVersions={releaseVersions}
+                  versionsLoading={versionsLoading}
+                  selectedVersion={selectedVersion}
+                  onVersionChange={setSelectedVersion}
+                  onPreviewSelectedVersion={() => {
+                    void handlePreviewSelectedVersion(selected);
                   }}
+                  onPinnedChange={(pinned) => {
+                    void handleSetPinned(selected, pinned);
+                  }}
+                  onToggleIgnored={() => {
+                    void handleToggleIgnored(selected);
+                  }}
+                  pendingRollback={pendingRollback}
+                  onPreviewRollback={() => {
+                    void handlePreviewRollback(selected);
+                  }}
+                  onConfirmRollback={() => {
+                    void handleConfirmRollback(selected);
+                  }}
+                  onCancelRollback={() => setPendingRollback(null)}
+                  onRequestUninstall={() => requestUninstall(selected)}
+                  onConfirmUninstall={() => {
+                    void handleConfirmUninstall(pendingUninstall);
+                  }}
+                  onCancelUninstall={() => setPendingUninstall(null)}
                   onRemoveTracked={() => {
                     void handleRemoveTracked(selected);
                   }}
                   pendingInstall={pendingInstall}
                   installRetrying={installRetrying}
                   onCancelInstall={() => setPendingInstall(null)}
+                  pendingUninstall={pendingUninstall}
                 />
               ) : null}
             </section>
@@ -1046,10 +1536,11 @@ export function App() {
                     </div>
                   </label>
 
-                  <label className="fieldRow">
+                  <label className={networkFieldsAttention ? "fieldRow attention" : "fieldRow"}>
                     <span>{ui.githubToken}</span>
                     <div className="fieldInputRow">
                       <input
+                        ref={githubTokenInput}
                         type={showGithubToken ? "text" : "password"}
                         value={configDraft.githubToken}
                         onChange={(event) => setConfigDraft((current) => ({ ...current, githubToken: event.target.value }))}
@@ -1067,12 +1558,13 @@ export function App() {
                     <small>{ui.githubTokenHelp}</small>
                   </label>
 
-                  <label className="fieldRow">
+                  <label className={networkFieldsAttention ? "fieldRow attention" : "fieldRow"}>
                     <span>{ui.proxyUrl}</span>
                     <input
+                      ref={proxyUrlInput}
                       value={configDraft.proxyUrl}
                       onChange={(event) => setConfigDraft((current) => ({ ...current, proxyUrl: event.target.value }))}
-                      placeholder="proxy"
+                      placeholder={ui.proxyUrlPlaceholder}
                       autoComplete="off"
                     />
                     <small>{ui.proxyUrlHelp}</small>
@@ -1110,45 +1602,41 @@ export function App() {
                     </div>
                     <small>{ui.backgroundCheckHelp} {ui.checkIntervalHelp}</small>
                   </div>
+
                 </div>
               </div>
 
-              <aside className="settingsSidebar" aria-label={ui.settingsOverview}>
-                <section className="settingsCard">
+              <aside className="settingsSidebar" aria-label={ui.networkConfigHealth}>
+                <section className="settingsCard networkConfigCard">
                   <div className="settingsCardHeader">
-                    <span className="settingsCardEyebrow">{ui.settingsOverview}</span>
-                    <p>{ui.settingsOverviewHelp}</p>
+                    <span className="settingsCardEyebrow">{ui.networkConfigHealth}</span>
+                    <p>{ui.networkConfigHealthHelp}</p>
                   </div>
-                  <div className="settingsSummaryList">
-                    <div className="settingsSummaryRow">
-                      <span>{ui.githubToken}</span>
-                      <span className={hasGithubToken ? "statePill success" : "statePill"}>{hasGithubToken ? ui.configReady : ui.configPublic}</span>
-                    </div>
-                    <div className="settingsSummaryRow">
-                      <span>{ui.installRoot}</span>
-                      <span className="settingsSummaryValue">{displayInstallRoot}</span>
-                    </div>
-                    <div className="settingsSummaryRow">
-                      <span>{ui.backgroundCheck}</span>
-                      <span className="settingsSummaryValue">
-                        {configDraft.backgroundCheckEnabled
-                          ? `${ui.backgroundCheckEnabled} · ${configDraft.checkIntervalMinutes} ${ui.checkIntervalUnit}`
-                          : ui.backgroundCheckDisabled}
-                      </span>
-                    </div>
+                  <div className="networkConfigStatusRow">
+                    <span className={networkConfigHealth.tokenConfigured ? "statePill success" : "statePill"}>
+                      {networkConfigHealth.tokenLabel}
+                    </span>
+                    <span className={networkConfigHealth.proxyConfigured ? "statePill success" : "statePill"}>
+                      {networkConfigHealth.proxyLabel}
+                    </span>
                   </div>
-                </section>
-
-                <section className="settingsCard">
-                  <div className="settingsCardHeader">
-                    <span className="settingsCardEyebrow">{ui.settingsActions}</span>
-                    <p>{ui.settingsActionsHelp}</p>
-                  </div>
-                  <div className="settingsSidebarActions">
-                    <TooltipButton label={ui.reloadSettings} onClick={() => void refreshConfig()} disabled={configSaving} className="ghostButton">
-                      <RefreshCw size={17} />
-                      <span>{ui.reloadSettings}</span>
+                  <p className="networkConfigGuide">{ui.networkProxyFormat}</p>
+                  {networkConfigHealth.warning ? (
+                    <p className="connectivityResult danger">{networkConfigHealth.warning.detail}</p>
+                  ) : null}
+                  <div className="networkConfigActions">
+                    <TooltipButton
+                      label={ui.testGithubConnectivity}
+                      onClick={() => void handleTestGithubConnectivity()}
+                      disabled={connectivityTesting}
+                      className="ghostButton"
+                    >
+                      <Play size={16} />
+                      <span>{ui.testGithubConnectivity}</span>
                     </TooltipButton>
+                    <p className={`connectivityResult ${connectivityTestStatus.tone}`}>
+                      <strong>{connectivityTestStatus.label}</strong> · {connectivityTestStatus.detail}
+                    </p>
                   </div>
                 </section>
               </aside>
@@ -1156,7 +1644,7 @@ export function App() {
           </section>
         )}
 
-        <StatusDock taskStatus={taskStatus} taskProgress={taskProgress} busy={busy || loading || configSaving} language={language} />
+        <StatusDock taskStatus={taskStatus} taskProgress={taskProgress} busy={busy || loading || configSaving || connectivityTesting} language={language} />
       </main>
     </div>
   );
@@ -1271,30 +1759,62 @@ function Inspector({
   language,
   onOpenApp,
   onOpenInstallPath,
+  onOpenInstallerFolder,
   onOpenRelease,
   onCopyReleaseNote,
+  onCopyValue,
   onPrimaryAction,
   onConfirmInstall,
-  onUninstall,
+  onRequestUninstall,
+  onConfirmUninstall,
+  onCancelUninstall,
   onRemoveTracked,
   onCancelInstall,
   pendingInstall,
-  installRetrying
+  installRetrying,
+  releaseVersions,
+  versionsLoading,
+  selectedVersion,
+  onVersionChange,
+  onPreviewSelectedVersion,
+  onPinnedChange,
+  onToggleIgnored,
+  pendingRollback,
+  onPreviewRollback,
+  onConfirmRollback,
+  onCancelRollback,
+  pendingUninstall
 }: {
   item: InboxItem | null;
   busy: boolean;
   language: Language;
   onOpenApp: () => void;
   onOpenInstallPath: () => void;
+  onOpenInstallerFolder: () => void;
   onOpenRelease: () => void;
   onCopyReleaseNote: (note?: string) => void;
+  onCopyValue: (label: string, value: string) => void;
   onPrimaryAction: () => void;
   onConfirmInstall: () => void;
-  onUninstall: () => void;
+  onRequestUninstall: () => void;
+  onConfirmUninstall: () => void;
+  onCancelUninstall: () => void;
   onRemoveTracked: () => void;
   onCancelInstall: () => void;
   pendingInstall: InstallPlan | null;
   installRetrying: boolean;
+  releaseVersions: ReleaseVersion[];
+  versionsLoading: boolean;
+  selectedVersion: string;
+  onVersionChange: (version: string) => void;
+  onPreviewSelectedVersion: () => void;
+  onPinnedChange: (pinned: boolean) => void;
+  onToggleIgnored: () => void;
+  pendingRollback: RollbackPreview | null;
+  onPreviewRollback: () => void;
+  onConfirmRollback: () => void;
+  onCancelRollback: () => void;
+  pendingUninstall: InboxItem | null;
 }) {
   const ui = createUiText(language);
 
@@ -1309,149 +1829,195 @@ function Inspector({
     );
   }
 
-  const openReleaseAvailability = getOpenReleaseAvailability(item, busy, language);
-  const openAppAvailability = getOpenAppAvailability(item, busy, language);
   const primaryActionAvailability = getPrimaryActionAvailability(item, busy, language);
   const confirmInstallAvailability = getConfirmInstallAvailability(item, busy, language);
   const uninstallAvailability = getUninstallAvailability(item, busy, language);
-  const removeTrackedAvailability = getRemoveTrackedAvailability(item, busy, language);
   const primaryActionKind = resolvePrimaryActionKind(item);
   const detailItems = getInspectorDetailItems(item, language);
   const lifecycleHistory = getLifecycleHistoryEntries(item, language);
-  const showSecondaryInspectorActions = hasSecondaryInspectorActions(item, language);
-  const showInspectorActions = pendingInstall == null;
+  const releaseGuidance = buildReleaseActionGuidance(item, language);
+  const showPrimaryInspectorAction = !(item.status === "needsChoice" && hasInstallableAsset(item));
+  const installedLifecycleItem = isManagedPathKind(item.installPathKind) || isSystemInstallerKind(item.installPathKind);
+  const showDangerInspectorActions = item.status !== "needsChoice" && installedLifecycleItem;
+  const showInspectorActions =
+    pendingInstall == null &&
+    pendingRollback == null &&
+    pendingUninstall == null &&
+    (showPrimaryInspectorAction || showDangerInspectorActions);
+  const inspectorSummary = buildInspectorStatusSummary(item, selectedVersion, installRetrying, language);
+  const selectedReleaseVersion = releaseVersions.find((version) => version.tagName === selectedVersion) ?? null;
+  const selectedReleaseTitle =
+    selectedReleaseVersion?.name?.trim() || selectedVersion || item.releaseTitle || item.latestVersion || ui.noVersions;
+  const decisionHeaderValue = installedLifecycleItem ? item.currentVersion : selectedReleaseTitle;
+  const decisionStateLabel = installedLifecycleItem
+    ? inspectorSummary?.label ?? ui.installedState
+    : hasInstallableAsset(item)
+      ? ui.installableState
+      : null;
+  const selectedReleasePublishedAt = formatPublishedAt(selectedReleaseVersion?.publishedAt ?? item.publishedAt, language);
+  const inspectorSummaryDetail =
+    inspectorSummary && item.status === "needsChoice" && selectedReleaseVersion
+      ? `${inspectorSummary.detail} · ${selectedReleasePublishedAt}`
+      : inspectorSummary?.detail ?? null;
+  const showLifecyclePreviewAction = shouldShowLifecyclePreviewAction(item) && !installedLifecycleItem;
+  const pendingInstallSafetyText = pendingInstall
+    ? [
+        pendingInstall.integrity.checksumAssetName ?? ui.installPreviewNoChecksumHint,
+        pendingInstall.requires_user_confirmation ? ui.installPreviewSystemConfirmationHint : ""
+      ]
+        .filter((text) => text.length > 0)
+        .join(" · ")
+    : "";
   const inspectorActionSection = (
     <div className="inspectorActions" aria-label={ui.managedAppsTitle}>
       {/* 主动作独占第一组：安装 / 更新 / 打开 / 重试 */}
-      <div className="inspectorActionsGroup primaryActionGroup">
-        <button
-          type="button"
-          className="primaryButton actionButton wide inspectorPrimaryAction"
-          onClick={onPrimaryAction}
-          disabled={!primaryActionAvailability.enabled}
-          aria-label={primaryActionAvailability.reason ?? item.actionLabel}
-        >
-          {primaryActionKind === "openApp" ? (
-            <Play size={16} />
-          ) : primaryActionKind === "openRelease" ? (
-            <ExternalLink size={16} />
-          ) : primaryActionKind === "openInstallLocation" || primaryActionKind === "openInstallerFile" ? (
-            <FolderOpen size={16} />
-          ) : (
-            <Download size={16} />
-          )}
-          <span>{item.actionLabel}</span>
-        </button>
-      </div>
-
-      {/* 次要动作放第二组：打开软件、打开 Release、打开安装目录 */}
-      {showSecondaryInspectorActions ? (
-        <div className="inspectorActionsGroup secondaryActionGroup">
-          {shouldShowOpenAppSecondary(item) ? (
-            <TooltipButton
-              label={openAppAvailability.reason ?? ui.action.openApp}
-              onClick={onOpenApp}
-              disabled={!openAppAvailability.enabled}
-              className="ghostButton actionButton wide inspectorSecondaryAction"
-            >
+      {showPrimaryInspectorAction ? (
+        <div className="inspectorActionsGroup primaryActionGroup">
+          <button
+            type="button"
+            className="primaryButton actionButton wide inspectorPrimaryAction"
+            onClick={onPrimaryAction}
+            disabled={!primaryActionAvailability.enabled}
+            aria-label={primaryActionAvailability.reason ?? item.actionLabel}
+          >
+            {primaryActionKind === "openApp" ? (
               <Play size={16} />
-              <span>{ui.action.openApp}</span>
-            </TooltipButton>
-          ) : null}
-          {shouldShowOpenReleaseSecondary(item, language) ? (
-            <button
-              type="button"
-              className="ghostButton actionButton wide inspectorSecondaryAction"
-              onClick={onOpenRelease}
-              disabled={!openReleaseAvailability.enabled}
-              aria-label={openReleaseAvailability.reason ?? ui.openRelease}
-            >
+            ) : primaryActionKind === "openRelease" ? (
               <ExternalLink size={16} />
-              <span>{ui.openRelease}</span>
-            </button>
-          ) : null}
-          {shouldShowInstallLocationAction(item) ? (
-            <button
-              type="button"
-              className="ghostButton actionButton wide inspectorSecondaryAction"
-              onClick={onOpenInstallPath}
-              aria-label={isSystemInstallerKind(item.installPathKind) ? ui.openInstallerFile : ui.openInstallLocation}
-            >
+            ) : primaryActionKind === "openInstallLocation" || primaryActionKind === "openInstallerFile" ? (
               <FolderOpen size={16} />
-              <span>{isSystemInstallerKind(item.installPathKind) ? ui.openInstallerFile : ui.openInstallLocation}</span>
-            </button>
-          ) : null}
+            ) : (
+              <Download size={16} />
+            )}
+            <span>{item.actionLabel}</span>
+          </button>
         </div>
       ) : null}
 
-      {/* 危险动作放最后：移除跟踪、卸载、打开系统卸载 */}
-      <div className="inspectorActionsGroup dangerActionGroup">
-        {item.status === "needsChoice" || isRemovableNoRelease(item) ? (
-          <button
-            type="button"
-            className="dangerButton actionButton wide inspectorDangerAction"
-            onClick={onRemoveTracked}
-            disabled={!removeTrackedAvailability.enabled}
-            aria-label={removeTrackedAvailability.reason ?? ui.removeTracked}
-          >
-            <Trash2 size={16} />
-            <span>{ui.removeTracked}</span>
-          </button>
-        ) : item.uninstallSupported === false ? (
-          isWindowsPlatform() ? (
-            <TooltipButton
-              label={ui.openSystemUninstall}
-              onClick={() => void openSystemUninstallSettings()}
-              className="dangerButton actionButton wide inspectorDangerAction"
-            >
-              <Trash2 size={16} />
-              <span>{ui.openSystemUninstall}</span>
-            </TooltipButton>
+      {/* 已安装的软件才露出卸载入口；未安装的跟踪项只保留版本预览路径。 */}
+      {showDangerInspectorActions ? (
+        <div className="inspectorActionsGroup dangerActionGroup">
+          {item.uninstallSupported === false ? (
+            isWindowsPlatform() ? (
+              <TooltipButton
+                label={ui.openSystemUninstall}
+                onClick={() => void openSystemUninstallSettings()}
+                className="dangerButton actionButton wide inspectorDangerAction"
+              >
+                <Trash2 size={16} />
+                <span>{ui.openSystemUninstall}</span>
+              </TooltipButton>
+            ) : (
+              <button
+                type="button"
+                className="ghostButton actionButton wide inspectorDangerAction"
+                disabled
+                aria-label={uninstallAvailability.reason ?? ui.model.useSystemUninstall}
+              >
+                <Trash2 size={16} />
+                <span>{ui.model.useSystemUninstall}</span>
+              </button>
+            )
           ) : (
             <button
               type="button"
-              className="ghostButton actionButton wide inspectorDangerAction"
-              disabled
-              aria-label={uninstallAvailability.reason ?? ui.model.useSystemUninstall}
+              className="dangerButton actionButton wide inspectorDangerAction"
+              onClick={onRequestUninstall}
+              disabled={!uninstallAvailability.enabled}
+              aria-label={uninstallAvailability.reason ?? ui.uninstallAbility}
             >
               <Trash2 size={16} />
-              <span>{ui.model.useSystemUninstall}</span>
+              <span>{ui.uninstallAbility}</span>
             </button>
-          )
-        ) : (
-          <button
-            type="button"
-            className="dangerButton actionButton wide inspectorDangerAction"
-            onClick={onUninstall}
-            disabled={!uninstallAvailability.enabled}
-            aria-label={uninstallAvailability.reason ?? ui.uninstallAbility}
-          >
-            <Trash2 size={16} />
-            <span>{ui.uninstallAbility}</span>
-          </button>
-        )}
-      </div>
+          )}
+        </div>
+      ) : null}
     </div>
   );
   const inspectorInfoSection = (
     <>
-      <dl className="detailList">
-        {detailItems.map((detail, index) => (
-          <div key={`${detail.label}-${index}`} className={detail.fullWidth ? "detailListWide" : undefined}>
-            <dt>{detail.label}</dt>
-            <dd className={detail.monospace ? "mono wrapText" : "wrapText"}>{detail.value}</dd>
+      <div className={`inspectorBlock decisionBlock ${installedLifecycleItem ? "installedDecision" : "needsInstallDecision"}`}>
+        <div className="decisionHeader">
+          <div className="blockTitle decisionTitle">
+            <Pin size={16} />
+            <span>{ui.releaseLifecycle}</span>
           </div>
-        ))}
-      </dl>
-
-      <div className="inspectorBlock accent">
-        <div className="blockTitle">
-          <ExternalLink size={16} />
-          <span>{ui.releaseInfo}</span>
+          <div className="decisionHeaderStatus">
+            <strong className="decisionHeaderValue">{decisionHeaderValue}</strong>
+            {decisionStateLabel ? (
+              <span className={`statePill ${inspectorSummary?.tone ?? "success"} decisionStatePill`}>
+                {decisionStateLabel}
+              </span>
+            ) : null}
+          </div>
         </div>
-        <p>{item.releaseTitle ?? item.latestVersion}</p>
-        <p className="mutedText">{formatPublishedAt(item.publishedAt, language)}</p>
+        <div className="lifecycleBlock">
+          <label className="lifecycleField">
+            <span>{ui.releaseTarget}</span>
+            <select
+              className={versionsLoading ? "selectControl loading" : "selectControl"}
+              value={selectedVersion}
+              onChange={(event) => onVersionChange(event.target.value)}
+              disabled={busy || versionsLoading || releaseVersions.length === 0}
+            >
+              {releaseVersions.length === 0 ? (
+                <option value="">{versionsLoading ? ui.loadingVersions : ui.noVersions}</option>
+              ) : null}
+              {releaseVersions.map((version) => (
+                <option key={version.tagName} value={version.tagName}>
+                  {version.tagName}
+                </option>
+              ))}
+            </select>
+          </label>
+          {showLifecyclePreviewAction ? (
+            <TooltipButton
+              label={ui.previewSelectedVersion}
+              onClick={onPreviewSelectedVersion}
+              disabled={busy || !selectedVersion}
+              className="primaryButton actionButton lifecyclePreviewAction"
+            >
+              <Download size={16} />
+              <span>{ui.previewSelectedVersion}</span>
+            </TooltipButton>
+          ) : null}
+        </div>
+
+        {showInspectorActions ? inspectorActionSection : null}
+
+        <dl className="detailList decisionDetailList">
+          {detailItems.map((detail, index) => (
+            <div key={`${detail.label}-${index}`} className={detail.fullWidth ? "detailListWide" : undefined}>
+              <dt>{detail.label}</dt>
+              <dd className={detail.monospace ? "mono wrapText" : "wrapText"}>
+                <CopyableValue
+                  label={detail.label}
+                  value={detail.value}
+                  copyLabel={ui.copyValue}
+                  monospace={detail.monospace}
+                  onCopy={onCopyValue}
+                />
+              </dd>
+            </div>
+          ))}
+        </dl>
       </div>
+
+      {releaseGuidance ? (
+        <div className="inspectorBlock guidanceBlock">
+          <div className="blockTitle">
+            <CircleAlert size={16} />
+            <span>{ui.releaseGuidanceTitle}</span>
+          </div>
+          <p className="guidanceHeadline">{releaseGuidance.title}</p>
+          <p className="mutedText">{releaseGuidance.summary}</p>
+          <ul className="guidanceList">
+            {releaseGuidance.bullets.map((bullet) => (
+              <li key={bullet}>{bullet}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       <div className="releaseNoteBlock">
         <div className="releaseNoteHeader">
@@ -1502,27 +2068,58 @@ function Inspector({
   return (
     <aside className="inspector" aria-label={ui.managedAppsTitle}>
       <div className="inspectorHead">
-        <div>
+        <div className="inspectorHeadCopy">
           <h2>{item.name}</h2>
-          <p className="mono">
-            {item.currentVersion} → {item.latestVersion}
-          </p>
+          {inspectorSummary ? (
+            <div className="inspectorSummary">
+              <span className={`statePill ${inspectorSummary.tone}`}>{inspectorSummary.label}</span>
+              <span className="inspectorSummaryDetail">{inspectorSummaryDetail}</span>
+            </div>
+          ) : null}
         </div>
       </div>
 
       {pendingInstall ? (
-        <div className="installPreview pendingInstall">
+        <div className="installPreview pendingInstall" role="alertdialog" aria-label={ui.installPreview}>
           <div className="blockTitle">
             <Download size={16} />
             <span>{ui.installPreview}</span>
           </div>
-          <p className="previewLine">
-            {pendingInstall.asset_name} · {installTypeLabel(pendingInstall.install_type, language)}
-          </p>
+          <div className="previewHero">
+            <div className="previewHeroCopy">
+              <strong className="previewHeroTitle">
+                {pendingInstall.version} · {pendingInstall.asset_name}
+              </strong>
+              <span className="previewHeroMeta">
+                {formatPublishedAt(selectedReleaseVersion?.publishedAt ?? item.publishedAt, language)}
+              </span>
+            </div>
+            <span className="previewBadge">{installTypeLabel(pendingInstall.install_type, language)}</span>
+          </div>
           <div className="previewMeta">
             <div className="previewMetaRow">
-              <span className="previewMetaLabel">{ui.installManagement}</span>
-              <span className="previewMetaValue">{installManagementKindLabel(pendingInstall.management_kind, language)}</span>
+              <span className="previewMetaLabel">{ui.assetFile}</span>
+              <span className="previewMetaValue mono wrapText">
+                <CopyableValue
+                  label={ui.assetFile}
+                  value={pendingInstall.asset_name}
+                  copyLabel={ui.copyValue}
+                  monospace
+                  onCopy={onCopyValue}
+                />
+              </span>
+            </div>
+            <div className="previewMetaRow">
+              <span className="previewMetaLabel">{ui.installPath}</span>
+              <span className="previewMetaValue mono wrapText">
+                <CopyableValue
+                  label={ui.installPath}
+                  value={item.installPath}
+                  copyLabel={ui.copyValue}
+                  monospace
+                  onCopy={onCopyValue}
+                />
+              </span>
             </div>
             {pendingInstall.system_package_manager ? (
               <div className="previewMetaRow">
@@ -1531,16 +2128,13 @@ function Inspector({
               </div>
             ) : null}
           </div>
-          {pendingInstall.notes.length > 0 ? (
-            <ul className="previewNotes">
-              {pendingInstall.notes.map((note) => (
-                <li key={note}>{note}</li>
-              ))}
-            </ul>
-          ) : null}
-          {pendingInstall.requires_user_confirmation ? (
-            <p className="mutedText">{ui.installPreviewConfirmation}</p>
-          ) : null}
+          <div className="previewSafetyNote">
+            <CircleAlert size={15} />
+            <div>
+              <strong>{installPreviewIntegrityLabel(pendingInstall.integrity, language)}</strong>
+              <span>{pendingInstallSafetyText}</span>
+            </div>
+          </div>
           {installRetrying ? <p className="previewFailureHint">{ui.installRetryHint}</p> : null}
           <div className="previewActions">
             <TooltipButton
@@ -1557,6 +2151,7 @@ function Inspector({
               onClick={onConfirmInstall}
               disabled={!confirmInstallAvailability.enabled}
               className="primaryButton actionButton previewConfirmAction"
+              autoFocus
             >
               <Download size={16} />
               <span>{installRetrying ? ui.retryInstall : ui.confirmInstall}</span>
@@ -1564,7 +2159,102 @@ function Inspector({
           </div>
         </div>
       ) : null}
-      {showInspectorActions ? inspectorActionSection : null}
+      {pendingRollback ? (
+        <div className="installPreview pendingRollback" role="alertdialog" aria-label={ui.confirmRollback}>
+          <div className="blockTitle">
+            <RotateCcw size={16} />
+            <span>{ui.confirmRollback}</span>
+          </div>
+          <p className="previewLine">
+            {pendingRollback.activeVersion} → {pendingRollback.snapshotVersion}
+          </p>
+          <div className="previewActions">
+            <TooltipButton
+              label={ui.cancel}
+              onClick={onCancelRollback}
+              disabled={busy}
+              className="ghostButton actionButton previewCancelAction"
+            >
+              <RotateCcw size={16} />
+              <span>{ui.cancel}</span>
+            </TooltipButton>
+            <TooltipButton
+              label={ui.confirmRollback}
+              onClick={onConfirmRollback}
+              disabled={busy}
+              className="primaryButton actionButton previewConfirmAction"
+              autoFocus
+            >
+              <RotateCcw size={16} />
+              <span>{ui.confirmRollback}</span>
+            </TooltipButton>
+          </div>
+        </div>
+      ) : null}
+      {pendingUninstall ? (
+        <div className="installPreview pendingUninstall" role="alertdialog" aria-label={ui.confirmUninstall}>
+          <div className="blockTitle">
+            <Trash2 size={16} />
+            <span>{ui.confirmUninstall}</span>
+          </div>
+          <p className="previewLine">{pendingUninstall.name}</p>
+          <div className="previewMeta">
+            <div className="previewMetaRow">
+              <span className="previewMetaLabel">{ui.installPath}</span>
+              <span className="previewMetaValue mono wrapText">
+                <CopyableValue
+                  label={ui.installPath}
+                  value={pendingUninstall.installPath}
+                  copyLabel={ui.copyValue}
+                  monospace
+                  onCopy={onCopyValue}
+                />
+              </span>
+            </div>
+            <div className="previewMetaRow">
+              <span className="previewMetaLabel">{ui.installManagement}</span>
+              <span className="previewMetaValue">
+                {pendingUninstall.managementKind
+                  ? installManagementKindLabel(pendingUninstall.managementKind, language)
+                  : ui.installManagement}
+              </span>
+            </div>
+            {pendingUninstall.installType === "LinuxPackage" && pendingUninstall.systemPackageManager ? (
+              <div className="previewMetaRow">
+                <span className="previewMetaLabel">{ui.systemPackageManager}</span>
+                <span className="previewMetaValue">{systemPackageManagerLabel(pendingUninstall.systemPackageManager)}</span>
+              </div>
+            ) : null}
+          </div>
+          <p className="mutedText">
+            {pendingUninstall.installPathKind === "managedPath"
+              ? ui.uninstallManagedConfirmation
+              : pendingUninstall.installType === "LinuxPackage"
+                ? ui.uninstallLinuxPackageConfirmation
+                : ui.uninstallExternalInstallerConfirmation}
+          </p>
+          <div className="previewActions">
+            <TooltipButton
+              label={ui.cancel}
+              onClick={onCancelUninstall}
+              disabled={busy}
+              className="ghostButton actionButton previewCancelAction"
+            >
+              <RotateCcw size={16} />
+              <span>{ui.cancel}</span>
+            </TooltipButton>
+            <TooltipButton
+              label={ui.confirmUninstall}
+              onClick={onConfirmUninstall}
+              disabled={busy}
+              className="dangerButton actionButton previewConfirmAction"
+            >
+              <Trash2 size={16} />
+              <span>{ui.confirmUninstall}</span>
+            </TooltipButton>
+          </div>
+        </div>
+      ) : null}
       {inspectorInfoSection}
     </aside>
   );
@@ -1586,10 +2276,17 @@ function StatusDock({
   const progressValuePercent = progressPercent == null ? null : progressPercent === 0 ? 6 : progressPercent;
   const progressClassName = presentation.progressMode === "indeterminate" ? "taskProgressTrack busy" : "taskProgressTrack";
   const progressValueClassName = presentation.progressMode === "indeterminate" ? "taskProgressValue busy" : "taskProgressValue";
+  const statusDockClassName = [
+    "statusDock",
+    presentation.showProgress ? "withProgress" : "idle",
+    presentation.failed ? "failed" : ""
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   return (
     <footer
-      className={presentation.failed ? "statusDock failed" : "statusDock"}
+      className={statusDockClassName}
       aria-live="polite"
       aria-atomic="true"
       aria-busy={busy || undefined}
@@ -1608,9 +2305,11 @@ function StatusDock({
           </span>
         ) : null}
       </div>
-      <span className={presentation.failed ? "taskProgressPercent danger statusDockPercent" : "taskProgressPercent statusDockPercent"}>
-        {presentation.pillLabel}
-      </span>
+      {presentation.showPill ? (
+        <span className={presentation.failed ? "taskProgressPercent danger statusDockPercent" : "taskProgressPercent statusDockPercent"}>
+          {presentation.pillLabel}
+        </span>
+      ) : null}
       {presentation.showProgress ? (
         <div
           className={progressClassName}
@@ -1787,6 +2486,9 @@ function StatusIcon({ status }: { status: InboxItem["status"] }) {
   if (status === "noRelease") {
     return <EyeOff className="statusIcon noRelease" size={18} />;
   }
+  if (status === "downgradeAvailable") {
+    return <RotateCcw className="statusIcon downgradeAvailable" size={18} />;
+  }
   return <RefreshCw className="statusIcon updateAvailable" size={18} />;
 }
 
@@ -1795,6 +2497,8 @@ function statusLabel(status: InboxItem["status"], language: Language) {
   switch (status) {
     case "updateAvailable":
       return ui.status.updateAvailable;
+    case "downgradeAvailable":
+      return ui.status.downgradeAvailable;
     case "needsChoice":
       return ui.status.needsChoice;
     case "noRelease":
@@ -1815,6 +2519,18 @@ function configDraftKey(config: ConfigDraft) {
     backgroundCheckEnabled: config.backgroundCheckEnabled,
     checkIntervalMinutes: config.checkIntervalMinutes
   });
+}
+
+function desktopConfigFromDraft(config: ConfigDraft): DesktopConfig {
+  return {
+    githubToken: config.githubToken.trim() || null,
+    proxyUrl: config.proxyUrl.trim() || null,
+    installRoot: config.installRoot.trim() || null,
+    effectiveInstallRoot: config.effectiveInstallRoot.trim() || null,
+    language: config.language,
+    backgroundCheckEnabled: config.backgroundCheckEnabled,
+    checkIntervalMinutes: config.checkIntervalMinutes
+  };
 }
 
 function filterLabel(status: InboxFilter, language: Language) {
@@ -1855,7 +2571,8 @@ function TooltipButton({
   onClick,
   disabled = false,
   type = "button",
-  active = false
+  active = false,
+  autoFocus = false
 }: {
   label: string;
   className?: string;
@@ -1864,11 +2581,50 @@ function TooltipButton({
   disabled?: boolean;
   type?: "button" | "submit" | "reset";
   active?: boolean;
+  autoFocus?: boolean;
 }) {
   return (
-    <button className={active ? `${className} active` : className} type={type} onClick={onClick} disabled={disabled} aria-label={label} title={label}>
+    <button
+      className={active ? `${className} active` : className}
+      type={type}
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      title={label}
+      autoFocus={autoFocus}
+    >
       {children}
     </button>
+  );
+}
+
+function CopyableValue({
+  label,
+  value,
+  copyLabel,
+  monospace = false,
+  onCopy
+}: {
+  label: string;
+  value: string;
+  copyLabel: string;
+  monospace?: boolean;
+  onCopy: (label: string, value: string) => void;
+}) {
+  return (
+    <span className={monospace ? "copyableValue mono" : "copyableValue"}>
+      <span className="copyableText" title={value}>
+        {value}
+      </span>
+      <TooltipButton
+        label={`${copyLabel}: ${label}`}
+        onClick={() => onCopy(label, value)}
+        disabled={!value}
+        className="ghostButton copyValueButton"
+      >
+        <Clipboard size={14} />
+      </TooltipButton>
+    </span>
   );
 }
 

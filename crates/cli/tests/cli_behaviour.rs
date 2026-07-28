@@ -1,5 +1,5 @@
 use assert_cmd::Command;
-use predicates::str::contains;
+use predicates::{boolean::PredicateBooleanExt, str::contains};
 use std::fs;
 
 use releasedock_core::{
@@ -46,7 +46,11 @@ fn install_outputs_json_plan_from_fixture() {
         .success()
         .stdout(contains("\"asset_name\":\"demo-windows-x64.zip\""))
         .stdout(contains("\"install_type\":\"PortableArchive\""))
-        .stdout(contains("\"requires_user_confirmation\":false"));
+        .stdout(contains(
+            "\"selection_guard\":{\"state\":\"expectedAbsent\"}",
+        ))
+        .stdout(contains("\"requires_user_confirmation\":true"))
+        .stdout(contains("No upstream SHA-256 checksum"));
 }
 
 #[test]
@@ -73,7 +77,8 @@ fn install_outputs_json_plan_from_linux_executable_fixture() {
         .success()
         .stdout(contains("\"asset_name\":\"releasedock-linux-x64\""))
         .stdout(contains("\"install_type\":\"Executable\""))
-        .stdout(contains("\"requires_user_confirmation\":false"));
+        .stdout(contains("\"requires_user_confirmation\":true"))
+        .stdout(contains("No upstream SHA-256 checksum"));
 }
 
 #[test]
@@ -215,7 +220,8 @@ fn config_commands_round_trip_through_temp_path() {
         .args(["config", "get"])
         .assert()
         .success()
-        .stdout(contains("ghp_testtoken"));
+        .stdout(contains("\"githubToken\": \"***redacted***\""))
+        .stdout(predicates::str::contains("ghp_testtoken").not());
 
     Command::cargo_bin("releasedock")
         .unwrap()
@@ -226,6 +232,71 @@ fn config_commands_round_trip_through_temp_path() {
 
     let config_json = fs::read_to_string(&config_path).unwrap();
     assert!(!config_json.contains("ghp_testtoken"));
+}
+
+#[test]
+fn update_requires_exactly_one_repo_or_all_target() {
+    Command::cargo_bin("releasedock")
+        .unwrap()
+        .arg("update")
+        .assert()
+        .failure()
+        .stderr(contains("Usage:"));
+
+    Command::cargo_bin("releasedock")
+        .unwrap()
+        .args(["update", "owner/project", "--all"])
+        .assert()
+        .failure()
+        .stderr(contains("cannot be used with"));
+}
+
+#[test]
+fn releases_fixture_defaults_to_first_hundred_entries() {
+    let temp = tempfile::tempdir().unwrap();
+    let fixture = temp.path().join("releases.json");
+    let releases = (0..101)
+        .map(|index| {
+            serde_json::json!({
+                "tag_name": format!("v{index}.0.0"),
+                "draft": false,
+                "prerelease": false,
+                "assets": []
+            })
+        })
+        .collect::<Vec<_>>();
+    fs::write(&fixture, serde_json::to_vec(&releases).unwrap()).unwrap();
+
+    let output = Command::cargo_bin("releasedock")
+        .unwrap()
+        .args([
+            "releases",
+            "owner/project",
+            "--release-fixture",
+            fixture.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let first_page: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(first_page.as_array().unwrap().len(), 100);
+
+    let output = Command::cargo_bin("releasedock")
+        .unwrap()
+        .args([
+            "releases",
+            "owner/project",
+            "--release-fixture",
+            fixture.to_str().unwrap(),
+            "--all",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let all: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(all.as_array().unwrap().len(), 101);
 }
 
 #[test]

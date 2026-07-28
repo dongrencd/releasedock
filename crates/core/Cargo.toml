@@ -1,6 +1,6 @@
 [package]
 name = "releasedock-core"
-version = "0.2.4"
+version = "0.2.5"
 edition.workspace = true
 
 [dependencies]
@@ -8,9 +8,11 @@ anyhow.workspace = true
 chrono.workspace = true
 directories.workspace = true
 flate2.workspace = true
+fs2.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tar.workspace = true
 thiserror.workspace = true
 xz2.workspace = true

@@ -168,6 +168,7 @@ input {
 }
 
 .topbar {
+  grid-row: 1;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   column-gap: 18px;
@@ -240,6 +241,20 @@ input {
 .statePill.danger {
   background: #fef2f2;
   color: #b91c1c;
+}
+
+.statePill.warning {
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.statePillButton {
+  border: 0;
+  cursor: pointer;
+}
+
+.statePillButton:hover {
+  box-shadow: inset 0 0 0 1px rgba(146, 64, 14, 0.22);
 }
 
 .statePill.subtle {
@@ -401,8 +416,8 @@ input {
 
 .contentGrid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(360px, 400px);
-  gap: 14px;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 360px);
+  gap: 12px;
   min-height: 0;
 }
 
@@ -411,8 +426,10 @@ input {
 }
 
 .dashboardView {
+  grid-row: 3;
   display: grid;
   min-height: 0;
+  overflow: auto;
   padding: 12px 20px 14px;
 }
 
@@ -450,8 +467,11 @@ input {
 }
 
 .settingsPanel {
+  grid-row: 3;
   display: grid;
   gap: 12px;
+  min-height: 0;
+  overflow: auto;
   padding: 10px 20px 12px;
   justify-items: stretch;
 }
@@ -489,6 +509,14 @@ input {
 .fieldRow {
   display: grid;
   gap: 6px;
+}
+
+.fieldRow.attention {
+  padding: 10px;
+  border: 1px solid #f59e0b;
+  border-color: #f59e0b;
+  border-radius: 8px;
+  background: #fffbeb;
 }
 
 .fieldRow > span {
@@ -588,6 +616,10 @@ input {
   background: #ffffff;
 }
 
+.networkConfigCard {
+  gap: 12px;
+}
+
 .settingsCardHeader {
   display: grid;
   gap: 4px;
@@ -605,48 +637,64 @@ input {
   line-height: 1.45;
 }
 
-.settingsSummaryList {
-  display: grid;
-  gap: 10px;
-}
-
-.settingsSummaryRow {
+.networkConfigStatusRow {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  min-width: 0;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
-.settingsSummaryRow > span:first-child {
-  color: #334155;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.settingsSummaryValue {
-  color: #475569;
-  font-size: 13px;
+.networkConfigGuide {
+  color: #64748b;
+  font-size: 12px;
   line-height: 1.45;
-  text-align: right;
-  word-break: break-word;
 }
 
-.settingsSidebarActions {
-  display: flex;
-  gap: 10px;
-  justify-content: flex-start;
+.networkConfigActions {
+  display: grid;
+  gap: 8px;
+}
+
+.connectivityResult {
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.connectivityResult.busy {
+  color: #1d4ed8;
+}
+
+.connectivityResult.success {
+  color: #0f766e;
+}
+
+.connectivityResult.warning {
+  color: #92400e;
+}
+
+.connectivityResult.danger {
+  color: #b91c1c;
 }
 
 .statusDock {
+  grid-row: 4;
   display: grid;
-  grid-template-columns: minmax(220px, 1.1fr) minmax(0, 1.9fr) auto;
-  gap: 8px 16px;
   align-items: center;
-  padding: 10px 24px;
   border-top: 1px solid #d8dee8;
   color: #334155;
   background: #ffffff;
+}
+
+.statusDock.idle {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  padding: 7px 24px;
+}
+
+.statusDock.withProgress {
+  grid-template-columns: minmax(220px, 1.1fr) minmax(0, 1.9fr) auto;
+  gap: 6px 16px;
+  padding: 8px 24px;
 }
 
 .statusDock.failed {
@@ -665,8 +713,22 @@ input {
   gap: 10px;
 }
 
+.statusDock.idle .statusDockCopy {
+  gap: 8px;
+}
+
 .statusDockCopy > div {
   min-width: 0;
+}
+
+.statusDock.idle .statusDockCopy > div {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.statusDock.idle .eyebrow::after {
+  content: " ·";
 }
 
 .statusDockCopy strong,
@@ -705,11 +767,12 @@ input {
   box-shadow: 0 0 0 5px rgba(15, 118, 110, 0.12);
 }
 
-.statusDock .taskProgressTrack {
+.statusDock.withProgress .taskProgressTrack {
   grid-column: 1 / -1;
 }
 
 .errorBanner {
+  grid-row: 2;
   margin: 0 24px;
   padding: 12px 14px;
   border: 1px solid #f5c2c7;
@@ -730,7 +793,7 @@ input {
 .inboxPanel {
   padding: 16px;
   min-width: 0;
-  overflow: visible;
+  overflow: hidden;
 }
 
 .sectionHeader {
@@ -832,6 +895,12 @@ h2 {
   color: #64748b;
   font-size: 12px;
   line-height: 1.45;
+  white-space: nowrap;
+}
+
+.selectionSummary.warning {
+  color: #92400e;
+  font-weight: 700;
 }
 
 .bulkActions {
@@ -880,14 +949,16 @@ h2 {
   align-items: start;
   gap: 8px;
   min-height: 220px;
+  overflow-x: auto;
 }
 
 .tableHead,
 .tableRow {
   display: grid;
-  grid-template-columns: 30px minmax(200px, 1.4fr) 92px 92px 104px 90px;
-  gap: 10px;
+  grid-template-columns: 28px minmax(170px, 1.4fr) 78px 78px 96px 96px;
+  gap: 8px;
   align-items: center;
+  min-width: 620px;
 }
 
 .tableHead {
@@ -1166,15 +1237,29 @@ h2 {
 }
 
 .inspectorHead {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
+  display: grid;
+  gap: 8px;
 }
 
-.inspectorHead p {
-  margin-top: 7px;
-  color: #64748b;
+.inspectorHeadCopy {
+  display: grid;
+  gap: 6px;
+}
+
+.inspectorSummary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.inspectorSummaryDetail {
+  min-width: 0;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.45;
+  word-break: break-word;
 }
 
 .inspectorHead .iconButton,
@@ -1193,9 +1278,194 @@ h2 {
   background: #ffffff;
 }
 
+.decisionBlock {
+  border-color: #dbe4f0;
+  background: #f8fafc;
+}
+
+.decisionBlock.installedDecision {
+  border-color: #d8dee8;
+  background: #ffffff;
+}
+
+.decisionBlock.installedDecision .decisionHeaderValue {
+  font-size: 16px;
+}
+
+.decisionHeaderStatus {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.decisionStatePill {
+  flex: 0 0 auto;
+}
+
+.decisionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.decisionTitle {
+  margin-bottom: 0;
+}
+
+.decisionHeaderValue {
+  flex: 0 1 auto;
+  min-width: 0;
+  color: #0f172a;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.2;
+  word-break: break-word;
+}
+
+.decisionBlock .inspectorActions {
+  margin-top: 12px;
+}
+
+.decisionDetailList {
+  gap: 0;
+  margin-top: 10px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.decisionBlock.needsInstallDecision .decisionDetailList {
+  margin-top: 16px;
+}
+
+.decisionDetailList div {
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  padding: 7px 0;
+  border: 0;
+  border-bottom: 1px solid #e2e8f0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.decisionDetailList div:last-child {
+  border-bottom: 0;
+}
+
+.decisionBlock .lifecycleBlock {
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.decisionBlock.installedDecision .lifecycleBlock {
+  padding: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.decisionBlock .lifecyclePreviewAction {
+  align-self: end;
+  min-width: 128px;
+  min-height: 38px;
+  justify-content: center;
+  margin-top: 0;
+  white-space: nowrap;
+}
+
+.decisionBlock .inspectorActionsGroup.dangerActionGroup {
+  padding-top: 12px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.decisionBlock.installedDecision .dangerActionGroup {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid #fecdd3;
+  border-radius: 8px;
+  background: #fff7f7;
+}
+
+.decisionBlock .inspectorDangerAction {
+  min-height: 34px;
+  border-color: #f8cdd2;
+  color: #dc6b75;
+  background: #fffafa;
+}
+
+.decisionBlock.installedDecision .inspectorDangerAction {
+  min-height: 42px;
+}
+
 .inspectorBlock.accent {
+  border-color: #d8dee8;
+  background: #ffffff;
+}
+
+.guidanceBlock {
+  border-color: #f3d7a0;
+  background: #fffaf0;
+}
+
+.guidanceHeadline {
+  margin: 0;
+  color: #92400e;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.guidanceList {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding-left: 18px;
+  color: #57534e;
+  font-size: 13px;
+}
+
+.lifecycleBlock {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+}
+
+.lifecycleField {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.lifecycleField > span {
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.selectControl {
+  width: 100%;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  color: #18212f;
+  background: #ffffff;
+  font: inherit;
+  font-size: 13px;
+}
+
+.selectControl.loading {
   border-color: #99d4ce;
-  background: #f0fdfa;
+  background: #f8fffd;
+}
+
+.lifecycleToggle {
+  justify-content: space-between;
 }
 
 .blockTitle {
@@ -1480,27 +1750,103 @@ h2 {
 
 .installPreview.pendingInstall {
   border-color: #f6c55f;
-  background: #fffbeb;
+  background: #fffdf7;
 }
 
 .installPreview.pendingInstall .blockTitle {
-  color: #b45309;
+  color: #0f766e;
 }
 
 .installPreview.pendingInstall .previewLine {
-  color: #92400e;
+  color: #334155;
 }
 
 .installPreview.pendingInstall .previewMetaLabel {
-  color: #a16207;
+  color: #64748b;
 }
 
 .installPreview.pendingInstall .previewMetaValue {
-  color: #78350f;
+  color: #243044;
 }
 
-.installPreview.pendingInstall .mutedText {
-  color: #92400e;
+.previewHero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #f3d7a0;
+}
+
+.previewHeroCopy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.previewHeroTitle {
+  min-width: 0;
+  color: #18212f;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.previewHeroMeta {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.previewBadge {
+  flex: 0 0 auto;
+  max-width: 128px;
+  padding: 3px 8px;
+  border: 1px solid #99d4ce;
+  border-radius: 999px;
+  color: #0f766e;
+  background: #ecfdf5;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.35;
+  text-align: center;
+}
+
+.installPreview.pendingRollback {
+  border-color: #5eead4;
+  background: #f0fdfa;
+}
+
+.installPreview.pendingRollback .blockTitle,
+.installPreview.pendingRollback .previewLine {
+  color: #0f766e;
+}
+
+.installPreview.pendingUninstall {
+  border-color: #f3b4b4;
+  background: #fff7f7;
+}
+
+.installPreview.pendingUninstall .blockTitle {
+  color: #b91c1c;
+}
+
+.installPreview.pendingUninstall .previewLine {
+  color: #7f1d1d;
+}
+
+.installPreview.pendingUninstall .previewMetaLabel {
+  color: #991b1b;
+}
+
+.installPreview.pendingUninstall .previewMetaValue {
+  color: #7f1d1d;
+}
+
+.installPreview.pendingUninstall .mutedText {
+  color: #991b1b;
 }
 
 .previewFailureHint {
@@ -1521,15 +1867,18 @@ h2 {
 
 .previewMeta {
   display: grid;
-  gap: 8px;
+  gap: 0;
+  border-top: 1px solid rgba(226, 232, 240, 0.7);
 }
 
 .previewMetaRow {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
   min-width: 0;
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.7);
 }
 
 .previewMetaLabel {
@@ -1542,18 +1891,39 @@ h2 {
   color: #243044;
   font-size: 13px;
   font-weight: 600;
-  text-align: right;
+  text-align: left;
   word-break: break-word;
 }
 
-.previewNotes {
+.previewSafetyNote {
   display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
   gap: 8px;
-  margin: 0;
-  padding-left: 18px;
-  color: #475569;
-  font-size: 13px;
-  line-height: 1.5;
+  align-items: start;
+  padding: 8px 10px;
+  border: 1px solid #f3d7a0;
+  border-radius: 8px;
+  color: #92400e;
+  background: #fffbeb;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.previewSafetyNote svg {
+  margin-top: 2px;
+  color: #b45309;
+}
+
+.previewSafetyNote div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.previewSafetyNote strong,
+.previewSafetyNote span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .previewActions {
@@ -1627,6 +1997,29 @@ h2 {
 
 .wrapText {
   overflow-wrap: anywhere;
+}
+
+.copyableValue {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.copyableText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.copyValueButton {
+  width: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  justify-content: center;
 }
 
 .inspectorActions {
@@ -1723,7 +2116,19 @@ h2 {
   height: 15px;
 }
 
+.actionButton:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
 @media (max-width: 560px) {
+  .lifecycleBlock {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .decisionBlock .lifecyclePreviewAction {
+    width: 100%;
+  }
+
   .inspectorActionsGroup.secondaryActionGroup {
     grid-template-columns: 1fr;
   }
@@ -1765,13 +2170,38 @@ h2 {
   }
 }
 
+@media (max-width: 1360px) {
+  .contentGrid {
+    grid-template-columns: minmax(0, 1fr) minmax(300px, 340px);
+    gap: 10px;
+  }
+
+  .inspector {
+    padding: 12px;
+    gap: 12px;
+  }
+
+  .tableHead,
+  .tableRow {
+    grid-template-columns: 28px minmax(150px, 1fr) 74px 74px 88px 96px;
+    min-width: 580px;
+  }
+}
+
+@media (max-width: 1080px) {
+  .contentGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .inspector {
+    position: static;
+    max-height: none;
+  }
+}
+
 @media (max-width: 1180px) {
   .shell {
     grid-template-columns: 176px minmax(0, 1fr);
-  }
-
-  .contentGrid {
-    grid-template-columns: minmax(0, 1fr);
   }
 
   .topbar {
@@ -1805,7 +2235,7 @@ h2 {
     justify-content: flex-start;
   }
 
-  .statusDock {
+  .statusDock.withProgress {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -1827,15 +2257,6 @@ h2 {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .tableHead,
-  .tableRow {
-    grid-template-columns: 30px minmax(180px, 1fr) 88px 88px 92px 82px;
-  }
-
-  .inspector {
-    position: static;
-    max-height: none;
-  }
 }
 
 /* 后台检查设置区 */

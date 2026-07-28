@@ -1,12 +1,16 @@
+use std::sync::{Arc, Barrier};
+
 use releasedock_core::{
     asset_matcher::{Architecture, AssetMatcher, OperatingSystem},
     config::Language,
-    install_plan::{InstallManagementKind, InstallPlan},
+    install_plan::{InstallManagementKind, InstallPlan, InstallSelectionGuard},
+    integrity::{IntegrityPlan, IntegrityStatus},
     manifest::{
         InstallPathKind, InstalledApp, LifecycleAction, LifecycleEvent, Manifest, ManifestStore,
         SystemPackageManager,
     },
     release::{Release, ReleaseAsset},
+    release_policy::{ReleaseDirection, ReleasePolicy},
     repo::RepoRef,
 };
 
@@ -167,7 +171,7 @@ fn writes_and_reads_manifest_atomically() {
         .unwrap();
 
     let manifest = store.load().unwrap();
-    assert_eq!(manifest.schema_version, 3);
+    assert_eq!(manifest.schema_version, 4);
     assert_eq!(manifest.apps[0].id, "owner/project");
     assert_eq!(manifest.apps[0].installed_version, "v1.0.0");
 }
@@ -229,7 +233,7 @@ fn upgrades_legacy_manifest_entries_to_current_install_metadata() {
     .unwrap();
 
     let manifest = store.load().unwrap();
-    assert_eq!(manifest.schema_version, 3);
+    assert_eq!(manifest.schema_version, 4);
     assert!(!manifest.apps[0].uninstall_supported);
     assert_eq!(
         manifest.apps[0].install_path_kind,
@@ -261,7 +265,7 @@ fn upgrades_legacy_linux_executable_manifest_entries() {
     .unwrap();
 
     let manifest = store.load().unwrap();
-    assert_eq!(manifest.schema_version, 3);
+    assert_eq!(manifest.schema_version, 4);
     assert_eq!(
         manifest.apps[0].install_type,
         releasedock_core::asset_matcher::InstallType::Executable
@@ -288,11 +292,46 @@ fn appends_and_reads_recent_lifecycle_events() {
     store.append_lifecycle_event(event.clone()).unwrap();
 
     let manifest = store.load().unwrap();
-    assert_eq!(manifest.schema_version, 3);
+    assert_eq!(manifest.schema_version, 4);
     assert_eq!(
         manifest.latest_lifecycle_event("owner/project"),
         Some(&event)
     );
+}
+
+#[test]
+fn concurrent_manifest_writers_preserve_all_events() {
+    let temp = tempfile::tempdir().unwrap();
+    let manifest_path = temp.path().join("apps.json");
+    let writers = 12;
+    let barrier = Arc::new(Barrier::new(writers));
+    let handles = (0..writers)
+        .map(|index| {
+            let barrier = barrier.clone();
+            let manifest_path = manifest_path.clone();
+            std::thread::spawn(move || {
+                let store = ManifestStore::at_path(manifest_path);
+                barrier.wait();
+                store.append_lifecycle_event(LifecycleEvent::succeeded(
+                    format!("owner/project-{index}"),
+                    format!("project-{index}"),
+                    LifecycleAction::Install,
+                    "installed",
+                    Some("v1.0.0".to_string()),
+                    None,
+                    None,
+                    None,
+                ))
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for handle in handles {
+        handle.join().unwrap().unwrap();
+    }
+
+    let stored = ManifestStore::at_path(manifest_path).load().unwrap();
+    assert_eq!(stored.lifecycle_events.len(), writers);
 }
 
 #[test]
@@ -324,7 +363,7 @@ fn save_apps_preserves_existing_lifecycle_events() {
     let store = ManifestStore::at_path(temp.path().join("apps.json"));
     store
         .save(&Manifest {
-            schema_version: 3,
+            schema_version: 4,
             apps: vec![],
             lifecycle_events: vec![LifecycleEvent::succeeded(
                 "owner/project",
@@ -430,6 +469,8 @@ fn creates_install_plan_without_executing_installer() {
     assert_eq!(plan.version, "v1.0.0");
     assert_eq!(plan.asset_name, "project-windows-x64.exe");
     assert!(plan.requires_user_confirmation);
+    assert_eq!(plan.integrity, IntegrityPlan::default());
+    assert_eq!(plan.integrity.status, IntegrityStatus::RecordedOnly);
 }
 
 #[test]
@@ -456,6 +497,84 @@ fn linux_package_install_plan_requires_confirmation() {
         plan.system_package_manager,
         Some(SystemPackageManager::Debian)
     );
+}
+
+#[test]
+fn install_plan_can_attach_discovered_integrity_without_changing_callers() {
+    let repo = RepoRef::parse("owner/project").unwrap();
+    let release = Release::fixture(
+        "v1.0.0",
+        vec![ReleaseAsset::fixture("project-linux-amd64.tar.gz")],
+    );
+    let matched = AssetMatcher::new(OperatingSystem::Linux, Architecture::X64)
+        .select_best(&release)
+        .unwrap();
+    let integrity = IntegrityPlan {
+        expected_sha256: Some("a".repeat(64)),
+        checksum_asset_name: Some("SHA256SUMS".to_string()),
+        status: IntegrityStatus::RecordedOnly,
+    };
+
+    let plan = InstallPlan::from_match(&repo, &release, &matched, Language::En)
+        .with_integrity(integrity.clone());
+
+    assert_eq!(plan.integrity, integrity);
+}
+
+#[test]
+fn install_plan_defaults_release_direction_and_supports_builder() {
+    let repo = RepoRef::parse("owner/project").unwrap();
+    let release = Release::fixture(
+        "v2.0.0",
+        vec![ReleaseAsset::fixture("project-linux-x64.AppImage")],
+    );
+    let matched = AssetMatcher::new(OperatingSystem::Linux, Architecture::X64)
+        .select_best(&release)
+        .unwrap();
+    let plan = InstallPlan::from_match(&repo, &release, &matched, Language::En);
+
+    assert_eq!(plan.release_direction, ReleaseDirection::Unknown);
+    assert_eq!(
+        plan.with_release_direction(ReleaseDirection::Downgrade)
+            .release_direction,
+        ReleaseDirection::Downgrade
+    );
+
+    let mut serialized = serde_json::to_value(InstallPlan::from_match(
+        &repo,
+        &release,
+        &matched,
+        Language::En,
+    ))
+    .unwrap();
+    serialized
+        .as_object_mut()
+        .unwrap()
+        .remove("release_direction");
+    serialized
+        .as_object_mut()
+        .unwrap()
+        .remove("selection_guard");
+    serialized.as_object_mut().unwrap().remove("target_policy");
+    let restored: InstallPlan = serde_json::from_value(serialized).unwrap();
+    assert_eq!(restored.release_direction, ReleaseDirection::Unknown);
+    assert_eq!(restored.selection_guard, None);
+    assert_eq!(restored.target_policy, None);
+}
+
+#[test]
+fn install_selection_guard_uses_an_explicit_camel_case_state() {
+    let absent = serde_json::to_value(InstallSelectionGuard::ExpectedAbsent).unwrap();
+    assert_eq!(absent, serde_json::json!({ "state": "expectedAbsent" }));
+
+    let installed = serde_json::to_value(InstallSelectionGuard::ExpectedInstalled {
+        installed_version: "v1.0.0".to_string(),
+        release_policy: ReleasePolicy::default(),
+    })
+    .unwrap();
+    assert_eq!(installed["state"], "expectedInstalled");
+    assert_eq!(installed["installedVersion"], "v1.0.0");
+    assert_eq!(installed["releasePolicy"]["channel"], "stable");
 }
 
 #[test]

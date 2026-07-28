@@ -1,17 +1,57 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ManagedApp } from "./appModel";
 
+export type ReleaseChannel = "stable" | "prerelease";
+export type ReleaseDirection = "upgrade" | "downgrade" | "reinstall" | "unknown";
+export type IntegrityStatus = "verifiedChecksum" | "recordedOnly";
+
+export type ReleasePolicy = {
+  channel: ReleaseChannel;
+  pinnedVersion?: string | null;
+  ignoredVersions: string[];
+};
+
+export type InstallSelectionGuard =
+  | { state: "expectedAbsent" }
+  | {
+      state: "expectedInstalled";
+      installedVersion: string;
+      releasePolicy: ReleasePolicy;
+    };
+
+export type IntegrityPlan = {
+  expectedSha256?: string | null;
+  checksumAssetName?: string | null;
+  status: IntegrityStatus;
+};
+
 export type InstallPlan = {
   repo_id: string;
-  repo_url: string;
   version: string;
   asset_name: string;
-  download_url: string;
   install_type: "WindowsInstaller" | "PortableArchive" | "AppImage" | "LinuxPackage" | "Executable" | "Archive" | "Unknown";
   management_kind: "managedLocal" | "systemPackage" | "externalInstaller";
   system_package_manager?: "Debian" | "Rpm" | "Pacman" | null;
   requires_user_confirmation: boolean;
+  integrity: IntegrityPlan;
+  release_direction: ReleaseDirection;
+  selection_guard?: InstallSelectionGuard | null;
+  target_policy?: ReleasePolicy | null;
   notes: string[];
+};
+
+export type ReleaseVersion = {
+  tagName: string;
+  name?: string | null;
+  prerelease: boolean;
+  publishedAt?: string | null;
+};
+
+export type RollbackPreview = {
+  repoId: string;
+  activeVersion: string;
+  snapshotVersion: string;
+  snapshotPath: string;
 };
 
 export type InstallPathKind = "managedPath" | "systemInstaller" | "unknown";
@@ -29,6 +69,14 @@ export type DesktopConfig = {
 export type BulkRemoveResult = {
   apps: ManagedApp[];
   removedCount: number;
+};
+
+export type GithubConnectivityTestResult = {
+  ok: boolean;
+  message: string;
+  problem: "none" | "network" | "proxy" | "rateLimit" | "auth" | "unknown";
+  usedToken: boolean;
+  usedProxy: boolean;
 };
 
 // 后台检查完成事件
@@ -50,13 +98,16 @@ export type DashboardProgressEvent = {
   completed: number;
 };
 
-export type TaskAction = "install" | "uninstall";
+export type TaskAction = "install" | "rollback" | "uninstall";
 
 export type TaskStage =
   | "preparing"
   | "downloading"
   | "copyingAsset"
+  | "verifyingArtifact"
   | "extractingArchive"
+  | "creatingRollback"
+  | "restoringRollback"
   | "runningSystemInstaller"
   | "updatingManifest"
   | "locatingRecord"
@@ -83,16 +134,48 @@ export async function saveConfig(config: DesktopConfig): Promise<DesktopConfig> 
   return invoke<DesktopConfig>("save_config", { config });
 }
 
+export async function testGithubConnectivity(config: DesktopConfig): Promise<GithubConnectivityTestResult> {
+  return invoke<GithubConnectivityTestResult>("test_github_connectivity", { config });
+}
+
 export async function addRepo(repoInput: string): Promise<ManagedApp[]> {
   return invoke<ManagedApp[]>("add_repo", { repoInput });
 }
 
-export async function previewInstall(repoInput: string): Promise<InstallPlan> {
-  return invoke<InstallPlan>("preview_install", { repoInput });
+export async function listReleaseVersions(repoInput: string): Promise<ReleaseVersion[]> {
+  return invoke<ReleaseVersion[]>("list_release_versions", { repoInput });
 }
 
-export async function installRepo(repoInput: string): Promise<ManagedApp[]> {
-  return invoke<ManagedApp[]>("install_repo", { repoInput });
+export async function previewInstall(
+  repoInput: string,
+  version?: string,
+  targetChannel: ReleaseChannel = "stable"
+): Promise<InstallPlan> {
+  return invoke<InstallPlan>("preview_install", { repoInput, version: version || null, targetChannel });
+}
+
+export async function installRepo(plan: InstallPlan): Promise<ManagedApp[]> {
+  return invoke<ManagedApp[]>("install_repo", { preview: plan });
+}
+
+export async function setReleaseChannel(repoInput: string, channel: ReleaseChannel): Promise<ManagedApp[]> {
+  return invoke<ManagedApp[]>("set_release_channel", { repoInput, channel });
+}
+
+export async function setReleasePin(repoInput: string, version: string | null): Promise<ManagedApp[]> {
+  return invoke<ManagedApp[]>("set_release_pin", { repoInput, version });
+}
+
+export async function setReleaseIgnored(repoInput: string, version: string, ignored: boolean): Promise<ManagedApp[]> {
+  return invoke<ManagedApp[]>("set_release_ignored", { repoInput, version, ignored });
+}
+
+export async function previewRollback(repoInput: string): Promise<RollbackPreview> {
+  return invoke<RollbackPreview>("preview_rollback", { repoInput });
+}
+
+export async function rollbackRepo(preview: RollbackPreview): Promise<ManagedApp[]> {
+  return invoke<ManagedApp[]>("rollback_repo", { preview });
 }
 
 export async function uninstallRepo(repoInput: string): Promise<ManagedApp[]> {
@@ -121,6 +204,10 @@ export async function openPath(path: string): Promise<void> {
 
 export async function openInstallLocation(path: string, installPathKind?: InstallPathKind): Promise<void> {
   await invoke("open_install_location", { path, installPathKind: installPathKind ?? "unknown" });
+}
+
+export async function openInstallerFolder(path: string): Promise<void> {
+  await invoke("open_installer_folder", { path });
 }
 
 export async function openSystemUninstallSettings(): Promise<void> {

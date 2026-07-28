@@ -1,9 +1,12 @@
-#![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
+#![cfg_attr(
+    all(target_os = "windows", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
 
 use std::{
     collections::{HashMap, HashSet},
-    env,
-    fs,
+    env, fs,
+    future::Future,
     path::{Path, PathBuf},
     sync::{Arc, LazyLock},
 };
@@ -14,12 +17,22 @@ use std::process::Command;
 use anyhow::{Context, Result};
 use releasedock_core::{
     asset_matcher::{Architecture, AssetMatcher, InstallType, OperatingSystem},
-    config::{background_check_enabled, check_interval_minutes, effective_install_root},
     config::{Config, ConfigStore, Language},
-    installer::{infer_launch_target, install_from_plan, uninstall_repo as core_uninstall_repo, ProgressReporter, TaskProgress},
-    install_plan::{InstallManagementKind, InstallPlan},
-    manifest::{InstallPathKind, LifecycleEvent, ManifestStore, SystemPackageManager},
-    release::{Release, ReleaseClient},
+    config::{background_check_enabled, check_interval_minutes, effective_install_root},
+    install_plan::{InstallManagementKind, InstallPlan, InstallSelectionGuard},
+    installer::{
+        ProgressReporter, RollbackGuard, TaskProgress, infer_launch_target, install_from_plan,
+        rollback_repo_guarded as core_rollback_repo_guarded, uninstall_repo as core_uninstall_repo,
+    },
+    integrity::{IntegrityPlan, IntegrityStatus, IntegrityVerifier},
+    manifest::{
+        InstallPathKind, InstalledApp, LifecycleEvent, ManifestStore, SystemPackageManager,
+    },
+    release::{Release, ReleaseClient, ReleasePage},
+    release_policy::{
+        PolicyMutation, ReleaseChannel, ReleaseDirection, ReleasePolicy, ReleaseSelection,
+        ReleaseSelector,
+    },
     repo::RepoRef,
 };
 use serde::{Deserialize, Serialize};
@@ -31,11 +44,11 @@ use tokio::task::{JoinHandle, JoinSet};
 #[cfg(target_os = "windows")]
 use std::os::windows::ffi::OsStrExt;
 #[cfg(target_os = "windows")]
-use windows::core::PCWSTR;
-#[cfg(target_os = "windows")]
 use windows::Win32::UI::Shell::ShellExecuteW;
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+#[cfg(target_os = "windows")]
+use windows::core::PCWSTR;
 
 mod background_check;
 mod tracking;
@@ -50,12 +63,14 @@ const DASHBOARD_PROGRESS_EVENT: &str = "dashboard-progress";
 const DASHBOARD_CONCURRENCY: usize = 6;
 
 /// 持有当前后台检查任务句柄，支持保存设置后热重启
-static BACKGROUND_TASK: LazyLock<Mutex<Option<JoinHandle<()>>>> = LazyLock::new(|| Mutex::new(None));
+static BACKGROUND_TASK: LazyLock<Mutex<Option<JoinHandle<()>>>> =
+    LazyLock::new(|| Mutex::new(None));
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 enum AppStatus {
     UpdateAvailable,
+    DowngradeAvailable,
     Current,
     NeedsChoice,
     NoRelease,
@@ -84,8 +99,99 @@ struct ManagedAppView {
     install_type: String,
     install_path_kind: InstallPathKind,
     uninstall_supported: bool,
+    release_policy: ReleasePolicy,
+    artifact_sha256: Option<String>,
+    integrity_status: Option<IntegrityStatus>,
+    checksum_asset_name: Option<String>,
+    rollback: Option<RollbackSnapshotView>,
+    release_direction: ReleaseDirection,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     recent_activities: Vec<LifecycleEvent>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RollbackSnapshotView {
+    version: String,
+    asset_name: String,
+}
+
+impl From<&releasedock_core::manifest::RollbackSnapshot> for RollbackSnapshotView {
+    fn from(snapshot: &releasedock_core::manifest::RollbackSnapshot) -> Self {
+        Self {
+            version: snapshot.version.clone(),
+            asset_name: snapshot.asset_name.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReleaseVersionView {
+    tag_name: String,
+    name: Option<String>,
+    prerelease: bool,
+    published_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct InstallPlanView {
+    repo_id: String,
+    version: String,
+    asset_name: String,
+    install_type: InstallType,
+    management_kind: InstallManagementKind,
+    system_package_manager: Option<SystemPackageManager>,
+    requires_user_confirmation: bool,
+    integrity: IntegrityPlan,
+    release_direction: ReleaseDirection,
+    selection_guard: Option<InstallSelectionGuard>,
+    target_policy: Option<ReleasePolicy>,
+    notes: Vec<String>,
+}
+
+impl From<&InstallPlan> for InstallPlanView {
+    fn from(plan: &InstallPlan) -> Self {
+        Self {
+            repo_id: plan.repo_id.clone(),
+            version: plan.version.clone(),
+            asset_name: plan.asset_name.clone(),
+            install_type: plan.install_type,
+            management_kind: plan.management_kind,
+            system_package_manager: plan.system_package_manager,
+            requires_user_confirmation: plan.requires_user_confirmation,
+            integrity: plan.integrity.clone(),
+            release_direction: plan.release_direction,
+            selection_guard: plan.selection_guard.clone(),
+            target_policy: plan.target_policy.clone(),
+            notes: plan.notes.clone(),
+        }
+    }
+}
+
+fn ensure_install_preview_matches(
+    preview: &InstallPlanView,
+    rebuilt: &InstallPlanView,
+) -> Result<()> {
+    let mut preview = preview.clone();
+    let mut rebuilt = rebuilt.clone();
+    // Notes are explanatory copy and may change independently of the fields
+    // that determine what the installer will fetch and execute.
+    preview.notes.clear();
+    rebuilt.notes.clear();
+    if preview != rebuilt {
+        anyhow::bail!("stale install preview: release plan changed after confirmation");
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RollbackPreview {
+    repo_id: String,
+    active_version: String,
+    snapshot_version: String,
+    snapshot_path: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -93,6 +199,16 @@ struct ManagedAppView {
 struct BulkRemoveResultView {
     apps: Vec<ManagedAppView>,
     removed_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GithubConnectivityTestResult {
+    ok: bool,
+    message: String,
+    problem: String,
+    used_token: bool,
+    used_proxy: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -140,9 +256,16 @@ async fn main() -> Result<()> {
             load_dashboard,
             load_config,
             save_config,
+            test_github_connectivity,
             add_repo,
+            list_release_versions,
             preview_install,
             install_repo,
+            set_release_channel,
+            set_release_pin,
+            set_release_ignored,
+            preview_rollback,
+            rollback_repo,
             uninstall_repo,
             remove_tracked_repo,
             bulk_remove_tracked_repos,
@@ -150,6 +273,7 @@ async fn main() -> Result<()> {
             open_url,
             open_path,
             open_install_location,
+            open_installer_folder,
             open_system_uninstall_settings
         ])
         // 系统托盘：创建图标、菜单
@@ -223,8 +347,13 @@ fn should_run_cli() -> bool {
 }
 
 #[tauri::command]
-async fn load_dashboard(app: tauri::AppHandle, refresh_id: u64) -> Result<Vec<ManagedAppView>, String> {
-    build_dashboard(&app, refresh_id).await.map_err(format_error)
+async fn load_dashboard(
+    app: tauri::AppHandle,
+    refresh_id: u64,
+) -> Result<Vec<ManagedAppView>, String> {
+    build_dashboard(&app, refresh_id)
+        .await
+        .map_err(format_error)
 }
 
 #[tauri::command]
@@ -235,7 +364,10 @@ async fn load_config() -> Result<DesktopConfig, String> {
 }
 
 #[tauri::command]
-async fn save_config(app: tauri::AppHandle, config: DesktopConfig) -> Result<DesktopConfig, String> {
+async fn save_config(
+    app: tauri::AppHandle,
+    config: DesktopConfig,
+) -> Result<DesktopConfig, String> {
     let store = config_store().map_err(format_error)?;
     let runtime_config = Config::from(config.clone());
     store.save(&runtime_config).map_err(format_error)?;
@@ -247,40 +379,177 @@ async fn save_config(app: tauri::AppHandle, config: DesktopConfig) -> Result<Des
 }
 
 #[tauri::command]
-async fn add_repo(app: tauri::AppHandle, repo_input: String) -> Result<Vec<ManagedAppView>, String> {
+async fn test_github_connectivity(
+    config: DesktopConfig,
+) -> Result<GithubConnectivityTestResult, String> {
+    // 使用设置页当前草稿值创建临时 client，用户不必先保存配置再验证网络路径。
+    let token = non_empty_config_value(config.github_token);
+    let proxy = non_empty_config_value(config.proxy_url);
+    let used_token = token.is_some();
+    let used_proxy = proxy.is_some();
+
+    let client = match ReleaseClient::new(token.as_deref(), proxy.as_deref()) {
+        Ok(client) => client,
+        Err(error) => {
+            let message = sanitize_connectivity_message(
+                &format_error(error),
+                token.as_deref(),
+                proxy.as_deref(),
+            );
+            let problem = classify_connectivity_problem(&message, used_proxy);
+            return Ok(github_connectivity_result(
+                false, message, problem, used_token, used_proxy,
+            ));
+        }
+    };
+
+    let result = match client.check_connectivity().await {
+        Ok(()) => github_connectivity_result(
+            true,
+            "GitHub API is reachable with the current settings.".to_string(),
+            "none",
+            used_token,
+            used_proxy,
+        ),
+        Err(error) => {
+            let message = sanitize_connectivity_message(
+                &format_error(error),
+                token.as_deref(),
+                proxy.as_deref(),
+            );
+            let problem = classify_connectivity_problem(&message, used_proxy);
+            github_connectivity_result(false, message, problem, used_token, used_proxy)
+        }
+    };
+
+    Ok(result)
+}
+
+#[tauri::command]
+async fn add_repo(
+    app: tauri::AppHandle,
+    repo_input: String,
+) -> Result<Vec<ManagedAppView>, String> {
     add_repo_to_tracking(&app, &repo_input)
         .await
         .map_err(format_error)
 }
 
 #[tauri::command]
+async fn list_release_versions(repo_input: String) -> Result<Vec<ReleaseVersionView>, String> {
+    let repo = RepoRef::parse(&repo_input).map_err(|error| format_error(error.into()))?;
+    let runtime_config = runtime_config().map_err(format_error)?;
+    let client = release_client(Some(&runtime_config)).map_err(format_error)?;
+    let releases = load_release_catalog_with(
+        |page| client.releases_page(&repo, page, 100),
+        |releases| releases.iter().filter(|release| !release.draft).count() >= 100,
+    )
+    .await
+    .map_err(format_error)?;
+    Ok(release_versions_from_catalog(&releases))
+}
+
+#[tauri::command]
 async fn preview_install(
     repo_input: String,
-    release_fixture: Option<PathBuf>,
-    os: Option<UiOs>,
-    arch: Option<UiArch>,
-) -> Result<InstallPlan, String> {
-    build_install_plan(&repo_input, release_fixture, os, arch)
+    version: Option<String>,
+    target_channel: Option<ReleaseChannel>,
+) -> Result<InstallPlanView, String> {
+    build_install_plan(
+        &repo_input,
+        version.as_deref(),
+        target_channel.unwrap_or_default(),
+        None,
+        None,
+        None,
+    )
+    .await
+    .map(|plan| InstallPlanView::from(&plan))
+    .map_err(format_error)
+}
+
+#[tauri::command]
+async fn install_repo(
+    app: tauri::AppHandle,
+    preview: InstallPlanView,
+) -> Result<Vec<ManagedAppView>, String> {
+    install_repo_to_tracking(&app, &preview)
         .await
         .map_err(format_error)
 }
 
 #[tauri::command]
-async fn install_repo(app: tauri::AppHandle, repo_input: String) -> Result<Vec<ManagedAppView>, String> {
-    install_repo_to_tracking(&app, &repo_input)
+async fn set_release_channel(
+    app: tauri::AppHandle,
+    repo_input: String,
+    channel: ReleaseChannel,
+) -> Result<Vec<ManagedAppView>, String> {
+    mutate_release_policy_and_reload(&app, &repo_input, PolicyMutation::SetChannel(channel))
         .await
         .map_err(format_error)
 }
 
 #[tauri::command]
-async fn uninstall_repo(app: tauri::AppHandle, repo_input: String) -> Result<Vec<ManagedAppView>, String> {
+async fn set_release_pin(
+    app: tauri::AppHandle,
+    repo_input: String,
+    version: Option<String>,
+) -> Result<Vec<ManagedAppView>, String> {
+    let mutation = version
+        .map(PolicyMutation::PinVersion)
+        .unwrap_or(PolicyMutation::Unpin);
+    mutate_release_policy_and_reload(&app, &repo_input, mutation)
+        .await
+        .map_err(format_error)
+}
+
+#[tauri::command]
+async fn set_release_ignored(
+    app: tauri::AppHandle,
+    repo_input: String,
+    version: String,
+    ignored: bool,
+) -> Result<Vec<ManagedAppView>, String> {
+    let mutation = if ignored {
+        PolicyMutation::IgnoreVersion(version)
+    } else {
+        PolicyMutation::UnignoreVersion(version)
+    };
+    mutate_release_policy_and_reload(&app, &repo_input, mutation)
+        .await
+        .map_err(format_error)
+}
+
+#[tauri::command]
+async fn preview_rollback(repo_input: String) -> Result<RollbackPreview, String> {
+    build_rollback_preview(&repo_input).map_err(format_error)
+}
+
+#[tauri::command]
+async fn rollback_repo(
+    app: tauri::AppHandle,
+    preview: RollbackPreview,
+) -> Result<Vec<ManagedAppView>, String> {
+    rollback_repo_from_preview(&app, &preview)
+        .await
+        .map_err(format_error)
+}
+
+#[tauri::command]
+async fn uninstall_repo(
+    app: tauri::AppHandle,
+    repo_input: String,
+) -> Result<Vec<ManagedAppView>, String> {
     uninstall_repo_from_tracking(&app, &repo_input)
         .await
         .map_err(format_error)
 }
 
 #[tauri::command]
-async fn remove_tracked_repo(app: tauri::AppHandle, repo_input: String) -> Result<Vec<ManagedAppView>, String> {
+async fn remove_tracked_repo(
+    app: tauri::AppHandle,
+    repo_input: String,
+) -> Result<Vec<ManagedAppView>, String> {
     remove_tracked_repo_from_tracking(&app, &repo_input)
         .await
         .map_err(format_error)
@@ -312,8 +581,16 @@ async fn open_path(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn open_install_location(path: String, install_path_kind: InstallPathKind) -> Result<(), String> {
+async fn open_install_location(
+    path: String,
+    install_path_kind: InstallPathKind,
+) -> Result<(), String> {
     open_install_location_in_system(&path, install_path_kind).map_err(format_error)
+}
+
+#[tauri::command]
+async fn open_installer_folder(path: String) -> Result<(), String> {
+    open_installer_folder_in_system(&path).map_err(format_error)
 }
 
 #[tauri::command]
@@ -459,23 +736,60 @@ async fn resolve_dashboard_item(
 ) -> (usize, ManagedAppView) {
     match work_item {
         DashboardWorkItem::Installed { index, app, repo } => {
-            let item = match client.latest_release_optional(&repo).await {
-                Ok(Some(release)) => render_app(app, repo, release, language),
-                Ok(None) => build_no_release_installed_view(app, repo, language),
-                Err(error) => build_failed_view(
-                    app.id,
-                    app.name,
-                    Some(repo.github_url()),
-                    Some(error.to_string()),
-                    language,
-                ),
+            let item = match load_release_catalog_for_selection(
+                &client,
+                &repo,
+                Some(&app),
+                None,
+                ReleaseChannel::Stable,
+            )
+            .await
+            {
+                Ok(releases) if releases.is_empty() => {
+                    build_no_release_installed_view(app, repo, language)
+                }
+                Ok(releases) => match ReleaseSelector::select(
+                    &releases,
+                    &app.release_policy,
+                    Some(&app.installed_version),
+                    None,
+                ) {
+                    Ok(selection) => {
+                        render_app(app, repo, selection.release, selection.direction, language)
+                    }
+                    Err(error) => {
+                        build_failed_installed_view(app, repo, Some(error.to_string()), language)
+                    }
+                },
+                Err(error) => {
+                    build_failed_installed_view(app, repo, Some(error.to_string()), language)
+                }
             };
             (index, attach_recent_activity(item, &recent_activities))
         }
         DashboardWorkItem::Tracked { index, repo } => {
-            let item = match client.latest_release_optional(&repo).await {
-                Ok(Some(release)) => render_tracked_repo(repo, release, language),
-                Ok(None) => build_no_release_tracked_view(repo, language),
+            let item = match load_release_catalog_for_selection(
+                &client,
+                &repo,
+                None,
+                None,
+                ReleaseChannel::Stable,
+            )
+            .await
+            {
+                Ok(releases) if releases.is_empty() => {
+                    build_no_release_tracked_view(repo, language)
+                }
+                Ok(releases) => match select_tracked_release(&releases) {
+                    Ok(selection) => render_tracked_repo(repo, selection.release, language),
+                    Err(error) => build_failed_view(
+                        repo.id(),
+                        repo.name.clone(),
+                        Some(repo.github_url()),
+                        Some(error.to_string()),
+                        language,
+                    ),
+                },
                 Err(error) => build_failed_view(
                     repo.id(),
                     repo.name.clone(),
@@ -493,10 +807,7 @@ fn attach_recent_activity(
     mut item: ManagedAppView,
     recent_activities: &HashMap<String, Vec<LifecycleEvent>>,
 ) -> ManagedAppView {
-    item.recent_activities = recent_activities
-        .get(&item.id)
-        .cloned()
-        .unwrap_or_default();
+    item.recent_activities = recent_activities.get(&item.id).cloned().unwrap_or_default();
     item
 }
 
@@ -519,52 +830,111 @@ fn render_app(
     app: releasedock_core::manifest::InstalledApp,
     repo: RepoRef,
     release: Release,
+    direction: ReleaseDirection,
     language: Language,
 ) -> ManagedAppView {
-    let matcher = AssetMatcher::current();
-    match matcher.select_best(&release) {
-        Ok(matched) => {
-            let management_kind = management_kind_for_app(&app);
-            let launch_path = resolve_launch_path(&app).map(|value| value.display().to_string());
-            let status = if app.installed_version == release.tag_name {
-                AppStatus::Current
-            } else {
-                AppStatus::UpdateAvailable
-            };
-
-            ManagedAppView {
-                id: app.id,
-                name: app.name,
-                current_version: app.installed_version,
-                latest_version: release.tag_name.clone(),
-                status,
-                source: "GitHub".to_string(),
-                release_title: release.name.clone(),
-                release_note: release
-                    .release_note()
-                    .map(|note| note.to_string())
-                    .or_else(|| Some(tr_owned(language, "This release does not include a release note.", "这个 release 没有填写 release note。"))),
-                release_url: release.html_url.clone().or_else(|| Some(repo.github_url())),
-                published_at: release.published_at.as_ref().map(|value| value.to_rfc3339()),
-                asset_name: Some(matched.asset.name.clone()),
-                launch_path,
-                system_package_name: app.system_package_name.clone(),
-                system_package_manager: app.system_package_manager,
-                management_kind: Some(management_kind),
-                install_path: app.install_path.display().to_string(),
-                install_type: format!("{:?}", app.install_type),
-                install_path_kind: app.install_path_kind,
-                uninstall_supported: app.uninstall_supported,
-                recent_activities: Vec::new(),
+    let is_current = app.installed_version == release.tag_name;
+    let asset_name = if is_current {
+        app.asset_name.clone()
+    } else {
+        match AssetMatcher::current().select_best(&release) {
+            Ok(matched) => matched.asset.name.clone(),
+            Err(error) => {
+                return build_failed_installed_view(app, repo, Some(error.to_string()), language);
             }
         }
-        Err(error) => build_failed_view(
-            app.id,
-            app.name,
-            Some(repo.github_url()),
-            Some(error.to_string()),
+    };
+    let management_kind = management_kind_for_app(&app);
+    let launch_path = resolve_launch_path(&app).map(|value| value.display().to_string());
+    let status = if is_current {
+        AppStatus::Current
+    } else if direction == ReleaseDirection::Downgrade {
+        AppStatus::DowngradeAvailable
+    } else {
+        AppStatus::UpdateAvailable
+    };
+
+    ManagedAppView {
+        id: app.id,
+        name: app.name,
+        current_version: app.installed_version,
+        latest_version: release.tag_name.clone(),
+        status,
+        source: "GitHub".to_string(),
+        release_title: release.name.clone(),
+        release_note: release
+            .release_note()
+            .map(|note| note.to_string())
+            .or_else(|| {
+                Some(tr_owned(
+                    language,
+                    "This release does not include a release note.",
+                    "这个 release 没有填写 release note。",
+                ))
+            }),
+        release_url: release.html_url.clone().or_else(|| Some(repo.github_url())),
+        published_at: release
+            .published_at
+            .as_ref()
+            .map(|value| value.to_rfc3339()),
+        asset_name: Some(asset_name),
+        launch_path,
+        system_package_name: app.system_package_name.clone(),
+        system_package_manager: app.system_package_manager,
+        management_kind: Some(management_kind),
+        install_path: app.install_path.display().to_string(),
+        install_type: format!("{:?}", app.install_type),
+        install_path_kind: app.install_path_kind,
+        uninstall_supported: app.uninstall_supported,
+        release_policy: app.release_policy,
+        artifact_sha256: app.artifact_sha256,
+        integrity_status: app.integrity_status,
+        checksum_asset_name: app.checksum_asset_name,
+        rollback: app.rollback.as_ref().map(RollbackSnapshotView::from),
+        release_direction: direction,
+        recent_activities: Vec::new(),
+    }
+}
+
+fn build_failed_installed_view(
+    app: InstalledApp,
+    repo: RepoRef,
+    reason: Option<String>,
+    language: Language,
+) -> ManagedAppView {
+    let management_kind = management_kind_for_app(&app);
+    let launch_path = resolve_launch_path(&app).map(|value| value.display().to_string());
+    ManagedAppView {
+        id: app.id,
+        name: app.name,
+        current_version: app.installed_version,
+        latest_version: tr_owned(language, "Unknown", "未知"),
+        status: AppStatus::Failed,
+        source: "GitHub".to_string(),
+        release_title: Some(tr_owned(
             language,
-        ),
+            "Unable to load release",
+            "无法加载 release",
+        )),
+        release_note: reason,
+        release_url: Some(repo.github_url()),
+        published_at: None,
+        asset_name: None,
+        launch_path,
+        system_package_name: app.system_package_name.clone(),
+        system_package_manager: app.system_package_manager,
+        management_kind: Some(management_kind),
+        install_path: app.install_path.display().to_string(),
+        install_type: format!("{:?}", app.install_type),
+        install_path_kind: app.install_path_kind,
+        uninstall_supported: app.uninstall_supported,
+        release_policy: app.release_policy,
+        artifact_sha256: app.artifact_sha256,
+        integrity_status: app.integrity_status,
+        checksum_asset_name: app.checksum_asset_name,
+        rollback: app.rollback.as_ref().map(RollbackSnapshotView::from),
+        release_direction: ReleaseDirection::Unknown,
+        recent_activities: Vec::new(),
     }
 }
 
@@ -599,6 +969,12 @@ fn build_no_release_installed_view(
         install_type: format!("{:?}", app.install_type),
         install_path_kind: app.install_path_kind,
         uninstall_supported: app.uninstall_supported,
+        release_policy: app.release_policy,
+        artifact_sha256: app.artifact_sha256,
+        integrity_status: app.integrity_status,
+        checksum_asset_name: app.checksum_asset_name,
+        rollback: app.rollback.as_ref().map(RollbackSnapshotView::from),
+        release_direction: ReleaseDirection::Unknown,
         recent_activities: Vec::new(),
     }
 }
@@ -618,9 +994,18 @@ fn render_tracked_repo(repo: RepoRef, release: Release, language: Language) -> M
         release_note: release
             .release_note()
             .map(|note| note.to_string())
-            .or_else(|| Some(tr_owned(language, "This release does not include a release note.", "这个 release 没有填写 release note。"))),
+            .or_else(|| {
+                Some(tr_owned(
+                    language,
+                    "This release does not include a release note.",
+                    "这个 release 没有填写 release note。",
+                ))
+            }),
         release_url: release.html_url.clone().or_else(|| Some(repo.github_url())),
-        published_at: release.published_at.as_ref().map(|value| value.to_rfc3339()),
+        published_at: release
+            .published_at
+            .as_ref()
+            .map(|value| value.to_rfc3339()),
         asset_name: matched.map(|asset| asset.asset.name),
         launch_path: None,
         system_package_name: None,
@@ -630,6 +1015,12 @@ fn render_tracked_repo(repo: RepoRef, release: Release, language: Language) -> M
         install_type: "Unknown".to_string(),
         install_path_kind: InstallPathKind::Unknown,
         uninstall_supported: false,
+        release_policy: ReleasePolicy::default(),
+        artifact_sha256: None,
+        integrity_status: None,
+        checksum_asset_name: None,
+        rollback: None,
+        release_direction: ReleaseDirection::Unknown,
         recent_activities: Vec::new(),
     }
 }
@@ -660,6 +1051,12 @@ fn build_no_release_tracked_view(repo: RepoRef, language: Language) -> ManagedAp
         install_type: "Unknown".to_string(),
         install_path_kind: InstallPathKind::Unknown,
         uninstall_supported: false,
+        release_policy: ReleasePolicy::default(),
+        artifact_sha256: None,
+        integrity_status: None,
+        checksum_asset_name: None,
+        rollback: None,
+        release_direction: ReleaseDirection::Unknown,
         recent_activities: Vec::new(),
     }
 }
@@ -678,7 +1075,11 @@ fn build_failed_view(
         latest_version: tr_owned(language, "Unknown", "未知"),
         status: AppStatus::Failed,
         source: "GitHub".to_string(),
-        release_title: Some(tr_owned(language, "Unable to load release", "无法加载 release")),
+        release_title: Some(tr_owned(
+            language,
+            "Unable to load release",
+            "无法加载 release",
+        )),
         release_note: reason,
         release_url,
         published_at: None,
@@ -691,11 +1092,20 @@ fn build_failed_view(
         install_type: "Unknown".to_string(),
         install_path_kind: InstallPathKind::Unknown,
         uninstall_supported: false,
+        release_policy: ReleasePolicy::default(),
+        artifact_sha256: None,
+        integrity_status: None,
+        checksum_asset_name: None,
+        rollback: None,
+        release_direction: ReleaseDirection::Unknown,
         recent_activities: Vec::new(),
     }
 }
 
-async fn add_repo_to_tracking(app: &tauri::AppHandle, repo_input: &str) -> Result<Vec<ManagedAppView>> {
+async fn add_repo_to_tracking(
+    app: &tauri::AppHandle,
+    repo_input: &str,
+) -> Result<Vec<ManagedAppView>> {
     let repo = RepoRef::parse(repo_input)?;
     let store = TrackedRepoStore::default()?;
     store.upsert(&repo.id())?;
@@ -703,26 +1113,117 @@ async fn add_repo_to_tracking(app: &tauri::AppHandle, repo_input: &str) -> Resul
     build_dashboard(app, 0).await
 }
 
-async fn install_repo_to_tracking(app: &tauri::AppHandle, repo_input: &str) -> Result<Vec<ManagedAppView>> {
-    let repo = RepoRef::parse(repo_input)?;
+async fn install_repo_to_tracking(
+    app: &tauri::AppHandle,
+    preview: &InstallPlanView,
+) -> Result<Vec<ManagedAppView>> {
+    let repo = RepoRef::parse(&preview.repo_id)?;
     let runtime_config = runtime_config()?;
     let language = ui_language(&runtime_config);
-    let client = release_client(Some(&runtime_config))?;
-    let release = client
-        .latest_release(&repo)
-        .await
-        .with_context(|| format!("failed to fetch latest release for {}", repo.id()))?;
-
-    let matched = AssetMatcher::current().select_best(&release)?;
-    let plan = InstallPlan::from_match(&repo, &release, &matched, language);
     let store = ManifestStore::default()?;
+    let current_app = store
+        .load()?
+        .apps
+        .into_iter()
+        .find(|installed| installed.id == repo.id());
+    let selection_guard = preview
+        .selection_guard
+        .as_ref()
+        .context("stale install preview: selection guard is missing")?;
+    selection_guard.validate(current_app.as_ref())?;
+    let target_channel = preview
+        .target_policy
+        .as_ref()
+        .map(|policy| policy.channel)
+        .unwrap_or_default();
+
+    // Rebuild every release-derived field after confirmation. The frontend
+    // returns the path-free preview as identity, never executable URLs or paths.
+    let plan = build_install_plan(
+        &repo.id(),
+        Some(&preview.version),
+        target_channel,
+        None,
+        None,
+        None,
+    )
+    .await?;
+    let rebuilt = InstallPlanView::from(&plan);
+    ensure_install_preview_matches(preview, &rebuilt)?;
     let reporter = task_progress_reporter(app);
-    install_from_plan(&plan, &store, None, Some(&runtime_config), language, reporter).await?;
+    install_from_plan(
+        &plan,
+        &store,
+        None,
+        Some(&runtime_config),
+        language,
+        reporter,
+    )
+    .await?;
 
     build_dashboard(app, 0).await
 }
 
-async fn uninstall_repo_from_tracking(app: &tauri::AppHandle, repo_input: &str) -> Result<Vec<ManagedAppView>> {
+async fn mutate_release_policy_and_reload(
+    app: &tauri::AppHandle,
+    repo_input: &str,
+    mutation: PolicyMutation,
+) -> Result<Vec<ManagedAppView>> {
+    let repo = RepoRef::parse(repo_input)?;
+    ManifestStore::default()?.mutate_release_policy(&repo.id(), mutation)?;
+    build_dashboard(app, 0).await
+}
+
+fn build_rollback_preview(repo_input: &str) -> Result<RollbackPreview> {
+    let repo = RepoRef::parse(repo_input)?;
+    let manifest = ManifestStore::default()?.load()?;
+    let app = manifest
+        .apps
+        .iter()
+        .find(|installed| installed.id == repo.id())
+        .with_context(|| format!("no managed app matched {}", repo.id()))?;
+    if !matches!(app.install_path_kind, InstallPathKind::ManagedPath) {
+        anyhow::bail!("only managed-path installs can be rolled back: {}", app.id);
+    }
+    let snapshot = app
+        .rollback
+        .as_ref()
+        .with_context(|| format!("{} does not have a rollback snapshot", app.id))?;
+    Ok(RollbackPreview {
+        repo_id: app.id.clone(),
+        active_version: app.installed_version.clone(),
+        snapshot_version: snapshot.version.clone(),
+        snapshot_path: snapshot.snapshot_path.clone(),
+    })
+}
+
+async fn rollback_repo_from_preview(
+    app_handle: &tauri::AppHandle,
+    preview: &RollbackPreview,
+) -> Result<Vec<ManagedAppView>> {
+    let repo = RepoRef::parse(&preview.repo_id)?;
+    let store = ManifestStore::default()?;
+    let manifest = store.load()?;
+    let app = manifest
+        .apps
+        .iter()
+        .find(|installed| installed.id == repo.id())
+        .with_context(|| format!("no managed app matched {}", repo.id()))?;
+    // Client-provided path data is used only for equality against the current
+    // manifest. Core receives a guard constructed from that trusted record.
+    let guard = rollback_guard_from_preview(app, preview)?;
+    let runtime_config = runtime_config()?;
+    let language = ui_language(&runtime_config);
+    let reporter = task_progress_reporter(app_handle);
+    core_rollback_repo_guarded(&store, &repo.id(), &guard, language, reporter)?
+        .with_context(|| format!("no managed app matched {}", repo.id()))?;
+    build_dashboard(app_handle, 0).await
+}
+
+async fn uninstall_repo_from_tracking(
+    app: &tauri::AppHandle,
+    repo_input: &str,
+) -> Result<Vec<ManagedAppView>> {
     let repo = RepoRef::parse(repo_input)?;
     let runtime_config = runtime_config()?;
     let language = ui_language(&runtime_config);
@@ -802,7 +1303,16 @@ fn open_install_location_in_system(path: &str, install_path_kind: InstallPathKin
     open_target_with_platform(&target)
 }
 
-fn resolve_open_install_location_target(path: &Path, install_path_kind: InstallPathKind) -> Result<PathBuf> {
+fn open_installer_folder_in_system(path: &str) -> Result<()> {
+    let target = resolve_installer_folder_target(Path::new(path))?;
+    let target = target.to_string_lossy().into_owned();
+    open_target_with_platform(&target)
+}
+
+fn resolve_open_install_location_target(
+    path: &Path,
+    install_path_kind: InstallPathKind,
+) -> Result<PathBuf> {
     match install_path_kind {
         InstallPathKind::ManagedPath => {
             if path.is_dir() {
@@ -816,6 +1326,12 @@ fn resolve_open_install_location_target(path: &Path, install_path_kind: InstallP
         InstallPathKind::SystemInstaller => Ok(path.to_path_buf()),
         InstallPathKind::Unknown => anyhow::bail!("install path kind is unknown"),
     }
+}
+
+fn resolve_installer_folder_target(path: &Path) -> Result<PathBuf> {
+    path.parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| anyhow::anyhow!("installer path {} has no parent", path.display()))
 }
 
 fn open_app_in_system(repo_input: &str) -> Result<()> {
@@ -846,8 +1362,191 @@ fn open_system_uninstall_settings_in_system() -> Result<()> {
     }
 }
 
+const MAX_RELEASE_PAGES: u32 = 20;
+const MAX_RELEASES: usize = 2_000;
+
+/// Loads a bounded catalog while letting the caller define when enough release
+/// metadata has arrived. The same helper powers version listing and policy
+/// selection so draft-heavy pages and pins beyond page one behave consistently.
+async fn load_release_catalog_with<F, Fut, S>(
+    mut fetch_page: F,
+    mut should_stop: S,
+) -> Result<Vec<Release>>
+where
+    F: FnMut(u32) -> Fut,
+    Fut: Future<Output = Result<ReleasePage>>,
+    S: FnMut(&[Release]) -> bool,
+{
+    let mut page_number = 1;
+    let mut releases = Vec::new();
+    let mut page_tag_sets = HashSet::new();
+
+    loop {
+        let page = fetch_page(page_number).await?;
+        if page.releases.is_empty() {
+            break;
+        }
+
+        let mut tag_set = page
+            .releases
+            .iter()
+            .map(|release| release.tag_name.clone())
+            .collect::<Vec<_>>();
+        tag_set.sort();
+        tag_set.dedup();
+        if !page_tag_sets.insert(tag_set) {
+            anyhow::bail!("repeated release page tag set at page {page_number}");
+        }
+        if releases.len() + page.releases.len() > MAX_RELEASES {
+            anyhow::bail!("release catalog exceeded maximum {MAX_RELEASES} releases");
+        }
+
+        let has_next_page = page.has_next_page;
+        releases.extend(page.releases);
+        if should_stop(&releases) || !has_next_page {
+            break;
+        }
+        if page_number >= MAX_RELEASE_PAGES {
+            anyhow::bail!("release catalog exceeded maximum {MAX_RELEASE_PAGES} pages");
+        }
+        page_number += 1;
+    }
+
+    Ok(releases)
+}
+
+fn release_catalog_complete_for_selection(
+    releases: &[Release],
+    installed: Option<&InstalledApp>,
+    manual_version: Option<&str>,
+    new_install_channel: ReleaseChannel,
+) -> bool {
+    let new_install_policy = ReleasePolicy {
+        channel: new_install_channel,
+        ..ReleasePolicy::default()
+    };
+    let policy = installed
+        .map(|app| &app.release_policy)
+        .unwrap_or(&new_install_policy);
+    let current_version = installed.map(|app| app.installed_version.as_str());
+    let Ok(selection) = ReleaseSelector::select(releases, policy, current_version, manual_version)
+    else {
+        return false;
+    };
+
+    installed.is_none_or(|app| {
+        app.installed_version == selection.release.tag_name
+            || releases
+                .iter()
+                .any(|release| release.tag_name == app.installed_version)
+    })
+}
+
+fn select_tracked_release(releases: &[Release]) -> Result<ReleaseSelection> {
+    Ok(ReleaseSelector::select(
+        releases,
+        &ReleasePolicy::default(),
+        None,
+        None,
+    )?)
+}
+
+async fn load_release_catalog_for_selection(
+    client: &ReleaseClient,
+    repo: &RepoRef,
+    installed: Option<&InstalledApp>,
+    manual_version: Option<&str>,
+    new_install_channel: ReleaseChannel,
+) -> Result<Vec<Release>> {
+    load_release_catalog_with(
+        |page| client.releases_page(repo, page, 100),
+        |releases| {
+            release_catalog_complete_for_selection(
+                releases,
+                installed,
+                manual_version,
+                new_install_channel,
+            )
+        },
+    )
+    .await
+}
+
+fn release_versions_from_catalog(releases: &[Release]) -> Vec<ReleaseVersionView> {
+    releases
+        .iter()
+        .filter(|release| !release.draft)
+        .take(100)
+        .map(|release| ReleaseVersionView {
+            tag_name: release.tag_name.clone(),
+            name: release.name.clone(),
+            prerelease: release.prerelease,
+            published_at: release
+                .published_at
+                .as_ref()
+                .map(|published_at| published_at.to_rfc3339()),
+        })
+        .collect()
+}
+
+fn build_plan_from_releases(
+    repo: &RepoRef,
+    releases: &[Release],
+    installed: Option<&InstalledApp>,
+    manual_version: Option<&str>,
+    new_install_channel: ReleaseChannel,
+    matcher: &AssetMatcher,
+    integrity: IntegrityPlan,
+    language: Language,
+) -> Result<InstallPlan> {
+    let policy = installed
+        .map(|app| app.release_policy.clone())
+        .unwrap_or_else(|| ReleasePolicy {
+            channel: new_install_channel,
+            ..ReleasePolicy::default()
+        });
+    let selection = ReleaseSelector::select(
+        releases,
+        &policy,
+        installed.map(|app| app.installed_version.as_str()),
+        manual_version,
+    )?;
+    let matched = matcher.select_best(&selection.release)?;
+    let mut plan = InstallPlan::from_match(repo, &selection.release, &matched, language)
+        .with_release_direction(selection.direction)
+        .with_integrity(integrity);
+    if let Some(app) = installed {
+        plan = plan.with_selection_guard(InstallSelectionGuard::from_app(app));
+    } else {
+        plan = plan
+            .with_selection_guard(InstallSelectionGuard::ExpectedAbsent)
+            .with_target_policy(policy);
+    }
+    Ok(plan)
+}
+
+fn rollback_guard_from_preview(
+    app: &InstalledApp,
+    preview: &RollbackPreview,
+) -> Result<RollbackGuard> {
+    let snapshot = app
+        .rollback
+        .as_ref()
+        .with_context(|| format!("{} does not have a rollback snapshot", app.id))?;
+    if app.id != preview.repo_id
+        || app.installed_version != preview.active_version
+        || snapshot.version != preview.snapshot_version
+        || snapshot.snapshot_path != preview.snapshot_path
+    {
+        anyhow::bail!("stale rollback preview for {}", app.id);
+    }
+    Ok(RollbackGuard::from_app(app))
+}
+
 async fn build_install_plan(
     repo_input: &str,
+    manual_version: Option<&str>,
+    new_install_channel: ReleaseChannel,
     release_fixture: Option<PathBuf>,
     os: Option<UiOs>,
     arch: Option<UiArch>,
@@ -855,14 +1554,22 @@ async fn build_install_plan(
     let repo = RepoRef::parse(repo_input)?;
     let runtime_config = runtime_config()?;
     let language = ui_language(&runtime_config);
-    let release = match release_fixture {
-        Some(path) => read_fixture_release(&path)?,
+    let manifest = ManifestStore::default()?.load()?;
+    let installed = manifest.apps.iter().find(|app| app.id == repo.id());
+    let (releases, client) = match release_fixture {
+        Some(path) => (read_fixture_releases(&path)?, None),
         None => {
             let client = release_client(Some(&runtime_config))?;
-            client
-                .latest_release(&repo)
-                .await
-                .with_context(|| format!("failed to fetch latest release for {}", repo.id()))?
+            let releases = load_release_catalog_for_selection(
+                &client,
+                &repo,
+                installed,
+                manual_version,
+                new_install_channel,
+            )
+            .await
+            .with_context(|| format!("failed to fetch releases for {}", repo.id()))?;
+            (releases, Some(client))
         }
     };
 
@@ -870,8 +1577,37 @@ async fn build_install_plan(
         (Some(os), Some(arch)) => AssetMatcher::new(os.into(), arch.into()),
         _ => AssetMatcher::current(),
     };
-    let matched = matcher.select_best(&release)?;
-    Ok(InstallPlan::from_match(&repo, &release, &matched, language))
+    let mut plan = build_plan_from_releases(
+        &repo,
+        &releases,
+        installed,
+        manual_version,
+        new_install_channel,
+        &matcher,
+        IntegrityPlan::default(),
+        language,
+    )?;
+    if let Some(client) = client.as_ref() {
+        let release = releases
+            .iter()
+            .find(|release| release.tag_name == plan.version)
+            .context("selected release disappeared from the catalog")?;
+        let asset = release
+            .assets
+            .iter()
+            .find(|asset| asset.name == plan.asset_name)
+            .context("selected release asset disappeared from the catalog")?;
+        plan.integrity = IntegrityVerifier::discover(client, release, asset).await?;
+    }
+    if plan.integrity.expected_sha256.is_none() {
+        plan.requires_user_confirmation = true;
+        plan.notes.push(tr_owned(
+            language,
+            "No upstream SHA-256 checksum was found; verify the artifact source before continuing.",
+            "未找到上游 SHA-256 校验值；继续前请确认安装文件来源。",
+        ));
+    }
+    Ok(plan)
 }
 
 fn default_install_path(repo: &RepoRef) -> PathBuf {
@@ -900,6 +1636,102 @@ fn release_client(runtime_config: Option<&Config>) -> Result<ReleaseClient> {
         .map(str::to_string)
         .or_else(|| env::var("HTTPS_PROXY").ok());
     ReleaseClient::new(token.as_deref(), proxy.as_deref())
+}
+
+fn non_empty_config_value(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn github_connectivity_result(
+    ok: bool,
+    message: String,
+    problem: &str,
+    used_token: bool,
+    used_proxy: bool,
+) -> GithubConnectivityTestResult {
+    GithubConnectivityTestResult {
+        ok,
+        message,
+        problem: problem.to_string(),
+        used_token,
+        used_proxy,
+    }
+}
+
+fn classify_connectivity_problem(message: &str, used_proxy: bool) -> &'static str {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("proxy") {
+        return "proxy";
+    }
+    if lower.contains("401 unauthorized")
+        || lower.contains("bad credentials")
+        || lower.contains("authentication")
+        || lower.contains("requires authentication")
+    {
+        return "auth";
+    }
+    if is_rate_limit_connectivity_message(&lower) {
+        return "rateLimit";
+    }
+    if lower.contains("timeout")
+        || lower.contains("timed out")
+        || lower.contains("failed to connect")
+        || lower.contains("connection refused")
+        || lower.contains("connection reset")
+        || lower.contains("dns")
+        || lower.contains("failed to request")
+    {
+        return if used_proxy { "proxy" } else { "network" };
+    }
+    "unknown"
+}
+
+fn is_rate_limit_connectivity_message(lower_message: &str) -> bool {
+    lower_message.contains("api rate limit exceeded")
+        || lower_message.contains("secondary rate limit")
+        || lower_message.contains("rate limit remaining 0")
+        || lower_message.contains("x-ratelimit-remaining: 0")
+}
+
+fn sanitize_connectivity_message(
+    message: &str,
+    github_token: Option<&str>,
+    proxy_url: Option<&str>,
+) -> String {
+    let mut sanitized = message.replace('\n', " ");
+
+    if let Some(token) = github_token.filter(|value| !value.trim().is_empty()) {
+        sanitized = sanitized.replace(token, "[token]");
+    }
+
+    if let Some(proxy) = proxy_url.filter(|value| !value.trim().is_empty()) {
+        sanitized = sanitized.replace(proxy, "[proxy]");
+
+        // reqwest/url 错误有时只包含代理的 host 或 host:port；这里也做替换，避免泄漏本地代理地址。
+        if let Ok(parsed) = url::Url::parse(proxy) {
+            if let Some(host) = parsed.host_str() {
+                if let Some(port) = parsed.port() {
+                    sanitized = sanitized.replace(&format!("{host}:{port}"), "[proxy]");
+                }
+                sanitized = sanitized.replace(host, "[proxy]");
+            }
+            if !parsed.username().is_empty() {
+                sanitized = sanitized.replace(parsed.username(), "[proxy-user]");
+            }
+            if let Some(password) = parsed.password() {
+                sanitized = sanitized.replace(password, "[proxy-password]");
+            }
+        }
+    }
+
+    let trimmed = sanitized.trim();
+    if trimmed.is_empty() {
+        "GitHub connectivity check failed".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1023,7 +1855,8 @@ fn open_target_with_platform(target: &str) -> Result<()> {
 fn launch_target_with_platform(target: &Path) -> Result<()> {
     #[cfg(target_os = "windows")]
     {
-        open_with_windows_shell(target.as_os_str()).with_context(|| format!("failed to launch {}", target.display()))?;
+        open_with_windows_shell(target.as_os_str())
+            .with_context(|| format!("failed to launch {}", target.display()))?;
         return Ok(());
     }
 
@@ -1080,7 +1913,10 @@ fn open_with_windows_shell(target: impl AsRef<std::ffi::OsStr>) -> Result<()> {
     // Windows documents ShellExecuteW return values <= 32 as failure codes.
     let result_code = result.0 as usize;
     if result_code <= 32 {
-        anyhow::bail!("Windows shell failed to open {}", target.as_ref().to_string_lossy());
+        anyhow::bail!(
+            "Windows shell failed to open {}",
+            target.as_ref().to_string_lossy()
+        );
     }
 
     Ok(())
@@ -1106,11 +1942,14 @@ fn resolve_launch_path(app: &releasedock_core::manifest::InstalledApp) -> Option
     )
 }
 
-fn management_kind_for_app(app: &releasedock_core::manifest::InstalledApp) -> InstallManagementKind {
+fn management_kind_for_app(
+    app: &releasedock_core::manifest::InstalledApp,
+) -> InstallManagementKind {
     match app.install_type {
-        InstallType::AppImage | InstallType::PortableArchive | InstallType::Archive | InstallType::Executable => {
-            InstallManagementKind::ManagedLocal
-        }
+        InstallType::AppImage
+        | InstallType::PortableArchive
+        | InstallType::Archive
+        | InstallType::Executable => InstallManagementKind::ManagedLocal,
         InstallType::LinuxPackage => InstallManagementKind::SystemPackage,
         InstallType::WindowsInstaller => InstallManagementKind::ExternalInstaller,
         InstallType::Unknown => {
@@ -1123,11 +1962,22 @@ fn management_kind_for_app(app: &releasedock_core::manifest::InstalledApp) -> In
     }
 }
 
-fn read_fixture_release(path: &PathBuf) -> Result<Release> {
+fn read_fixture_releases(path: &PathBuf) -> Result<Vec<Release>> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("failed to read release fixture {}", path.display()))?;
-    serde_json::from_str(&content)
-        .with_context(|| format!("failed to parse release fixture {}", path.display()))
+    let fixture: DesktopReleaseFixture = serde_json::from_str(&content)
+        .with_context(|| format!("failed to parse release fixture {}", path.display()))?;
+    Ok(match fixture {
+        DesktopReleaseFixture::Many(releases) => releases,
+        DesktopReleaseFixture::One(release) => vec![release],
+    })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum DesktopReleaseFixture {
+    Many(Vec<Release>),
+    One(Release),
 }
 
 fn format_error(error: anyhow::Error) -> String {
@@ -1141,12 +1991,583 @@ fn format_error(error: anyhow::Error) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{cell::RefCell, collections::VecDeque, future::ready, path::PathBuf, rc::Rc};
 
-    use releasedock_core::asset_matcher::InstallType;
-    use releasedock_core::manifest::{InstallPathKind, InstalledApp};
+    use releasedock_core::{
+        asset_matcher::{Architecture, AssetMatcher, InstallType, OperatingSystem},
+        config::Language,
+        install_plan::InstallSelectionGuard,
+        integrity::{IntegrityPlan, IntegrityStatus},
+        manifest::{InstallPathKind, InstalledApp, RollbackSnapshot},
+        release::{Release, ReleaseAsset, ReleasePage},
+        release_policy::{ReleaseChannel, ReleaseDirection, ReleasePolicy, ReleaseSelector},
+        repo::RepoRef,
+    };
 
-    use super::{management_kind_for_app, resolve_open_install_location_target, validate_github_url};
+    use super::{
+        InstallPlanView, RollbackPreview, build_plan_from_releases, classify_connectivity_problem,
+        ensure_install_preview_matches, load_release_catalog_with, management_kind_for_app,
+        preview_install, release_catalog_complete_for_selection, release_versions_from_catalog,
+        render_app, resolve_installer_folder_target, resolve_open_install_location_target,
+        rollback_guard_from_preview, sanitize_connectivity_message, select_tracked_release,
+        validate_github_url,
+    };
+
+    #[test]
+    fn explicit_version_plan_carries_core_direction_integrity_and_selection_guard() {
+        let repo = RepoRef::parse("owner/project").unwrap();
+        let releases = vec![
+            release_with_asset("v3.0.0", false),
+            release_with_asset("v2.0.0", false),
+            release_with_asset("v1.0.0", false),
+        ];
+        let installed = InstalledApp::new(
+            "owner/project",
+            "project",
+            "v2.0.0",
+            "project-linux-x86_64.AppImage",
+            PathBuf::from("/managed/project.AppImage"),
+        );
+        let integrity = IntegrityPlan {
+            expected_sha256: Some("a".repeat(64)),
+            checksum_asset_name: Some("SHA256SUMS".to_string()),
+            status: IntegrityStatus::RecordedOnly,
+        };
+
+        let plan = build_plan_from_releases(
+            &repo,
+            &releases,
+            Some(&installed),
+            Some("v1.0.0"),
+            ReleaseChannel::Stable,
+            &AssetMatcher::new(OperatingSystem::Linux, Architecture::X64),
+            integrity.clone(),
+            Language::En,
+        )
+        .unwrap();
+
+        assert_eq!(plan.version, "v1.0.0");
+        assert_eq!(plan.release_direction, ReleaseDirection::Downgrade);
+        assert_eq!(plan.integrity, integrity);
+        assert!(plan.selection_guard.is_some());
+        assert!(plan.target_policy.is_none());
+    }
+
+    #[test]
+    fn new_install_plan_carries_selected_channel_as_target_policy() {
+        let repo = RepoRef::parse("owner/project").unwrap();
+        let releases = vec![release_with_asset("v2.0.0-beta.1", true)];
+
+        let plan = build_plan_from_releases(
+            &repo,
+            &releases,
+            None,
+            Some("v2.0.0-beta.1"),
+            ReleaseChannel::Prerelease,
+            &AssetMatcher::new(OperatingSystem::Linux, Architecture::X64),
+            IntegrityPlan::default(),
+            Language::En,
+        )
+        .unwrap();
+
+        assert_eq!(
+            plan.target_policy.as_ref().unwrap().channel,
+            ReleaseChannel::Prerelease
+        );
+        assert_eq!(
+            plan.selection_guard,
+            Some(InstallSelectionGuard::ExpectedAbsent)
+        );
+    }
+
+    #[test]
+    fn desktop_install_preview_omits_download_and_install_paths() {
+        let repo = RepoRef::parse("owner/project").unwrap();
+        let releases = vec![release_with_asset("v2.0.0", false)];
+        let plan = build_plan_from_releases(
+            &repo,
+            &releases,
+            None,
+            Some("v2.0.0"),
+            ReleaseChannel::Stable,
+            &AssetMatcher::new(OperatingSystem::Linux, Architecture::X64),
+            IntegrityPlan::default(),
+            Language::En,
+        )
+        .unwrap();
+
+        let serialized = serde_json::to_value(InstallPlanView::from(&plan)).unwrap();
+
+        assert!(serialized.get("download_url").is_none());
+        assert!(serialized.get("repo_url").is_none());
+        assert!(serialized.get("install_path").is_none());
+        assert_eq!(serialized["version"], "v2.0.0");
+    }
+
+    #[test]
+    fn install_preview_round_trips_and_rejects_every_security_relevant_change() {
+        let repo = RepoRef::parse("owner/project").unwrap();
+        let releases = vec![release_with_asset("v2.0.0", false)];
+        let plan = build_plan_from_releases(
+            &repo,
+            &releases,
+            None,
+            Some("v2.0.0"),
+            ReleaseChannel::Stable,
+            &AssetMatcher::new(OperatingSystem::Linux, Architecture::X64),
+            IntegrityPlan::default(),
+            Language::En,
+        )
+        .unwrap();
+        let preview = InstallPlanView::from(&plan);
+        let restored: InstallPlanView =
+            serde_json::from_value(serde_json::to_value(&preview).unwrap()).unwrap();
+        assert_eq!(restored, preview);
+
+        let mut notes_only = preview.clone();
+        notes_only.notes.push("server copy may change".to_string());
+        assert!(ensure_install_preview_matches(&preview, &notes_only).is_ok());
+
+        let mut changed = Vec::new();
+        let mut value = preview.clone();
+        value.repo_id = "other/project".to_string();
+        changed.push(value);
+        let mut value = preview.clone();
+        value.version = "v3.0.0".to_string();
+        changed.push(value);
+        let mut value = preview.clone();
+        value.asset_name = "other.AppImage".to_string();
+        changed.push(value);
+        let mut value = preview.clone();
+        value.install_type = InstallType::Archive;
+        changed.push(value);
+        let mut value = preview.clone();
+        value.management_kind = super::InstallManagementKind::SystemPackage;
+        changed.push(value);
+        let mut value = preview.clone();
+        value.system_package_manager = Some(super::SystemPackageManager::Debian);
+        changed.push(value);
+        let mut value = preview.clone();
+        value.requires_user_confirmation = !value.requires_user_confirmation;
+        changed.push(value);
+        let mut value = preview.clone();
+        value.integrity.expected_sha256 = Some("a".repeat(64));
+        changed.push(value);
+        let mut value = preview.clone();
+        value.release_direction = ReleaseDirection::Downgrade;
+        changed.push(value);
+        let mut value = preview.clone();
+        value.selection_guard = None;
+        changed.push(value);
+        let mut value = preview.clone();
+        value.target_policy = Some(ReleasePolicy {
+            channel: ReleaseChannel::Prerelease,
+            ..ReleasePolicy::default()
+        });
+        changed.push(value);
+
+        for rebuilt in changed {
+            let error = ensure_install_preview_matches(&preview, &rebuilt).unwrap_err();
+            assert!(error.to_string().contains("stale install preview"));
+        }
+    }
+
+    #[test]
+    fn production_preview_command_accepts_only_selection_inputs() {
+        drop(preview_install(
+            "owner/project".to_string(),
+            Some("v2.0.0".to_string()),
+            Some(ReleaseChannel::Stable),
+        ));
+    }
+
+    #[tokio::test]
+    async fn release_catalog_loader_collects_one_hundred_non_draft_across_pages() {
+        let mut first = (0..75)
+            .map(|index| release_with_asset(&format!("v1.{index}.0"), false))
+            .collect::<Vec<_>>();
+        first.extend((0..25).map(|index| {
+            let mut release = release_with_asset(&format!("draft-{index}"), false);
+            release.draft = true;
+            release
+        }));
+        let second = (0..40)
+            .map(|index| release_with_asset(&format!("v0.{index}.0"), false))
+            .collect::<Vec<_>>();
+        let pages = Rc::new(RefCell::new(VecDeque::from([
+            ReleasePage {
+                releases: first,
+                has_next_page: true,
+            },
+            ReleasePage {
+                releases: second,
+                has_next_page: false,
+            },
+        ])));
+        let fetch_count = Rc::new(RefCell::new(0));
+
+        let catalog = load_release_catalog_with(
+            {
+                let pages = pages.clone();
+                let fetch_count = fetch_count.clone();
+                move |_| {
+                    *fetch_count.borrow_mut() += 1;
+                    ready(Ok::<_, anyhow::Error>(
+                        pages.borrow_mut().pop_front().unwrap(),
+                    ))
+                }
+            },
+            |releases| releases.iter().filter(|release| !release.draft).count() >= 100,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(*fetch_count.borrow(), 2);
+        assert_eq!(release_versions_from_catalog(&catalog).len(), 100);
+    }
+
+    #[tokio::test]
+    async fn release_catalog_loader_rejects_repeated_pages() {
+        let page = ReleasePage {
+            releases: vec![release_with_asset("v1.0.0", false)],
+            has_next_page: true,
+        };
+        let pages = Rc::new(RefCell::new(VecDeque::from([page.clone(), page])));
+
+        let error = load_release_catalog_with(
+            {
+                let pages = pages.clone();
+                move |_| {
+                    ready(Ok::<_, anyhow::Error>(
+                        pages.borrow_mut().pop_front().unwrap(),
+                    ))
+                }
+            },
+            |_| false,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("repeated release page"));
+    }
+
+    #[tokio::test]
+    async fn release_catalog_loader_is_bounded_to_twenty_pages() {
+        let pages = Rc::new(RefCell::new(VecDeque::from(
+            (1..=20)
+                .map(|page| ReleasePage {
+                    releases: vec![release_with_asset(&format!("v{page}.0.0"), false)],
+                    has_next_page: true,
+                })
+                .collect::<Vec<_>>(),
+        )));
+
+        let error = load_release_catalog_with(
+            {
+                let pages = pages.clone();
+                move |_| {
+                    ready(Ok::<_, anyhow::Error>(
+                        pages.borrow_mut().pop_front().unwrap(),
+                    ))
+                }
+            },
+            |_| false,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("maximum 20 pages"));
+    }
+
+    #[tokio::test]
+    async fn policy_catalog_loader_reaches_a_pin_beyond_the_first_page() {
+        let mut installed = InstalledApp::new(
+            "owner/project",
+            "project",
+            "v3.0.0",
+            "project-linux-x86_64.AppImage",
+            PathBuf::from("/managed/project.AppImage"),
+        );
+        installed.release_policy.pinned_version = Some("v1.0.0".to_string());
+        let pages = Rc::new(RefCell::new(VecDeque::from([
+            ReleasePage {
+                releases: vec![
+                    release_with_asset("v3.0.0", false),
+                    release_with_asset("v2.0.0", false),
+                ],
+                has_next_page: true,
+            },
+            ReleasePage {
+                releases: vec![release_with_asset("v1.0.0", false)],
+                has_next_page: false,
+            },
+        ])));
+
+        let catalog = load_release_catalog_with(
+            {
+                let pages = pages.clone();
+                move |_| {
+                    ready(Ok::<_, anyhow::Error>(
+                        pages.borrow_mut().pop_front().unwrap(),
+                    ))
+                }
+            },
+            |releases| {
+                release_catalog_complete_for_selection(
+                    releases,
+                    Some(&installed),
+                    None,
+                    ReleaseChannel::Stable,
+                )
+            },
+        )
+        .await
+        .unwrap();
+        let selection = ReleaseSelector::select(
+            &catalog,
+            &installed.release_policy,
+            Some(&installed.installed_version),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(selection.release.tag_name, "v1.0.0");
+        assert_eq!(selection.direction, ReleaseDirection::Downgrade);
+    }
+
+    #[tokio::test]
+    async fn automatic_stable_selection_continues_past_a_prerelease_only_page() {
+        let installed = InstalledApp::new(
+            "owner/project",
+            "project",
+            "v1.0.0",
+            "project-linux-x86_64.AppImage",
+            PathBuf::from("/managed/project.AppImage"),
+        );
+        let pages = Rc::new(RefCell::new(VecDeque::from([
+            ReleasePage {
+                releases: vec![release_with_asset("v3.0.0-beta.1", true)],
+                has_next_page: true,
+            },
+            ReleasePage {
+                releases: vec![
+                    release_with_asset("v2.0.0", false),
+                    release_with_asset("v1.0.0", false),
+                ],
+                has_next_page: false,
+            },
+        ])));
+
+        let catalog = load_release_catalog_with(
+            {
+                let pages = pages.clone();
+                move |_| {
+                    ready(Ok::<_, anyhow::Error>(
+                        pages.borrow_mut().pop_front().unwrap(),
+                    ))
+                }
+            },
+            |releases| {
+                release_catalog_complete_for_selection(
+                    releases,
+                    Some(&installed),
+                    None,
+                    ReleaseChannel::Stable,
+                )
+            },
+        )
+        .await
+        .unwrap();
+        let selection = ReleaseSelector::select(
+            &catalog,
+            &installed.release_policy,
+            Some(&installed.installed_version),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(selection.release.tag_name, "v2.0.0");
+        assert_eq!(selection.direction, ReleaseDirection::Upgrade);
+    }
+
+    #[tokio::test]
+    async fn automatic_selection_continues_when_the_first_page_is_ignored() {
+        let mut installed = InstalledApp::new(
+            "owner/project",
+            "project",
+            "v1.0.0",
+            "project-linux-x86_64.AppImage",
+            PathBuf::from("/managed/project.AppImage"),
+        );
+        installed.release_policy.ignored_versions = vec!["v3.0.0".to_string()];
+        let pages = Rc::new(RefCell::new(VecDeque::from([
+            ReleasePage {
+                releases: vec![release_with_asset("v3.0.0", false)],
+                has_next_page: true,
+            },
+            ReleasePage {
+                releases: vec![
+                    release_with_asset("v2.0.0", false),
+                    release_with_asset("v1.0.0", false),
+                ],
+                has_next_page: false,
+            },
+        ])));
+
+        let catalog = load_release_catalog_with(
+            {
+                let pages = pages.clone();
+                move |_| {
+                    ready(Ok::<_, anyhow::Error>(
+                        pages.borrow_mut().pop_front().unwrap(),
+                    ))
+                }
+            },
+            |releases| {
+                release_catalog_complete_for_selection(
+                    releases,
+                    Some(&installed),
+                    None,
+                    ReleaseChannel::Stable,
+                )
+            },
+        )
+        .await
+        .unwrap();
+        let selection = ReleaseSelector::select(
+            &catalog,
+            &installed.release_policy,
+            Some(&installed.installed_version),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(selection.release.tag_name, "v2.0.0");
+    }
+
+    #[tokio::test]
+    async fn tracked_selection_continues_past_draft_and_prerelease_only_pages() {
+        let mut draft = release_with_asset("v4.0.0", false);
+        draft.draft = true;
+        let pages = Rc::new(RefCell::new(VecDeque::from([
+            ReleasePage {
+                releases: vec![draft, release_with_asset("v3.0.0-beta.1", true)],
+                has_next_page: true,
+            },
+            ReleasePage {
+                releases: vec![release_with_asset("v2.0.0", false)],
+                has_next_page: false,
+            },
+        ])));
+
+        let catalog = load_release_catalog_with(
+            {
+                let pages = pages.clone();
+                move |_| {
+                    ready(Ok::<_, anyhow::Error>(
+                        pages.borrow_mut().pop_front().unwrap(),
+                    ))
+                }
+            },
+            |releases| {
+                release_catalog_complete_for_selection(releases, None, None, ReleaseChannel::Stable)
+            },
+        )
+        .await
+        .unwrap();
+        let selection = select_tracked_release(&catalog).unwrap();
+
+        assert_eq!(selection.release.tag_name, "v2.0.0");
+    }
+
+    #[test]
+    fn current_release_without_a_platform_asset_uses_installed_asset_metadata() {
+        let mut installed = InstalledApp::new(
+            "owner/project",
+            "project",
+            "v2.0.0",
+            "installed-project.AppImage",
+            PathBuf::from("/managed/project.AppImage"),
+        );
+        installed.install_path_kind = InstallPathKind::ManagedPath;
+        let release = Release::fixture("v2.0.0", Vec::new());
+
+        let view = render_app(
+            installed,
+            RepoRef::parse("owner/project").unwrap(),
+            release,
+            ReleaseDirection::Reinstall,
+            Language::En,
+        );
+
+        assert!(matches!(view.status, super::AppStatus::Current));
+        assert_eq!(
+            view.asset_name.as_deref(),
+            Some("installed-project.AppImage")
+        );
+    }
+
+    #[test]
+    fn release_version_view_excludes_drafts_and_limits_first_page() {
+        let mut releases = (0..101)
+            .map(|index| release_with_asset(&format!("v{index}.0.0"), false))
+            .collect::<Vec<_>>();
+        let mut draft = release_with_asset("v999.0.0", false);
+        draft.draft = true;
+        releases.insert(0, draft);
+
+        let versions = release_versions_from_catalog(&releases);
+
+        assert_eq!(versions.len(), 100);
+        assert!(
+            versions
+                .iter()
+                .all(|version| version.tag_name != "v999.0.0")
+        );
+    }
+
+    #[test]
+    fn rollback_preview_path_is_only_accepted_when_it_matches_manifest_identity() {
+        let mut app = InstalledApp::new(
+            "owner/project",
+            "project",
+            "v2.0.0",
+            "project.AppImage",
+            PathBuf::from("/managed/project.AppImage"),
+        );
+        app.install_path_kind = InstallPathKind::ManagedPath;
+        app.rollback = Some(RollbackSnapshot {
+            version: "v1.0.0".to_string(),
+            asset_name: "project.AppImage".to_string(),
+            install_path: PathBuf::from("/snapshots/one/project.AppImage"),
+            launch_path: None,
+            install_type: InstallType::AppImage,
+            artifact_sha256: None,
+            integrity_status: None,
+            checksum_asset_name: None,
+            snapshot_path: PathBuf::from("/snapshots/one"),
+            installed_at: app.installed_at,
+        });
+        let tampered = RollbackPreview {
+            repo_id: app.id.clone(),
+            active_version: app.installed_version.clone(),
+            snapshot_version: "v1.0.0".to_string(),
+            snapshot_path: PathBuf::from("/arbitrary/client/path"),
+        };
+
+        let error = rollback_guard_from_preview(&app, &tampered).unwrap_err();
+
+        assert!(error.to_string().contains("stale rollback preview"));
+    }
+
+    fn release_with_asset(tag: &str, prerelease: bool) -> Release {
+        let mut release = Release::fixture(
+            tag,
+            vec![ReleaseAsset::fixture("project-linux-x86_64.AppImage")],
+        );
+        release.prerelease = prerelease;
+        release
+    }
 
     #[test]
     fn allows_github_release_pages() {
@@ -1157,9 +2578,75 @@ mod tests {
 
     #[test]
     fn rejects_non_github_urls() {
-        let url = url::Url::parse("https://example.com/releases")
-            .expect("valid URL");
+        let url = url::Url::parse("https://example.com/releases").expect("valid URL");
         assert!(validate_github_url(&url).is_err());
+    }
+
+    #[test]
+    fn sanitizes_connectivity_errors_before_returning_them_to_the_ui() {
+        let message =
+            "failed with token ghp_secret and proxy http://user:pass@proxy.example.com:8080";
+
+        let sanitized = sanitize_connectivity_message(
+            message,
+            Some("ghp_secret"),
+            Some("http://user:pass@proxy.example.com:8080"),
+        );
+
+        assert!(!sanitized.contains("ghp_secret"));
+        assert!(!sanitized.contains("user:pass"));
+        assert!(sanitized.contains("[token]"));
+        assert!(sanitized.contains("[proxy]"));
+    }
+
+    #[test]
+    fn classifies_connectivity_errors_for_actionable_ui_guidance() {
+        assert_eq!(
+            classify_connectivity_problem("failed to configure proxy for GitHub client", true),
+            "proxy"
+        );
+        assert_eq!(
+            classify_connectivity_problem(
+                "GitHub connectivity check request failed with 403 Forbidden: API rate limit exceeded",
+                false,
+            ),
+            "rateLimit"
+        );
+        assert_eq!(
+            classify_connectivity_problem(
+                "GitHub connectivity check request failed with 403 Forbidden: Request forbidden by administrative rules. (rate limit remaining 59)",
+                false,
+            ),
+            "unknown"
+        );
+        assert_eq!(
+            classify_connectivity_problem(
+                "GitHub connectivity check request failed with 403 Forbidden (rate limit remaining 0)",
+                false,
+            ),
+            "rateLimit"
+        );
+        assert_eq!(
+            classify_connectivity_problem(
+                "GitHub connectivity check request failed with 401 Unauthorized: Bad credentials",
+                false,
+            ),
+            "auth"
+        );
+        assert_eq!(
+            classify_connectivity_problem(
+                "failed to request GitHub connectivity check: operation timed out",
+                false,
+            ),
+            "network"
+        );
+        assert_eq!(
+            classify_connectivity_problem(
+                "failed to request GitHub connectivity check: operation timed out",
+                true,
+            ),
+            "proxy"
+        );
     }
 
     #[test]
@@ -1174,7 +2661,10 @@ mod tests {
             InstallPathKind::ManagedPath,
             true,
         );
-        assert!(matches!(management_kind_for_app(&appimage), super::InstallManagementKind::ManagedLocal));
+        assert!(matches!(
+            management_kind_for_app(&appimage),
+            super::InstallManagementKind::ManagedLocal
+        ));
 
         let executable = InstalledApp::with_install_metadata(
             "owner/executable",
@@ -1186,7 +2676,10 @@ mod tests {
             InstallPathKind::ManagedPath,
             true,
         );
-        assert!(matches!(management_kind_for_app(&executable), super::InstallManagementKind::ManagedLocal));
+        assert!(matches!(
+            management_kind_for_app(&executable),
+            super::InstallManagementKind::ManagedLocal
+        ));
 
         let linux_package = InstalledApp::with_install_metadata(
             "owner/package",
@@ -1198,7 +2691,10 @@ mod tests {
             InstallPathKind::SystemInstaller,
             true,
         );
-        assert!(matches!(management_kind_for_app(&linux_package), super::InstallManagementKind::SystemPackage));
+        assert!(matches!(
+            management_kind_for_app(&linux_package),
+            super::InstallManagementKind::SystemPackage
+        ));
 
         let windows_installer = InstalledApp::with_install_metadata(
             "owner/windows",
@@ -1210,7 +2706,10 @@ mod tests {
             InstallPathKind::SystemInstaller,
             false,
         );
-        assert!(matches!(management_kind_for_app(&windows_installer), super::InstallManagementKind::ExternalInstaller));
+        assert!(matches!(
+            management_kind_for_app(&windows_installer),
+            super::InstallManagementKind::ExternalInstaller
+        ));
 
         let unknown_managed = InstalledApp::with_install_metadata(
             "owner/legacy",
@@ -1222,13 +2721,18 @@ mod tests {
             InstallPathKind::ManagedPath,
             true,
         );
-        assert!(matches!(management_kind_for_app(&unknown_managed), super::InstallManagementKind::ManagedLocal));
+        assert!(matches!(
+            management_kind_for_app(&unknown_managed),
+            super::InstallManagementKind::ManagedLocal
+        ));
     }
 
     #[test]
     fn windows_release_build_uses_gui_subsystem() {
-        let source = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"))
-            .expect("read main.rs");
+        let source = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+        )
+        .expect("read main.rs");
         assert!(
             source.contains(r#"cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")"#),
             "main.rs should opt into the Windows GUI subsystem for release builds"
@@ -1237,8 +2741,10 @@ mod tests {
 
     #[test]
     fn windows_open_actions_use_shell_execute_not_cmd() {
-        let source = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"))
-            .expect("read main.rs");
+        let source = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+        )
+        .expect("read main.rs");
         let production_source = source
             .split("#[cfg(test)]")
             .next()
@@ -1265,7 +2771,9 @@ mod tests {
         let executable = tempdir.path().join("releasedock-linux-x64");
         std::fs::write(&executable, b"fake binary").expect("write executable");
 
-        let target = resolve_open_install_location_target(&executable, InstallPathKind::ManagedPath).expect("target");
+        let target =
+            resolve_open_install_location_target(&executable, InstallPathKind::ManagedPath)
+                .expect("target");
         assert_eq!(target, tempdir.path());
     }
 
@@ -1274,7 +2782,9 @@ mod tests {
     fn managed_install_path_keeps_directories() {
         let tempdir = tempfile::tempdir().expect("tempdir");
 
-        let target = resolve_open_install_location_target(tempdir.path(), InstallPathKind::ManagedPath).expect("target");
+        let target =
+            resolve_open_install_location_target(tempdir.path(), InstallPathKind::ManagedPath)
+                .expect("target");
         assert_eq!(target, tempdir.path());
     }
 
@@ -1285,8 +2795,21 @@ mod tests {
         let installer = tempdir.path().join("setup.deb");
         std::fs::write(&installer, b"fake package").expect("write installer");
 
-        let target = resolve_open_install_location_target(&installer, InstallPathKind::SystemInstaller).expect("target");
+        let target =
+            resolve_open_install_location_target(&installer, InstallPathKind::SystemInstaller)
+                .expect("target");
         assert_eq!(target, installer);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn system_installer_folder_opens_parent_directory() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let installer = tempdir.path().join("setup.deb");
+        std::fs::write(&installer, b"fake package").expect("write installer");
+
+        let target = resolve_installer_folder_target(&installer).expect("target");
+        assert_eq!(target, tempdir.path());
     }
 }
 

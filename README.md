@@ -7,7 +7,7 @@ ReleaseDock helps you manage software that you installed from GitHub Releases an
 The project is already usable in its first release:
 
 - Rust core: repository parsing, release data models, release notes, asset matching, install plans, manifests, and runtime configuration.
-- CLI: `install` can use a live GitHub latest release or fixtures, `--json` prints the install plan only, `--yes` skips interactive confirmation, interactive confirmations show the selected management mode, `config` manages the GitHub token, proxy, and install root, `check` compares installed apps with the latest release, `list` reads the manifest, and `update` / `uninstall` use the real execution path.
+- CLI: `releases` browses the bounded GitHub release catalog; `install`, policy-aware `check` / `update`, guarded `rollback`, and `uninstall` use the real lifecycle path. `--json` prints machine-readable plans or reports, `--yes` skips input without hiding previews, and `config` manages the GitHub token, proxy, and install root while redacting saved tokens from `config get`.
 - Desktop GUI: Tauri 2 + React dashboard with real manifest loading, GitHub release refresh, release note viewing, install preview and confirmation, install execution, update actions for managed apps, uninstall and tracking removal, visible install progress, open-app and open-location shortcuts, and a settings page for token, proxy, language, and install root. The details panel now also shows the management mode, system package manager, and recent lifecycle history for installed apps. The default UI language is English, and the task/status strip follows the selected UI language.
 - The sidebar footer shows the product name and subtitle; it does not act as a repository shortcut.
 - Public repositories do not require a token. Private repositories and frequent API calls should use one.
@@ -20,7 +20,7 @@ The project is already usable in its first release:
 - CLI: Rust + `clap`
 - Desktop: Tauri 2
 - Frontend: React + TypeScript + Vite
-- Storage: JSON manifest v3
+- Storage: JSON manifest v4
 
 ## Usage
 
@@ -72,13 +72,14 @@ After downloading the CLI artifact, verify it with:
 Tags that match `v*.*.*` create a GitHub Release with the same version and upload the Linux CLI, Linux desktop executable, Linux Debian package, Linux RPM package, Windows desktop executable, NSIS installer, and MSI.
 
 ```bash
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.2.5
+git push origin v0.2.5
 ```
 
 ## Documentation
 
 - [Implementation notes](docs/implementation.md)
+- [Release catalog and policy](docs/release-policy.md)
 - [Release note behavior](docs/release-notes.md)
 - [Windows UI notes](docs/windows-ui.md)
 - [Asset matching rules](docs/asset-matching.md)

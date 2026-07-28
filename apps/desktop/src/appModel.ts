@@ -1,6 +1,13 @@
 import { createUiText, formatRecordedAt, type Language } from "./i18n";
+import type {
+  IntegrityPlan,
+  IntegrityStatus,
+  ReleaseChannel,
+  ReleaseDirection,
+  ReleasePolicy
+} from "./backend";
 
-export type AppStatus = "updateAvailable" | "current" | "needsChoice" | "noRelease" | "failed";
+export type AppStatus = "updateAvailable" | "downgradeAvailable" | "current" | "needsChoice" | "noRelease" | "failed";
 
 export type ManagedApp = {
   id: string;
@@ -22,13 +29,19 @@ export type ManagedApp = {
   installType?: "WindowsInstaller" | "PortableArchive" | "AppImage" | "LinuxPackage" | "Executable" | "Archive" | "Unknown";
   installPathKind?: "managedPath" | "systemInstaller" | "unknown";
   uninstallSupported?: boolean;
+  releasePolicy?: ReleasePolicy;
+  artifactSha256?: string | null;
+  integrityStatus?: IntegrityStatus | null;
+  checksumAssetName?: string | null;
+  rollback?: { version: string; assetName: string } | null;
+  releaseDirection?: ReleaseDirection;
   recentActivities?: LifecycleActivity[] | null;
 };
 
 export type LifecycleActivity = {
   repoId: string;
   repoName: string;
-  action: "install" | "update" | "uninstall";
+  action: "install" | "update" | "downgrade" | "rollback" | "policyChange" | "uninstall";
   outcome: "succeeded" | "failed";
   recordedAt: string;
   version?: string | null;
@@ -59,6 +72,12 @@ export type BulkRemoveAvailability = {
   reason?: string;
 };
 
+export type SelectionActionAvailability = BulkRemoveAvailability & {
+  kind: "remove" | "uninstall" | "mixed";
+  label: string;
+  uninstallTargetId?: string;
+};
+
 export type InspectorDetailItem = {
   label: string;
   value: string;
@@ -71,6 +90,21 @@ export type LifecycleHistoryEntry = {
   recordedAt: string;
   failed: boolean;
   error?: string | null;
+};
+
+export type ReleaseActionGuidanceKind = "docker" | "source" | "manual";
+
+export type ReleaseActionGuidance = {
+  kind: ReleaseActionGuidanceKind;
+  title: string;
+  summary: string;
+  bullets: string[];
+};
+
+export type InspectorStatusSummary = {
+  label: string;
+  detail: string;
+  tone: "neutral" | "success" | "warning" | "danger";
 };
 
 // 公开筛选以用户任务语义命名，而不是直接映射内部状态名。
@@ -86,13 +120,16 @@ export type ReleaseNoteBlock =
   | { type: "divider" }
   | { type: "code"; text: string };
 
-export type TaskProgressAction = "install" | "uninstall";
+export type TaskProgressAction = "install" | "rollback" | "uninstall";
 
 export type TaskProgressStage =
   | "preparing"
   | "downloading"
   | "copyingAsset"
+  | "verifyingArtifact"
   | "extractingArchive"
+  | "creatingRollback"
+  | "restoringRollback"
   | "runningSystemInstaller"
   | "updatingManifest"
   | "locatingRecord"
@@ -123,9 +160,53 @@ export type StatusDockPresentation = {
   detail: string;
   pillLabel: string;
   failed: boolean;
+  // Idle states hide the duplicate right-side pill; task states keep it for progress or failure labels.
+  showPill: boolean;
   showProgress: boolean;
   progressMode: "determinate" | "indeterminate";
   progressPercent: number | null;
+};
+
+export type ConfigConnectivityWarning = {
+  label: string;
+  detail: string;
+};
+
+export type ConfigConnectivityInput = {
+  githubToken: string;
+  proxyUrl: string;
+};
+
+export type GithubConnectivityProblem = "none" | "unchecked" | "network" | "proxy" | "rateLimit" | "auth" | "unknown";
+
+export type NetworkConfigHealth = {
+  tokenConfigured: boolean;
+  proxyConfigured: boolean;
+  tokenLabel: string;
+  proxyLabel: string;
+  formatExample: string;
+  warning: ConfigConnectivityWarning | null;
+};
+
+export type ConnectivityTestViewState = {
+  status: "idle" | "testing" | "success" | "failed" | "stale";
+  message?: string;
+  problem?: GithubConnectivityProblem;
+  configKey?: string;
+};
+
+export type GithubConnectivityResultLike = {
+  ok: boolean;
+  message: string;
+  problem: GithubConnectivityProblem;
+  usedToken?: boolean;
+  usedProxy?: boolean;
+};
+
+export type ConnectivityTestStatus = {
+  label: string;
+  detail: string;
+  tone: "neutral" | "busy" | "success" | "danger" | "warning";
 };
 
 export function isFailedInstallProgress(taskProgress: TaskProgressLike | null, repoId: string | null): boolean {
@@ -150,6 +231,212 @@ export function isUnknownInstallPathKind(kind?: ManagedApp["installPathKind"]): 
   return !kind || kind === "unknown";
 }
 
+export function buildConfigConnectivityWarning(
+  config: ConfigConnectivityInput,
+  language: Language,
+  state: ConnectivityTestViewState = { status: "idle" }
+): ConfigConnectivityWarning | null {
+  if (isStaleConnectivityResult(state, config) || state.status !== "failed") {
+    return null;
+  }
+
+  const ui = createUiText(language);
+  switch (state.problem) {
+    case "network":
+    case "proxy":
+      return {
+        label: ui.configProxyWarning,
+        detail: ui.configProxyWarningHelp
+      };
+    case "rateLimit":
+    case "auth":
+      return {
+        label: ui.configTokenWarning,
+        detail: ui.configTokenWarningHelp
+      };
+    case "unknown":
+      return {
+        label: ui.configUnknownConnectivityWarning,
+        detail: ui.configUnknownConnectivityWarningHelp
+      };
+    case "none":
+    case "unchecked":
+    case undefined:
+      return null;
+  }
+}
+
+export function buildNetworkConfigHealth(
+  config: ConfigConnectivityInput,
+  language: Language,
+  state: ConnectivityTestViewState = { status: "idle" }
+): NetworkConfigHealth {
+  const ui = createUiText(language);
+  const tokenConfigured = config.githubToken.trim().length > 0;
+  const proxyConfigured = config.proxyUrl.trim().length > 0;
+
+  return {
+    tokenConfigured,
+    proxyConfigured,
+    tokenLabel: tokenConfigured ? ui.githubTokenConfigured : ui.githubTokenOptional,
+    proxyLabel: proxyConfigured ? ui.proxyConfigured : ui.proxyNotConfigured,
+    formatExample: ui.proxyUrlPlaceholder,
+    warning: buildConfigConnectivityWarning(config, language, state)
+  };
+}
+
+export function buildConnectivityTestStatus(
+  state: ConnectivityTestViewState,
+  language: Language,
+  currentConfig?: ConfigConnectivityInput
+): ConnectivityTestStatus {
+  const ui = createUiText(language);
+
+  if (isStaleConnectivityResult(state, currentConfig)) {
+    return {
+      label: ui.connectivityTestStale,
+      detail: ui.connectivityTestStaleHelp,
+      tone: "warning"
+    };
+  }
+
+  if (state.status === "testing") {
+    return {
+      label: ui.connectivityTestTesting,
+      detail: ui.connectivityTestHelp,
+      tone: "busy"
+    };
+  }
+
+  if (state.status === "success") {
+    return {
+      label: ui.connectivityTestSuccess,
+      detail: state.message?.trim() || ui.connectivityTestSuccessHelp,
+      tone: "success"
+    };
+  }
+
+  if (state.status === "failed") {
+    return {
+      label: ui.connectivityTestFailed,
+      detail: joinConnectivityDetail(state.message, connectivityProblemHelp(state.problem, ui)),
+      tone: "danger"
+    };
+  }
+
+  return {
+    label: ui.connectivityTestIdle,
+    detail: ui.connectivityTestHelp,
+    tone: "neutral"
+  };
+}
+
+export function getNetworkConfigKey(config: ConfigConnectivityInput): string {
+  return JSON.stringify({
+    githubToken: config.githubToken.trim(),
+    proxyUrl: config.proxyUrl.trim()
+  });
+}
+
+export function shouldRunAutoConnectivityCheck(config: ConfigConnectivityInput, lastCheckedKey: string | null): boolean {
+  return getNetworkConfigKey(config) !== lastCheckedKey;
+}
+
+export function buildConnectivityTestViewState(
+  result: GithubConnectivityResultLike,
+  config: ConfigConnectivityInput
+): ConnectivityTestViewState {
+  return {
+    status: result.ok ? "success" : "failed",
+    message: result.message,
+    problem: result.problem,
+    configKey: getNetworkConfigKey(config)
+  };
+}
+
+function isStaleConnectivityResult(
+  state: ConnectivityTestViewState,
+  currentConfig?: ConfigConnectivityInput
+): boolean {
+  return Boolean(
+    currentConfig &&
+      state.configKey &&
+      (state.status === "success" || state.status === "failed") &&
+      state.configKey !== getNetworkConfigKey(currentConfig)
+  ) || state.status === "stale";
+}
+
+function connectivityProblemHelp(problem: GithubConnectivityProblem | undefined, ui: ReturnType<typeof createUiText>): string {
+  switch (problem) {
+    case "network":
+      return ui.connectivityNetworkFailureHelp;
+    case "proxy":
+      return ui.connectivityProxyFailureHelp;
+    case "rateLimit":
+      return ui.connectivityRateLimitHelp;
+    case "auth":
+      return ui.connectivityAuthFailureHelp;
+    case "unknown":
+    case "unchecked":
+    case "none":
+    case undefined:
+      return ui.connectivityProxyFailureHelp;
+  }
+}
+
+function joinConnectivityDetail(message: string | undefined, help: string): string {
+  const trimmed = message?.trim();
+  if (!trimmed) {
+    return help;
+  }
+  return `${trimmed} ${help}`;
+}
+
+function detectReleaseActionGuidanceKind(releaseText: string): ReleaseActionGuidanceKind {
+  if (hasDockerSignal(releaseText)) {
+    return "docker";
+  }
+
+  if (hasSourceSignal(releaseText)) {
+    return "source";
+  }
+
+  return "manual";
+}
+
+function hasDockerSignal(releaseText: string): boolean {
+  return [
+    "docker compose",
+    "docker-compose",
+    "docker run",
+    "dockerfile",
+    "container image",
+    "compose.yaml",
+    "compose.yml",
+    "podman run"
+  ].some((signal) => releaseText.includes(signal));
+}
+
+function hasSourceSignal(releaseText: string): boolean {
+  return [
+    "build from source",
+    "source build",
+    "compile from source",
+    "cargo build",
+    "cmake",
+    "gradle",
+    "make ",
+    "meson",
+    "mvn",
+    "npm install",
+    "pip install",
+    "pipx install",
+    "pnpm install",
+    "yarn install",
+    "go build"
+  ].some((signal) => releaseText.includes(signal) || releaseText === signal.trim());
+}
+
 export function shouldShowInstallLocationAction(item: ManagedApp | null): boolean {
   if (!item) {
     return false;
@@ -158,8 +445,38 @@ export function shouldShowInstallLocationAction(item: ManagedApp | null): boolea
   return item.status !== "needsChoice" && !isUnknownInstallPathKind(item.installPathKind);
 }
 
+export function shouldShowInstallLocationSecondary(item: ManagedApp | null): boolean {
+  if (!item) {
+    return false;
+  }
+
+  if (item.status === "needsChoice" || isUnknownInstallPathKind(item.installPathKind)) {
+    return false;
+  }
+
+  const primaryActionKind = resolvePrimaryActionKind(item);
+  return primaryActionKind !== "openInstallLocation" && primaryActionKind !== "openInstallerFile";
+}
+
+export function shouldShowInstallerFolderSecondary(item: ManagedApp | null): boolean {
+  if (!item) {
+    return false;
+  }
+
+  return item.status !== "needsChoice" && isSystemInstallerKind(item.installPathKind);
+}
+
 export function isRemovableNoRelease(item: ManagedApp): boolean {
   return item.status === "noRelease" && isUnknownInstallPathKind(item.installPathKind);
+}
+
+// 只要还是跟踪中的仓库，但当前状态已经无法继续走安装/升级链路，
+// 就允许把这条跟踪移除掉。failed 状态只在没有可识别安装位置时开放，
+// 避免把一个仍然有本地安装痕迹的条目误当成普通跟踪项处理。
+export function isRemovableTrackedItem(item: ManagedApp): boolean {
+  return item.status === "needsChoice"
+    || isRemovableNoRelease(item)
+    || (item.status === "failed" && isUnknownInstallPathKind(item.installPathKind));
 }
 
 export function inboxFilters(language: Language): Array<{ id: InboxFilter; label: string }> {
@@ -176,8 +493,7 @@ export function inboxFilters(language: Language): Array<{ id: InboxFilter; label
 // 以及可移除的 noRelease 跟踪项。
 // 用于公开筛选 actionRequired，以及顶部"需处理"统计。
 export function isActionRequired(app: ManagedApp): boolean {
-  return app.status === "needsChoice"
-    || isRemovableNoRelease(app);
+  return isRemovableTrackedItem(app);
 }
 
 export function hasInstallableAsset(app: ManagedApp): boolean {
@@ -328,7 +644,14 @@ export function parseReleaseNote(note: string): ReleaseNoteBlock[] {
 
 export function taskActionLabel(action: TaskProgressAction, language: Language): string {
   const ui = createUiText(language);
-  return action === "install" ? ui.task.install : ui.task.uninstall;
+  switch (action) {
+    case "install":
+      return ui.task.install;
+    case "rollback":
+      return ui.task.rollback;
+    case "uninstall":
+      return ui.task.uninstall;
+  }
 }
 
 export function taskStageLabel(stage: TaskProgressStage, language: Language): string {
@@ -340,8 +663,14 @@ export function taskStageLabel(stage: TaskProgressStage, language: Language): st
       return ui.stage.downloading;
     case "copyingAsset":
       return ui.stage.copyingAsset;
+    case "verifyingArtifact":
+      return ui.stage.verifyingArtifact;
     case "extractingArchive":
       return ui.stage.extractingArchive;
+    case "creatingRollback":
+      return ui.stage.creatingRollback;
+    case "restoringRollback":
+      return ui.stage.restoringRollback;
     case "runningSystemInstaller":
       return ui.stage.runningSystemInstaller;
     case "updatingManifest":
@@ -380,6 +709,61 @@ export function systemPackageManagerLabel(value: SystemPackageManagerName): stri
   }
 }
 
+export function releaseDirectionLabel(value: ReleaseDirection, language: Language): string {
+  const ui = createUiText(language);
+  return ui.releaseDirection[value];
+}
+
+export function integrityStatusLabel(value: IntegrityStatus, language: Language): string {
+  const ui = createUiText(language);
+  return ui.integrityStatus[value];
+}
+
+export function installPreviewIntegrityLabel(integrity: IntegrityPlan, language: Language): string {
+  const ui = createUiText(language);
+  return integrity.expectedSha256
+    ? ui.pendingSha256Verification
+    : ui.integrityStatus.recordedOnly;
+}
+
+export function resolveLifecycleSelection(
+  item: ManagedApp | null,
+  availableVersions: string[]
+): { selectedVersion: string; channel: ReleaseChannel } {
+  const target = item?.releasePolicy?.pinnedVersion ?? item?.latestVersion ?? "";
+  const selectedVersion = target && (availableVersions.length === 0 || availableVersions.includes(target))
+    ? target
+    : availableVersions[0] ?? "";
+  return {
+    selectedVersion,
+    channel: item?.releasePolicy?.channel ?? "stable"
+  };
+}
+
+export function releaseChannelForVersion(version: { prerelease: boolean } | null | undefined): ReleaseChannel {
+  return version?.prerelease ? "prerelease" : "stable";
+}
+
+export function isPreviewResponseCurrent(
+  requestId: number,
+  currentRequestId: number,
+  requestedRepoId: string,
+  selectedRepoId: string | null,
+  responseRepoId: string
+): boolean {
+  return isPreviewRequestCurrent(requestId, currentRequestId, requestedRepoId, selectedRepoId)
+    && responseRepoId === requestedRepoId;
+}
+
+export function isPreviewRequestCurrent(
+  requestId: number,
+  currentRequestId: number,
+  requestedRepoId: string,
+  selectedRepoId: string | null
+): boolean {
+  return requestId === currentRequestId && requestedRepoId === selectedRepoId;
+}
+
 export function buildStatusDockPresentation(
   taskProgress: TaskProgressLike | null,
   busy: boolean,
@@ -394,6 +778,7 @@ export function buildStatusDockPresentation(
       detail: busy ? taskStatus : "",
       pillLabel: busy ? ui.processing : taskStatus,
       failed: false,
+      showPill: busy,
       showProgress: busy,
       progressMode: "indeterminate",
       progressPercent: null
@@ -410,6 +795,7 @@ export function buildStatusDockPresentation(
     detail: taskProgress.message,
     pillLabel: failed ? ui.status.failed : progressPercent == null ? ui.processing : `${progressPercent}%`,
     failed,
+    showPill: true,
     showProgress: true,
     progressMode: progressPercent == null ? "indeterminate" : "determinate",
     progressPercent
@@ -431,6 +817,44 @@ export function getOpenReleaseAvailability(
   }
 
   return { enabled: true };
+}
+
+export function buildReleaseActionGuidance(
+  item: ManagedApp | null,
+  language: Language
+): ReleaseActionGuidance | null {
+  if (!item || item.status !== "needsChoice" || hasInstallableAsset(item)) {
+    return null;
+  }
+
+  const ui = createUiText(language);
+  const releaseText = `${item.releaseTitle ?? ""}\n${item.releaseNote ?? ""}`.toLowerCase();
+  const kind = detectReleaseActionGuidanceKind(releaseText);
+
+  if (kind === "docker") {
+    return {
+      kind,
+      title: ui.releaseGuidanceDockerTitle,
+      summary: ui.releaseGuidanceDockerSummary,
+      bullets: [ui.releaseGuidanceScopeNote, ui.releaseGuidanceOpenRelease]
+    };
+  }
+
+  if (kind === "source") {
+    return {
+      kind,
+      title: ui.releaseGuidanceSourceTitle,
+      summary: ui.releaseGuidanceSourceSummary,
+      bullets: [ui.releaseGuidanceScopeNote, ui.releaseGuidanceOpenRelease]
+    };
+  }
+
+  return {
+    kind,
+    title: ui.releaseGuidanceManualTitle,
+    summary: ui.releaseGuidanceManualSummary,
+    bullets: [ui.releaseGuidanceScopeNote, ui.releaseGuidanceManualFallback]
+  };
 }
 
 export function getOpenAppAvailability(
@@ -469,6 +893,7 @@ export function resolvePrimaryActionKind(item: ManagedApp | null): PrimaryAction
 
   switch (item.status) {
     case "updateAvailable":
+    case "downgradeAvailable":
       return "update";
     case "needsChoice":
       return hasInstallableAsset(item) ? "install" : "openRelease";
@@ -507,7 +932,85 @@ export function shouldShowOpenAppSecondary(item: InboxItem | null): boolean {
     return false;
   }
 
-  return item.status === "updateAvailable" && isManagedPathKind(item.installPathKind) && Boolean(item.launchPath);
+  return (item.status === "updateAvailable" || item.status === "downgradeAvailable")
+    && isManagedPathKind(item.installPathKind)
+    && Boolean(item.launchPath);
+}
+
+export function shouldShowLifecyclePreviewAction(item: ManagedApp | null): boolean {
+  if (!item) {
+    return false;
+  }
+
+  // 失败态已经有更直接的重试主动作，避免在同一面板里再放一个同级别的预览入口。
+  return item.status !== "failed";
+}
+
+export function buildInspectorStatusSummary(
+  item: ManagedApp | null,
+  selectedVersion: string,
+  installRetrying: boolean,
+  language: Language
+): InspectorStatusSummary | null {
+  if (!item) {
+    return null;
+  }
+
+  const ui = createUiText(language);
+  if (installRetrying) {
+    return {
+      label: ui.status.failed,
+      detail: ui.installRetryHint,
+      tone: "danger"
+    };
+  }
+
+  switch (item.status) {
+    case "failed":
+      return {
+        label: ui.status.failed,
+        detail: item.latestVersion,
+        tone: "danger"
+      };
+    case "needsChoice":
+      if (hasInstallableAsset(item)) {
+        return {
+          label: ui.needsChoice,
+          detail: `${ui.releaseTarget}: ${selectedVersion || item.latestVersion}`,
+          tone: "warning"
+        };
+      }
+
+      return {
+        label: ui.model.noInstallableAsset,
+        detail: item.releaseTitle ?? item.latestVersion,
+        tone: "neutral"
+      };
+    case "updateAvailable":
+      return {
+        label: ui.status.updateAvailable,
+        detail: `${item.currentVersion} → ${item.latestVersion}`,
+        tone: "warning"
+      };
+    case "downgradeAvailable":
+      return {
+        label: ui.status.downgradeAvailable,
+        detail: `${item.currentVersion} → ${item.latestVersion}`,
+        tone: "warning"
+      };
+    case "current":
+      return {
+        label: ui.status.current,
+        detail: item.currentVersion,
+        tone: "success"
+      };
+    case "noRelease":
+      return {
+        label: ui.status.noRelease,
+        detail: item.releaseTitle ?? ui.model.noRelease,
+        tone: "neutral"
+      };
+  }
 }
 
 export function getDetailPathLabel(item: ManagedApp | null, language: Language): string {
@@ -561,13 +1064,6 @@ export function getInspectorDetailItems(item: ManagedApp | null, language: Langu
     });
   }
 
-  if (item.managementKind) {
-    items.push({
-      label: ui.installManagement,
-      value: installManagementKindLabel(item.managementKind, language)
-    });
-  }
-
   return items;
 }
 
@@ -594,7 +1090,8 @@ export function hasSecondaryInspectorActions(item: InboxItem | null, language: L
 
   return shouldShowOpenAppSecondary(item)
     || shouldShowOpenReleaseSecondary(item, language)
-    || shouldShowInstallLocationAction(item);
+    || shouldShowInstallerFolderSecondary(item)
+    || shouldShowInstallLocationSecondary(item);
 }
 
 export function getPrimaryActionAvailability(
@@ -665,6 +1162,27 @@ export function getUninstallAvailability(
   return { enabled: true };
 }
 
+export function getRollbackAvailability(
+  item: ManagedApp | null,
+  busy: boolean,
+  language: Language
+): ActionAvailability {
+  const ui = createUiText(language);
+  if (busy) {
+    return { enabled: false, reason: ui.model.busy };
+  }
+  if (!item) {
+    return { enabled: false, reason: ui.model.selectApp };
+  }
+  if (!isManagedPathKind(item.installPathKind)) {
+    return { enabled: false, reason: ui.rollbackManagedOnly };
+  }
+  if (!item.rollback) {
+    return { enabled: false, reason: ui.noRollbackSnapshot };
+  }
+  return { enabled: true };
+}
+
 export function getRemoveTrackedAvailability(
   item: InboxItem | null,
   busy: boolean,
@@ -679,7 +1197,7 @@ export function getRemoveTrackedAvailability(
     return { enabled: false, reason: ui.model.selectApp };
   }
 
-  if (!(item.status === "needsChoice" || isRemovableNoRelease(item))) {
+  if (!isRemovableTrackedItem(item)) {
     return { enabled: false, reason: ui.model.onlyUntracked };
   }
 
@@ -716,9 +1234,7 @@ export function getBulkRemoveAvailability(
 
   const selectedSet = new Set(selectedIds);
   const selectedApps = apps.filter((app) => selectedSet.has(app.id));
-  const candidates = selectedApps.filter(
-    (app) => app.status === "needsChoice" || isRemovableNoRelease(app)
-  );
+  const candidates = selectedApps.filter((app) => isRemovableTrackedItem(app));
   const skippedCount = selectedApps.length - candidates.length;
 
   if (candidates.length === 0) {
@@ -738,6 +1254,75 @@ export function getBulkRemoveAvailability(
   };
 }
 
+export function getSelectionActionAvailability(
+  apps: ManagedApp[],
+  selectedIds: string[],
+  busy: boolean,
+  language: Language
+): SelectionActionAvailability {
+  const ui = createUiText(language);
+  const bulkRemove = getBulkRemoveAvailability(apps, selectedIds, busy, language);
+  if (busy) {
+    return {
+      ...bulkRemove,
+      kind: "remove",
+      label: ui.remove
+    };
+  }
+
+  const selectedSet = new Set(selectedIds);
+  const selectedApps = apps.filter((app) => selectedSet.has(app.id));
+  const uninstallableApps = selectedApps.filter(
+    (app) => !isRemovableTrackedItem(app) && app.status !== "needsChoice" && app.uninstallSupported !== false
+  );
+
+  // 单个已安装软件时，列表危险动作进入现有卸载确认流；移除跟踪只保留给未安装项。
+  if (uninstallableApps.length === 1 && selectedApps.length === 1) {
+    return {
+      enabled: true,
+      kind: "uninstall",
+      label: ui.uninstallAbility,
+      uninstallTargetId: uninstallableApps[0].id,
+      candidateCount: 0,
+      skippedCount: 0
+    };
+  }
+
+  if (uninstallableApps.length > 0) {
+    return {
+      ...bulkRemove,
+      enabled: false,
+      kind: "mixed",
+      label: ui.remove,
+      reason: ui.model.selectInstalledSeparately
+    };
+  }
+
+  return {
+    ...bulkRemove,
+    kind: "remove",
+    label: ui.remove
+  };
+}
+
+export function getSelectionSummary(
+  apps: ManagedApp[],
+  selectedIds: string[],
+  availability: SelectionActionAvailability,
+  language: Language
+): string {
+  const ui = createUiText(language);
+  const selectedSet = new Set(selectedIds);
+  const selectedCount = apps.filter((app) => selectedSet.has(app.id)).length;
+  if (selectedCount === 0) {
+    return ui.selectionNone;
+  }
+  if (availability.kind === "mixed") {
+    return ui.mixedSelection;
+  }
+  return ui.selectionCount(selectedCount);
+}
+
 export function filterManagedApps(apps: ManagedApp[], filter: InboxFilter, query: string): ManagedApp[] {
   const needle = query.trim().toLowerCase();
   return apps.filter((app) => {
@@ -746,7 +1331,11 @@ export function filterManagedApps(apps: ManagedApp[], filter: InboxFilter, query
       if (!isActionRequired(app)) {
         return false;
       }
-    } else if (filter !== "all" && app.status !== filter) {
+    } else if (
+      filter !== "all"
+      && !(filter === "updateAvailable" && app.status === "downgradeAvailable")
+      && app.status !== filter
+    ) {
       return false;
     }
 
@@ -774,6 +1363,9 @@ export function filterManagedApps(apps: ManagedApp[], filter: InboxFilter, query
 
 function actionForApp(app: ManagedApp, language: Language): InboxItem["actionLabel"] {
   const ui = createUiText(language);
+  if (app.status === "downgradeAvailable") {
+    return ui.downgradeAvailable;
+  }
   switch (resolvePrimaryActionKind(app)) {
     case "install":
       return ui.action.install;
@@ -801,6 +1393,7 @@ function priorityForStatus(status: AppStatus): number {
     case "needsChoice":
       return 1;
     case "updateAvailable":
+    case "downgradeAvailable":
       return 2;
     case "noRelease":
       return 3;

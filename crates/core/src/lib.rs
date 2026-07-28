@@ -7,6 +7,8 @@ pub mod asset_matcher;
 pub mod config;
 pub mod install_plan;
 pub mod installer;
+pub mod integrity;
 pub mod manifest;
 pub mod release;
+pub mod release_policy;
 pub mod repo;
