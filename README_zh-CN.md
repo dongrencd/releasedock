@@ -77,6 +77,24 @@ Release 资产下载会先写入同目录的 `.part` 文件。传输中断后，
 
 完整文件下载完成后才会执行 checksum 校验。部分下载文件不会被当成已安装资产使用。
 
+## 和同类工具的区别
+
+ReleaseDock 聚焦 Windows 和 Linux 上通过 GitHub Releases 分发的桌面软件和 CLI 工具。
+
+- 如果项目已经通过 `winget`、`scoop`、`apt`、Flatpak、Homebrew 或类似渠道发布，优先使用系统包管理器。
+- 如果主要管理 AppImage，并且需要应用目录、桌面文件集成或 delta 更新，Gear Lever、Zap、AM/AppMan、AppImage Installer 这类工具更适合。
+- 如果要管理 Android APK 来源更新，Obtainium 更适合。
+- 如果你现在主要是手动从 GitHub Releases 下载软件，并希望统一跟踪版本、安装预览、发布说明、checksum 记录、断点续传、本地托管回滚，以及桌面版和 CLI 共用流程，ReleaseDock 更适合。
+
+## 当前限制
+
+- 目前还没有发布 macOS 构建。
+- ReleaseDock 不提供应用目录或应用发现商店。
+- AppImage 桌面集成是有限支持，不等同于 AppImage 专用管理器。
+- 尚未实现 zsync 这类 delta 更新；中断下载会在服务器支持时通过 HTTP Range 断点续传。
+- Windows `.exe` / `.msi` 安装器仍由安装包自身决定安装行为。ReleaseDock 会记录安装包路径，并在注册表元数据可用时重新探测安装目录。
+- ReleaseDock 不验证发布者身份，只使用上游 checksum 资产和本地记录的 SHA-256 摘要。
+
 ## 从源码构建
 
 ### Workspace
@@ -117,8 +135,8 @@ bash scripts/linux/build-desktop.sh
 匹配 `v*.*.*` 的 tag 会创建同版本 GitHub Release，并上传可用的 Linux 和 Windows 产物。
 
 ```bash
-git tag v0.2.6
-git push origin v0.2.6
+git tag v0.2.7
+git push origin v0.2.7
 ```
 
 ## 文档

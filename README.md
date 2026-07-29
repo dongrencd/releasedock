@@ -77,6 +77,24 @@ Release asset downloads write to a sibling `.part` file first. If a transfer is 
 
 Checksum verification still happens after the full artifact is present. A partial file is never treated as an installed artifact.
 
+## How It Compares
+
+ReleaseDock focuses on GitHub Releases assets for desktop and CLI software on Windows and Linux.
+
+- Use your OS package manager first when a project already ships through `winget`, `scoop`, `apt`, Flatpak, Homebrew, or similar channels.
+- Use AppImage-focused tools such as Gear Lever, Zap, AM/AppMan, or AppImage Installer when you mainly need AppImage catalog integration, desktop-file integration, or delta updates.
+- Use Obtainium when you want Android app updates from APK sources.
+- Use ReleaseDock when you manually install tools from GitHub Releases and want tracking, install previews, release notes, checksum records, resumable downloads, rollback for managed local installs, and a shared desktop/CLI workflow.
+
+## Current Limitations
+
+- macOS builds are not published yet.
+- ReleaseDock does not provide an app catalog or app discovery store.
+- AppImage desktop integration is intentionally limited compared with AppImage-focused tools.
+- Delta updates such as zsync are not implemented; interrupted downloads can resume with HTTP Range when supported.
+- Windows `.exe` / `.msi` installers still decide their own install behavior. ReleaseDock records the installer path and can re-detect install locations when registry metadata is available.
+- ReleaseDock does not verify publisher identity beyond available checksum assets and locally recorded SHA-256 digests.
+
 ## Build From Source
 
 ### Workspace
@@ -117,8 +135,8 @@ Pushes to `main` and manual `CI Release Artifacts` workflow runs publish GitHub 
 Tags that match `v*.*.*` create a GitHub Release with the same version and upload available Linux and Windows artifacts.
 
 ```bash
-git tag v0.2.6
-git push origin v0.2.6
+git tag v0.2.7
+git push origin v0.2.7
 ```
 
 ## Documentation

@@ -6,6 +6,9 @@ import { describe, expect, it } from "vitest";
 const stylesPath = join(dirname(fileURLToPath(import.meta.url)), "styles.css");
 const styles = readFileSync(stylesPath, "utf8");
 const appSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "App.tsx"), "utf8");
+// GitHub Actions checks out files with CRLF on Windows. Normalize source text so
+// structural assertions stay about JSX shape instead of platform line endings.
+const normalizedAppSource = appSource.replace(/\r\n/g, "\n");
 
 function ruleBody(selector) {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -95,10 +98,10 @@ describe("workspace layout CSS", () => {
   });
 
   it("renders settings language and theme rows without label click traps", () => {
-    expect(appSource).toContain('<div className="fieldRow">\n                    <span>{ui.language}</span>');
-    expect(appSource).toContain('themeModeOptions(language).map');
-    expect(appSource).toContain('<div className="fieldRow">\n                    <span>{ui.theme}</span>');
-    expect(appSource).not.toContain('<label className="fieldRow">\n                    <span>{ui.language}</span>');
+    expect(normalizedAppSource).toContain('<div className="fieldRow">\n                    <span>{ui.language}</span>');
+    expect(normalizedAppSource).toContain('themeModeOptions(language).map');
+    expect(normalizedAppSource).toContain('<div className="fieldRow">\n                    <span>{ui.theme}</span>');
+    expect(normalizedAppSource).not.toContain('<label className="fieldRow">\n                    <span>{ui.language}</span>');
     expect(appSource).toContain('className="segmentedControl"');
     expect(appSource).toContain('className={configDraft.language === option.value ? "segmentedPill active" : "segmentedPill"}');
     expect(appSource).toContain('className={themeMode === option.value ? "segmentedPill active" : "segmentedPill"}');

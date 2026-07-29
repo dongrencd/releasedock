@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.7] - 2026-07-29
+
+### Changed
+- README and Chinese README now document comparison boundaries and current limitations for GitHub Release asset management
+- Release artifact and packaging version markers updated to `0.2.7`
+
+### Fixed
+- Windows CI frontend tests now normalize source line endings before checking the settings language/theme row structure
+
 ## [0.2.6] - 2026-07-29
 
 ### Added
