@@ -35,6 +35,12 @@ pub struct Config {
     /// 首次关闭窗口时是否已提示过驻留托盘
     #[serde(default)]
     pub tray_hint_shown: Option<bool>,
+    /// 下载 Release 资产时是否允许 HTTP Range 分片加速，默认开启
+    #[serde(default)]
+    pub download_acceleration_enabled: Option<bool>,
+    /// 下载分片最大连接数，默认 4，运行时限制在 1..=8
+    #[serde(default)]
+    pub download_max_connections: Option<u8>,
 }
 
 pub struct ConfigStore {
@@ -57,6 +63,19 @@ pub fn check_interval_minutes(config: Option<&Config>) -> u32 {
         .and_then(|c| c.check_interval_minutes)
         .unwrap_or(DEFAULT_CHECK_INTERVAL_MINUTES)
         .max(1)
+}
+
+pub fn download_acceleration_enabled(config: Option<&Config>) -> bool {
+    config
+        .and_then(|c| c.download_acceleration_enabled)
+        .unwrap_or(true)
+}
+
+pub fn download_max_connections(config: Option<&Config>) -> u8 {
+    config
+        .and_then(|c| c.download_max_connections)
+        .unwrap_or(4)
+        .clamp(1, 8)
 }
 
 pub fn effective_install_root(config: Option<&Config>, fallback_root: Option<PathBuf>) -> PathBuf {
@@ -186,6 +205,29 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(check_interval_minutes(Some(&config)), 1);
+    }
+
+    #[test]
+    fn download_acceleration_defaults_to_enabled_with_four_connections() {
+        assert!(download_acceleration_enabled(None));
+        assert!(download_acceleration_enabled(Some(&Config::default())));
+        assert_eq!(download_max_connections(None), 4);
+        assert_eq!(download_max_connections(Some(&Config::default())), 4);
+    }
+
+    #[test]
+    fn download_max_connections_clamps_to_supported_range() {
+        let below = Config {
+            download_max_connections: Some(0),
+            ..Default::default()
+        };
+        let above = Config {
+            download_max_connections: Some(99),
+            ..Default::default()
+        };
+
+        assert_eq!(download_max_connections(Some(&below)), 1);
+        assert_eq!(download_max_connections(Some(&above)), 8);
     }
 
     #[test]

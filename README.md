@@ -12,11 +12,12 @@ ReleaseDock is not a package manager replacement. Keep using `winget`, `scoop`, 
 - Reads release metadata, release notes, assets, publish time, and version history from GitHub.
 - Selects the best asset for the current OS and CPU architecture.
 - Shows an install preview before running installers or copying managed files.
-- Downloads release assets with progress, retry, and `.part` resume support.
+- Downloads release assets with progress, retry, `.part` resume support, and multi-connection Range acceleration for large assets when supported.
 - Verifies SHA-256 checksums when upstream checksum assets are available, or records the artifact digest when they are not.
 - Manages AppImage, archive, portable executable, and Linux package installs with a local manifest.
+- Creates and cleans up a basic Linux desktop entry for managed AppImage installs.
 - Keeps Windows `.exe` / `.msi` and Linux `.deb` / `.rpm` installers behind explicit confirmation.
-- Opens managed apps, install locations, installer package folders, release pages, and system uninstall settings where appropriate.
+- Opens managed apps, install locations, installer package folders, release pages, and routes every installed app through one Uninstall entry.
 - Supports guarded update, downgrade, rollback, uninstall, and remove-tracking flows.
 - Runs background update checks from the system tray.
 - Provides English and Simplified Chinese UI, plus follow-system, light, and dark themes.
@@ -39,7 +40,7 @@ The desktop app is a compact update workbench built with Tauri 2 and React.
 - Left side: tracked repositories, local filters, selection, bulk remove/uninstall affordances.
 - Right side: selected release, version policy, install preview, lifecycle history, release notes, and contextual actions.
 - Bottom status strip: refresh, download, install, uninstall, rollback, and failure progress.
-- Settings: GitHub token, GitHub proxy, install root, language, theme, background checks, and check interval.
+- Settings: GitHub token, GitHub proxy, install root, language, theme, background checks, check interval, and download acceleration.
 - System tray: close-to-tray behavior, manual check, restore window, quit, and update-count tooltip.
 
 Public repositories work without a token. Private repositories and frequent refreshes should use a GitHub token. The proxy setting applies to GitHub API queries and Release asset downloads.
@@ -69,11 +70,13 @@ ReleaseDock distinguishes how an asset is managed:
 - **System package**: Linux `.deb`, `.rpm`, and `.pkg.tar.*` packages installed and removed through the system package manager.
 - **External installer**: Windows `.exe` / `.msi` installers that may install software outside ReleaseDock's managed root.
 
-Managed-local updates use staging and rollback snapshots so a failed replacement can keep or restore the previous install. System installers stay traceable: ReleaseDock records the installer package path, and on Windows can re-detect a real installed app location from the system uninstall registry when available.
+Managed-local updates use staging and rollback snapshots so a failed replacement can keep or restore the previous install. System installers stay traceable: ReleaseDock records the installer package path, and on Windows automatically re-detects a real installed app location from the system uninstall registry during install follow-up and dashboard refresh when metadata is available.
+
+Older Windows records may have classified a bare runnable `.exe` as an external installer. When the next selected asset is still a bare executable, ReleaseDock migrates that record into a managed-local install during the successful update. Real installers such as `.msi` and `setup.exe`, or records already adopted to a real installed app location, stay external installer records.
 
 ## Download Reliability
 
-Release asset downloads write to a sibling `.part` file first. If a transfer is interrupted, the next attempt resumes with HTTP Range when the server supports it. Temporary network failures, read timeouts, connection resets, and 5xx responses are retried before the cache file is finalized.
+Release asset downloads write to a sibling `.part` file first. If a transfer is interrupted, the next attempt resumes with HTTP Range when the server supports it. Large assets use up to four Range connections by default when the server reports byte-range support, and fall back to the single-connection `.part` resume path when acceleration is disabled, unsupported, or a range probe/segment request fails. Temporary network failures, read timeouts, connection resets, and 5xx responses are retried before the cache file is finalized.
 
 Checksum verification still happens after the full artifact is present. A partial file is never treated as an installed artifact.
 
@@ -82,7 +85,7 @@ Checksum verification still happens after the full artifact is present. A partia
 ReleaseDock focuses on GitHub Releases assets for desktop and CLI software on Windows and Linux.
 
 - Use your OS package manager first when a project already ships through `winget`, `scoop`, `apt`, Flatpak, Homebrew, or similar channels.
-- Use AppImage-focused tools such as Gear Lever, Zap, AM/AppMan, or AppImage Installer when you mainly need AppImage catalog integration, desktop-file integration, or delta updates.
+- Use AppImage-focused tools such as Gear Lever, Zap, AM/AppMan, or AppImage Installer when you mainly need AppImage catalogs, icon extraction, file associations, or delta updates.
 - Use Obtainium when you want Android app updates from APK sources.
 - Use ReleaseDock when you manually install tools from GitHub Releases and want tracking, install previews, release notes, checksum records, resumable downloads, rollback for managed local installs, and a shared desktop/CLI workflow.
 
@@ -90,9 +93,9 @@ ReleaseDock focuses on GitHub Releases assets for desktop and CLI software on Wi
 
 - macOS builds are not published yet.
 - ReleaseDock does not provide an app catalog or app discovery store.
-- AppImage desktop integration is intentionally limited compared with AppImage-focused tools.
-- Delta updates such as zsync are not implemented; interrupted downloads can resume with HTTP Range when supported.
-- Windows `.exe` / `.msi` installers still decide their own install behavior. ReleaseDock records the installer path and can re-detect install locations when registry metadata is available.
+- AppImage integration creates a basic desktop entry only; it does not provide catalogs, icon extraction, file associations, or AppStream metadata.
+- Delta updates such as zsync are not implemented; interrupted downloads can resume with HTTP Range when supported, and large full downloads can use multiple Range connections.
+- Windows `.exe` / `.msi` installers still decide their own install behavior. ReleaseDock records the installer path and automatically re-detects install locations when registry metadata is available.
 - ReleaseDock does not verify publisher identity beyond available checksum assets and locally recorded SHA-256 digests.
 
 ## Build From Source
@@ -135,8 +138,8 @@ Pushes to `main` and manual `CI Release Artifacts` workflow runs publish GitHub 
 Tags that match `v*.*.*` create a GitHub Release with the same version and upload available Linux and Windows artifacts.
 
 ```bash
-git tag v0.2.10
-git push origin v0.2.10
+git tag v0.2.11
+git push origin v0.2.11
 ```
 
 ## Documentation
@@ -154,5 +157,6 @@ git push origin v0.2.10
 
 - Windows `.exe` / `.msi` and Linux `.deb` / `.rpm` installers require explicit confirmation.
 - `GITHUB_TOKEN` is only used for GitHub API requests and must not be written to logs.
-- ReleaseDock manages files it installed under its own install root. It does not automatically take over arbitrary system-installed software.
+- ReleaseDock manages files it installed under its own install root. It only auto-adopts Windows system-installer records that ReleaseDock created and still lack a launch target.
 - Windows system install detection reads uninstall-registry metadata only; it does not run uninstall commands during adoption.
+- Windows system-installer uninstall opens the OS uninstall tool from the normal Uninstall confirmation instead of deleting system files directly.

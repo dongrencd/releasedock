@@ -14,7 +14,10 @@ use directories::ProjectDirs;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
-use crate::asset_matcher::{InstallType, is_linux_executable_asset_name};
+use crate::asset_matcher::{
+    InstallType, is_linux_executable_asset_name, is_windows_bare_executable_asset_name,
+    is_windows_installer_asset_name,
+};
 use crate::{
     integrity::IntegrityStatus,
     release_policy::{PolicyMutation, PolicyMutationResult, ReleasePolicy},
@@ -66,6 +69,8 @@ pub struct InstalledApp {
     pub integrity_status: Option<IntegrityStatus>,
     #[serde(default)]
     pub checksum_asset_name: Option<String>,
+    #[serde(default)]
+    pub desktop_entry_path: Option<PathBuf>,
     #[serde(default)]
     pub rollback: Option<RollbackSnapshot>,
 }
@@ -366,6 +371,7 @@ impl InstalledApp {
             artifact_sha256: None,
             integrity_status: None,
             checksum_asset_name: None,
+            desktop_entry_path: None,
             rollback: None,
         }
     }
@@ -771,7 +777,7 @@ fn infer_install_type(asset_name: &str) -> InstallType {
     if is_windows_installer_asset_name(&lowered) {
         return InstallType::WindowsInstaller;
     }
-    if lowered.ends_with(".exe") {
+    if is_windows_bare_executable_asset_name(&lowered) {
         return InstallType::Executable;
     }
     if lowered.ends_with(".deb") || lowered.ends_with(".rpm") {
@@ -790,28 +796,6 @@ fn infer_install_type(asset_name: &str) -> InstallType {
         return InstallType::Archive;
     }
     InstallType::Unknown
-}
-
-fn is_windows_installer_asset_name(asset_name: &str) -> bool {
-    if asset_name.ends_with(".msi") {
-        return true;
-    }
-    if !asset_name.ends_with(".exe") {
-        return false;
-    }
-
-    [
-        "setup",
-        "install",
-        "installer",
-        "uninstall",
-        "bootstrap",
-        "updater",
-        "update",
-        "patch",
-    ]
-    .iter()
-    .any(|needle| asset_name.contains(needle))
 }
 
 #[cfg(test)]

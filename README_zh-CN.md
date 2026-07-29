@@ -12,11 +12,12 @@ ReleaseDock 不是系统包管理器的替代品。如果项目已经通过 `win
 - 读取 GitHub Release 元数据、发布说明、资产列表、发布时间和版本历史。
 - 根据当前操作系统和 CPU 架构选择最合适的资产。
 - 在安装或执行安装器前展示安装预览。
-- 下载 Release 资产时显示进度，并支持失败重试和 `.part` 断点续传。
+- 下载 Release 资产时显示进度，并支持失败重试、`.part` 断点续传，以及服务器支持时的大文件多连接 Range 加速。
 - 上游提供 SHA-256 校验文件时执行校验；没有校验文件时记录本地计算出的摘要。
 - 通过本地 manifest 管理 AppImage、压缩包、便携可执行文件和 Linux 系统包安装。
+- 为托管的 AppImage 创建和清理基础 Linux 桌面启动项。
 - Windows `.exe` / `.msi` 和 Linux `.deb` / `.rpm` 等系统安装器必须显式确认后才会执行。
-- 根据软件状态打开应用、安装目录、安装包目录、Release 页面或系统卸载设置。
+- 根据软件状态打开应用、安装目录、安装包目录、Release 页面，并让所有已安装软件共用同一个“卸载”入口。
 - 支持受保护的更新、降级、回滚、卸载和移除跟踪流程。
 - 通过系统托盘执行后台更新检查。
 - 支持英文和简体中文界面，并提供跟随系统、浅色、深色主题。
@@ -39,7 +40,7 @@ ReleaseDock 不是系统包管理器的替代品。如果项目已经通过 `win
 - 左侧：跟踪仓库、本地筛选、选择状态、批量移除和卸载入口。
 - 右侧：当前 Release、版本策略、安装预览、生命周期历史、发布说明和上下文动作。
 - 底部状态栏：刷新、下载、安装、卸载、回滚和失败进度。
-- 设置：GitHub Token、GitHub 代理、安装根目录、界面语言、主题、后台检查和检查间隔。
+- 设置：GitHub Token、GitHub 代理、安装根目录、界面语言、主题、后台检查、检查间隔和下载加速。
 - 系统托盘：关闭窗口后驻留托盘、手动检查、恢复窗口、退出和更新数量提示。
 
 公开仓库不需要 Token。私有仓库或频繁刷新建议配置 GitHub Token。代理设置会作用于 GitHub API 查询和 Release 资产下载。
@@ -69,11 +70,13 @@ ReleaseDock 会区分资产的管理方式：
 - **系统包**：Linux `.deb`、`.rpm` 和 `.pkg.tar.*` 通过系统包管理器安装和移除。
 - **外部安装器**：Windows `.exe` / `.msi` 可能把软件安装到 ReleaseDock 管理目录之外。
 
-本地托管更新使用 staging 和 rollback snapshot，替换失败时可以保留或恢复旧版本。系统安装器会保留可追踪信息：ReleaseDock 记录安装包路径，并且在 Windows 上可以从系统卸载注册表重新探测真实安装目录。
+本地托管更新使用 staging 和 rollback snapshot，替换失败时可以保留或恢复旧版本。系统安装器会保留可追踪信息：ReleaseDock 记录安装包路径，并且在 Windows 上会在安装后和 dashboard 刷新时，自动从系统卸载注册表重新探测真实安装目录。
+
+较早版本可能把裸可运行的 Windows `.exe` 记录成外部安装器。当下一次选中的资产仍是裸可执行文件时，ReleaseDock 会在成功更新时把这条记录迁移为本地托管安装。`.msi`、`setup.exe` 这类真实安装器，或已经接管到真实安装目录的记录，仍保持外部安装器语义。
 
 ## 下载可靠性
 
-Release 资产下载会先写入同目录的 `.part` 文件。传输中断后，下次会在服务器支持时通过 HTTP Range 继续下载。临时网络错误、读超时、连接重置和 5xx 响应会自动重试，成功后才会把缓存文件最终落盘。
+Release 资产下载会先写入同目录的 `.part` 文件。传输中断后，下次会在服务器支持时通过 HTTP Range 继续下载。服务器声明支持字节范围时，大文件默认最多使用 4 个 Range 连接下载；关闭加速、服务器不支持、Range 探测失败或分片请求失败时会回退到单连接 `.part` 续传路径。临时网络错误、读超时、连接重置和 5xx 响应会自动重试，成功后才会把缓存文件最终落盘。
 
 完整文件下载完成后才会执行 checksum 校验。部分下载文件不会被当成已安装资产使用。
 
@@ -82,7 +85,7 @@ Release 资产下载会先写入同目录的 `.part` 文件。传输中断后，
 ReleaseDock 聚焦 Windows 和 Linux 上通过 GitHub Releases 分发的桌面软件和 CLI 工具。
 
 - 如果项目已经通过 `winget`、`scoop`、`apt`、Flatpak、Homebrew 或类似渠道发布，优先使用系统包管理器。
-- 如果主要管理 AppImage，并且需要应用目录、桌面文件集成或 delta 更新，Gear Lever、Zap、AM/AppMan、AppImage Installer 这类工具更适合。
+- 如果主要管理 AppImage，并且需要应用目录、图标抽取、文件关联或 delta 更新，Gear Lever、Zap、AM/AppMan、AppImage Installer 这类工具更适合。
 - 如果要管理 Android APK 来源更新，Obtainium 更适合。
 - 如果你现在主要是手动从 GitHub Releases 下载软件，并希望统一跟踪版本、安装预览、发布说明、checksum 记录、断点续传、本地托管回滚，以及桌面版和 CLI 共用流程，ReleaseDock 更适合。
 
@@ -90,9 +93,9 @@ ReleaseDock 聚焦 Windows 和 Linux 上通过 GitHub Releases 分发的桌面�
 
 - 目前还没有发布 macOS 构建。
 - ReleaseDock 不提供应用目录或应用发现商店。
-- AppImage 桌面集成是有限支持，不等同于 AppImage 专用管理器。
-- 尚未实现 zsync 这类 delta 更新；中断下载会在服务器支持时通过 HTTP Range 断点续传。
-- Windows `.exe` / `.msi` 安装器仍由安装包自身决定安装行为。ReleaseDock 会记录安装包路径，并在注册表元数据可用时重新探测安装目录。
+- AppImage 集成只创建基础桌面启动项，不提供应用目录、图标抽取、文件关联或 AppStream 元数据。
+- 尚未实现 zsync 这类 delta 更新；中断下载会在服务器支持时通过 HTTP Range 断点续传，大文件完整下载可使用多个 Range 连接。
+- Windows `.exe` / `.msi` 安装器仍由安装包自身决定安装行为。ReleaseDock 会记录安装包路径，并在注册表元数据可用时自动重新探测安装目录。
 - ReleaseDock 不验证发布者身份，只使用上游 checksum 资产和本地记录的 SHA-256 摘要。
 
 ## 从源码构建
@@ -135,8 +138,8 @@ bash scripts/linux/build-desktop.sh
 匹配 `v*.*.*` 的 tag 会创建同版本 GitHub Release，并上传可用的 Linux 和 Windows 产物。
 
 ```bash
-git tag v0.2.10
-git push origin v0.2.10
+git tag v0.2.11
+git push origin v0.2.11
 ```
 
 ## 文档
@@ -154,5 +157,6 @@ git push origin v0.2.10
 
 - Windows `.exe` / `.msi` 和 Linux `.deb` / `.rpm` 安装器必须显式确认。
 - `GITHUB_TOKEN` 只用于 GitHub API 请求，不能写入日志。
-- ReleaseDock 只管理由它安装到自身安装根目录下的文件，不会自动接管任意系统已安装软件。
+- ReleaseDock 只管理由它安装到自身安装根目录下的文件；自动接管只针对 ReleaseDock 已创建且还没有启动路径的 Windows 系统安装器记录。
 - Windows 系统安装探测只读取卸载注册表元数据；接管探测不会执行卸载命令。
+- Windows 系统安装器记录确认“卸载”后会打开系统卸载工具，不会直接删除系统安装目录。

@@ -16,7 +16,8 @@ use releasedock_core::{
 
 #[cfg(target_os = "windows")]
 use releasedock_core::{
-    installer::adopt_system_installer_app_with, windows_install_registry::WindowsInstallDiscovery,
+    installer::{adopt_pending_system_installer_apps_with, adopt_system_installer_app_with},
+    windows_install_registry::WindowsInstallDiscovery,
 };
 
 #[test]
@@ -444,6 +445,121 @@ fn adopts_system_installer_apps_with_a_discovery_result() {
     assert_eq!(manifest.apps[0].install_path, adopted.install_path);
     assert_eq!(manifest.apps[0].launch_path, adopted.launch_path);
     assert_eq!(manifest.apps[0].installer_path, adopted.installer_path);
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn auto_adopts_pending_system_installer_apps_with_discovery_results() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ManifestStore::at_path(temp.path().join("apps.json"));
+
+    let installer_path = temp
+        .path()
+        .join("Downloads/ReleaseDock_0.2.5_x64_en-US.msi");
+    store
+        .save_apps(&[InstalledApp::with_install_metadata(
+            "owner/project",
+            "project",
+            "v1.0.0",
+            "ReleaseDock_0.2.5_x64_en-US.msi",
+            installer_path.clone(),
+            releasedock_core::asset_matcher::InstallType::WindowsInstaller,
+            InstallPathKind::SystemInstaller,
+            false,
+        )])
+        .unwrap();
+
+    let adopted = adopt_pending_system_installer_apps_with(&store, |_names, _versions| {
+        let install_path = temp.path().join("Program Files/ReleaseDock");
+        let launch_path = install_path.join("ReleaseDock.exe");
+        Ok(Some(WindowsInstallDiscovery {
+            install_path,
+            launch_path: Some(launch_path),
+        }))
+    })
+    .unwrap();
+
+    assert_eq!(adopted, 1);
+    let manifest = store.load().unwrap();
+    let adopted_app = &manifest.apps[0];
+    assert_eq!(
+        adopted_app.install_path,
+        temp.path().join("Program Files/ReleaseDock")
+    );
+    assert_eq!(
+        adopted_app.launch_path.as_deref(),
+        Some(
+            temp.path()
+                .join("Program Files/ReleaseDock/ReleaseDock.exe")
+                .as_path()
+        )
+    );
+    assert_eq!(
+        adopted_app.installer_path.as_deref(),
+        Some(installer_path.as_path())
+    );
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn auto_adoption_keeps_dashboard_source_records_when_discovery_fails() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ManifestStore::at_path(temp.path().join("apps.json"));
+    let installer_path = temp.path().join("Downloads/project-setup.exe");
+    store
+        .save_apps(&[InstalledApp::with_install_metadata(
+            "owner/project",
+            "project",
+            "v1.0.0",
+            "project-setup.exe",
+            installer_path.clone(),
+            releasedock_core::asset_matcher::InstallType::WindowsInstaller,
+            InstallPathKind::SystemInstaller,
+            false,
+        )])
+        .unwrap();
+
+    let adopted =
+        adopt_pending_system_installer_apps_with(&store, |_names, _versions| Ok(None)).unwrap();
+
+    assert_eq!(adopted, 0);
+    let manifest = store.load().unwrap();
+    assert_eq!(manifest.apps[0].install_path, installer_path);
+    assert_eq!(manifest.apps[0].launch_path, None);
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn auto_adoption_skips_records_that_already_have_launch_targets() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ManifestStore::at_path(temp.path().join("apps.json"));
+    let install_path = temp.path().join("Program Files/project");
+    let launch_path = install_path.join("project.exe");
+    let mut app = InstalledApp::with_install_metadata(
+        "owner/project",
+        "project",
+        "v1.0.0",
+        "project-setup.exe",
+        install_path.clone(),
+        releasedock_core::asset_matcher::InstallType::WindowsInstaller,
+        InstallPathKind::SystemInstaller,
+        false,
+    );
+    app.launch_path = Some(launch_path.clone());
+    store.save_apps(&[app]).unwrap();
+
+    let adopted = adopt_pending_system_installer_apps_with(&store, |_names, _versions| {
+        panic!("already adopted entries should not be discovered again")
+    })
+    .unwrap();
+
+    assert_eq!(adopted, 0);
+    let manifest = store.load().unwrap();
+    assert_eq!(manifest.apps[0].install_path, install_path);
+    assert_eq!(
+        manifest.apps[0].launch_path.as_deref(),
+        Some(launch_path.as_path())
+    );
 }
 
 #[cfg(not(target_os = "windows"))]

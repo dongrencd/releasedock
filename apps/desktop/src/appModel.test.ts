@@ -22,7 +22,6 @@ import {
   getRollbackAvailability,
   hasInstallableAsset,
   getInspectorDetailItems,
-  getAdoptSystemInstallAvailability,
   getLifecycleHistoryEntries,
   hasSecondaryInspectorActions,
   isFailedInstallProgress,
@@ -32,11 +31,13 @@ import {
   installPreviewIntegrityLabel,
   buildReleaseActionGuidance,
   buildInspectorStatusSummary,
+  formatInstallFailureMessage,
   isPreviewRequestCurrent,
   isPreviewResponseCurrent,
   releaseChannelForVersion,
   releaseDirectionLabel,
   resolveLifecycleSelection,
+  resolveUninstallExecutionKind,
   getDetailPathLabel,
   isRemovableTrackedItem,
   isRemovableNoRelease,
@@ -46,7 +47,6 @@ import {
   shouldShowInstallerFolderSecondary,
   shouldShowInstallLocationAction,
   shouldShowInstallLocationSecondary,
-  shouldShowAdoptSystemInstallAction,
   systemPackageManagerLabel,
   taskActionLabel,
   taskStageLabel,
@@ -305,6 +305,18 @@ describe("buildUpdateInbox", () => {
     expect(systemPackageManagerLabel("Rpm")).toBe("RPM");
   });
 
+  it("maps management kind conflicts to a localized install error", () => {
+    const raw = "management kind change for owner/project from ExternalInstaller to ManagedLocal is not supported";
+
+    expect(formatInstallFailureMessage(raw, "en")).toBe(
+      "This record still looks like an external installer. Remove the old record, then install the new executable again."
+    );
+    expect(formatInstallFailureMessage(raw, "zh-CN")).toBe(
+      "这条记录仍像外部安装器。请先移除旧记录，再用新的可执行文件重新安装。"
+    );
+    expect(formatInstallFailureMessage("download failed", "en")).toBe("download failed");
+  });
+
   it("shows recent lifecycle history in inspector details", () => {
     const detailItems = getInspectorDetailItems(
       {
@@ -436,7 +448,7 @@ describe("buildUpdateInbox", () => {
     expect(inbox[0].actionLabel).toBe("Open release");
   });
 
-  it("hides the secondary release action when release is already the primary action", () => {
+  it("hides the secondary release action from installed app inspectors", () => {
     const releaseApp = buildUpdateInbox([
       {
         id: "owner/choice",
@@ -465,7 +477,7 @@ describe("buildUpdateInbox", () => {
     ], language)[0];
 
     expect(shouldShowOpenReleaseSecondary(releaseApp, language)).toBe(false);
-    expect(shouldShowOpenReleaseSecondary(updateApp, language)).toBe(true);
+    expect(shouldShowOpenReleaseSecondary(updateApp, language)).toBe(false);
   });
 
   it("hides the secondary action group when no secondary action is available", () => {
@@ -1040,10 +1052,6 @@ describe("buildUpdateInbox", () => {
     expect(shouldShowInstallerFolderSecondary(systemInstaller)).toBe(true);
     expect(shouldShowInstallLocationSecondary(systemInstaller)).toBe(false);
     expect(isSystemUninstallOnly(systemInstaller)).toBe(false);
-    expect(shouldShowAdoptSystemInstallAction(systemInstaller)).toBe(true);
-    expect(getAdoptSystemInstallAvailability(systemInstaller, false, language)).toEqual({
-      enabled: true
-    });
   });
 
   it("opens adopted system installers like installed apps when a launch target exists", () => {
@@ -1067,7 +1075,6 @@ describe("buildUpdateInbox", () => {
     expect(getOpenAppAvailability(adoptedInstaller, false, language)).toEqual({ enabled: true });
     expect(shouldShowInstallLocationSecondary(adoptedInstaller)).toBe(true);
     expect(shouldShowInstallerFolderSecondary(adoptedInstaller)).toBe(false);
-    expect(shouldShowAdoptSystemInstallAction(adoptedInstaller)).toBe(false);
     expect(getInspectorDetailItems(adoptedInstaller, language)).toEqual([
       {
         label: "Asset file",
@@ -1118,6 +1125,77 @@ describe("buildUpdateInbox", () => {
     });
   });
 
+  it("uses the unified uninstall action for external system installers", () => {
+    const systemInstaller = buildUpdateInbox([
+      {
+        id: "owner/setup",
+        name: "Setup",
+        currentVersion: "v1.0.0",
+        latestVersion: "v1.0.0",
+        status: "current",
+        source: "GitHub",
+        installPath: "C:/Users/test/Downloads/setup.exe",
+        installPathKind: "systemInstaller",
+        installType: "WindowsInstaller",
+        uninstallSupported: false
+      }
+    ], language)[0];
+
+    expect(isSystemUninstallOnly(systemInstaller)).toBe(true);
+    expect(getUninstallAvailability(systemInstaller, false, language)).toEqual({ enabled: true });
+    expect(getSelectionActionAvailability([systemInstaller], [systemInstaller.id], false, language)).toEqual({
+      enabled: true,
+      kind: "uninstall",
+      label: "Uninstall",
+      uninstallTargetId: "owner/setup",
+      candidateCount: 0,
+      skippedCount: 0
+    });
+  });
+
+  it("routes uninstall confirmations by install management type", () => {
+    const [managed, linuxPackage, systemInstaller] = buildUpdateInbox([
+      {
+        id: "owner/managed",
+        name: "Managed",
+        currentVersion: "v1.0.0",
+        latestVersion: "v1.0.0",
+        status: "current",
+        source: "GitHub",
+        installPath: "/tmp/managed",
+        installPathKind: "managedPath"
+      },
+      {
+        id: "owner/package",
+        name: "Package",
+        currentVersion: "v1.0.0",
+        latestVersion: "v1.0.0",
+        status: "current",
+        source: "GitHub",
+        installPath: "/tmp/package.deb",
+        installPathKind: "systemInstaller",
+        installType: "LinuxPackage",
+        uninstallSupported: true
+      },
+      {
+        id: "owner/setup",
+        name: "Setup",
+        currentVersion: "v1.0.0",
+        latestVersion: "v1.0.0",
+        status: "current",
+        source: "GitHub",
+        installPath: "C:/Users/test/Downloads/setup.exe",
+        installPathKind: "systemInstaller",
+        installType: "WindowsInstaller",
+        uninstallSupported: false
+      }
+    ], language);
+
+    expect(resolveUninstallExecutionKind(managed)).toBe("releasedock");
+    expect(resolveUninstallExecutionKind(linuxPackage)).toBe("releasedock");
+    expect(resolveUninstallExecutionKind(systemInstaller)).toBe("systemSettings");
+  });
+
   it("uses a plain uninstall label in Chinese", () => {
     expect(createUiText("zh-CN").uninstallAbility).toBe("卸载");
   });
@@ -1145,6 +1223,28 @@ describe("buildUpdateInbox", () => {
       enabled: true,
       candidateCount: 1,
       skippedCount: 0
+    });
+  });
+
+  it("does not fall back to open-release for installed apps without any actionable path", () => {
+    const app = buildUpdateInbox([
+      {
+        id: "owner/broken-installed",
+        name: "Broken Installed",
+        currentVersion: "v1.0.0",
+        latestVersion: "No release",
+        status: "noRelease",
+        source: "GitHub",
+        installPath: "",
+        installPathKind: "unknown",
+        releaseUrl: "https://github.com/owner/broken-installed/releases"
+      }
+    ], language)[0];
+
+    expect(app.actionLabel).toBe("No launch target found");
+    expect(getPrimaryActionAvailability(app, false, language)).toEqual({
+      enabled: false,
+      reason: "No launch target found"
     });
   });
 

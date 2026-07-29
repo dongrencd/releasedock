@@ -18,12 +18,15 @@ use anyhow::{Context, Result};
 use releasedock_core::{
     asset_matcher::{Architecture, AssetMatcher, InstallType, OperatingSystem},
     config::{Config, ConfigStore, Language},
-    config::{background_check_enabled, check_interval_minutes, effective_install_root},
+    config::{
+        background_check_enabled, check_interval_minutes, download_acceleration_enabled,
+        download_max_connections, effective_install_root,
+    },
     install_plan::{InstallManagementKind, InstallPlan, InstallSelectionGuard},
     installer::{
-        ProgressReporter, RollbackGuard, TaskProgress, adopt_system_installer_app,
-        infer_launch_target, install_from_plan, rollback_repo_guarded as core_rollback_repo_guarded,
-        uninstall_repo as core_uninstall_repo,
+        ProgressReporter, RollbackGuard, TaskProgress, adopt_pending_system_installer_apps,
+        adopt_system_installer_app, infer_launch_target, install_from_plan,
+        rollback_repo_guarded as core_rollback_repo_guarded, uninstall_repo as core_uninstall_repo,
     },
     integrity::{IntegrityPlan, IntegrityStatus, IntegrityVerifier},
     manifest::{
@@ -603,6 +606,8 @@ async fn open_system_uninstall_settings() -> Result<(), String> {
 
 async fn build_dashboard(app: &tauri::AppHandle, refresh_id: u64) -> Result<Vec<ManagedAppView>> {
     let store = ManifestStore::default()?;
+    // Dashboard 刷新不能被后台接管影响；失败时继续使用现有 manifest 记录渲染。
+    let _ = adopt_pending_system_installer_apps(&store);
     let manifest = store.load()?;
     let tracked_store = TrackedRepoStore::default()?;
     tracked_store.seed_if_missing(&[DEFAULT_TRACKED_REPO_ID])?;
@@ -1784,6 +1789,8 @@ struct DesktopConfig {
     background_check_enabled: Option<bool>,
     check_interval_minutes: Option<u32>,
     tray_hint_shown: Option<bool>,
+    download_acceleration_enabled: Option<bool>,
+    download_max_connections: Option<u8>,
 }
 
 impl From<DesktopConfig> for Config {
@@ -1797,12 +1804,16 @@ impl From<DesktopConfig> for Config {
             background_check_enabled: value.background_check_enabled,
             check_interval_minutes: value.check_interval_minutes,
             tray_hint_shown: value.tray_hint_shown,
+            download_acceleration_enabled: value.download_acceleration_enabled,
+            download_max_connections: value.download_max_connections,
         }
     }
 }
 
 fn desktop_config_from_runtime(value: Config) -> DesktopConfig {
     let effective_install_root = effective_install_root(Some(&value), install_root_fallback());
+    let download_acceleration_enabled = download_acceleration_enabled(Some(&value));
+    let download_max_connections = download_max_connections(Some(&value));
     DesktopConfig {
         github_token: value.github_token,
         proxy_url: value.proxy_url,
@@ -1813,6 +1824,8 @@ fn desktop_config_from_runtime(value: Config) -> DesktopConfig {
         background_check_enabled: value.background_check_enabled,
         check_interval_minutes: value.check_interval_minutes,
         tray_hint_shown: value.tray_hint_shown,
+        download_acceleration_enabled: Some(download_acceleration_enabled),
+        download_max_connections: Some(download_max_connections),
     }
 }
 

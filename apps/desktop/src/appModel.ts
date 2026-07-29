@@ -66,6 +66,8 @@ export type ActionAvailability = {
   reason?: string;
 };
 
+export type UninstallExecutionKind = "releasedock" | "systemSettings";
+
 export type BulkRemoveAvailability = {
   enabled: boolean;
   candidateCount: number;
@@ -488,6 +490,10 @@ export function isSystemUninstallOnly(item: ManagedApp | null): boolean {
     && item.installType !== "Executable";
 }
 
+export function resolveUninstallExecutionKind(item: ManagedApp | null): UninstallExecutionKind {
+  return isSystemUninstallOnly(item) ? "systemSettings" : "releasedock";
+}
+
 function isAdoptedSystemInstaller(item: ManagedApp): boolean {
   // 有 launchPath 表示系统安装器结果已被接管，installPath 此时代表真实安装目录。
   return isSystemInstallerKind(item.installPathKind) && Boolean(item.launchPath);
@@ -499,38 +505,6 @@ function resolveInstallerPackagePath(item: ManagedApp): string | null {
   }
 
   return item.installerPath || item.installPath || null;
-}
-
-export function shouldShowAdoptSystemInstallAction(item: ManagedApp | null): boolean {
-  if (!item) {
-    return false;
-  }
-
-  // 只有还没探测出可执行目标的系统安装器，才需要手动重新探测。
-  return item.status !== "needsChoice"
-    && isSystemInstallerKind(item.installPathKind)
-    && !item.launchPath;
-}
-
-export function getAdoptSystemInstallAvailability(
-  item: ManagedApp | null,
-  busy: boolean,
-  language: Language
-): ActionAvailability {
-  const ui = createUiText(language);
-  if (busy) {
-    return { enabled: false, reason: ui.model.busy };
-  }
-
-  if (!item) {
-    return { enabled: false, reason: ui.model.selectApp };
-  }
-
-  if (!shouldShowAdoptSystemInstallAction(item)) {
-    return { enabled: false, reason: ui.model.noLaunchTarget };
-  }
-
-  return { enabled: true };
 }
 
 export function isRemovableNoRelease(item: ManagedApp): boolean {
@@ -765,6 +739,15 @@ export function installManagementKindLabel(value: InstallManagementKind, languag
   }
 }
 
+export function formatInstallFailureMessage(message: string, language: Language): string {
+  if (!message.includes("management kind change")) {
+    return message;
+  }
+
+  const ui = createUiText(language);
+  return ui.model.installManagementKindChange;
+}
+
 export function systemPackageManagerLabel(value: SystemPackageManagerName): string {
   switch (value) {
     case "Debian":
@@ -976,7 +959,9 @@ export function resolvePrimaryActionKind(item: ManagedApp | null): PrimaryAction
           : "openInstallLocation";
       }
 
-      return "openRelease";
+      return item.status === "noRelease" && item.currentVersion === "Not installed"
+        ? "openRelease"
+        : null;
     case "failed":
       return "retry";
   }
@@ -984,13 +969,9 @@ export function resolvePrimaryActionKind(item: ManagedApp | null): PrimaryAction
   return null;
 }
 
-// 次级 Release 动作只在主按钮不是 Release 时出现，避免重复出口。
-export function shouldShowOpenReleaseSecondary(item: InboxItem | null, language: Language): boolean {
-  if (!item) {
-    return false;
-  }
-
-  return item.actionLabel !== createUiText(language).openRelease;
+// Inspector 不再提供 Release 二级入口；无可安装资产时仍由主动作打开 Release。
+export function shouldShowOpenReleaseSecondary(_item: InboxItem | null, _language: Language): boolean {
+  return false;
 }
 
 // 次级打开软件动作只在可更新且存在可执行目标时出现，避免和主按钮重复。
@@ -1193,6 +1174,10 @@ export function getPrimaryActionAvailability(
     return getOpenReleaseAvailability(item, busy, language);
   }
 
+  if (actionKind == null) {
+    return { enabled: false, reason: ui.model.noLaunchTarget };
+  }
+
   return { enabled: true };
 }
 
@@ -1229,10 +1214,6 @@ export function getUninstallAvailability(
 
   if (item.status === "needsChoice") {
     return { enabled: false, reason: ui.model.selectAssetBeforeUninstall };
-  }
-
-  if (isSystemUninstallOnly(item)) {
-    return { enabled: false, reason: ui.model.useSystemUninstall };
   }
 
   return { enabled: true };
@@ -1349,7 +1330,7 @@ export function getSelectionActionAvailability(
   const selectedSet = new Set(selectedIds);
   const selectedApps = apps.filter((app) => selectedSet.has(app.id));
   const uninstallableApps = selectedApps.filter(
-    (app) => !isRemovableTrackedItem(app) && app.status !== "needsChoice" && !isSystemUninstallOnly(app)
+    (app) => !isRemovableTrackedItem(app) && app.status !== "needsChoice"
   );
 
   // 单个已安装软件时，列表危险动作进入现有卸载确认流；移除跟踪只保留给未安装项。
@@ -1459,7 +1440,7 @@ function actionForApp(app: ManagedApp, language: Language): InboxItem["actionLab
       return ui.action.retry;
   }
 
-  return ui.action.update;
+  return ui.model.noLaunchTarget;
 }
 
 function priorityForStatus(status: AppStatus): number {

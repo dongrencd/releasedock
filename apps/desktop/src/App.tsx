@@ -22,7 +22,6 @@ import {
 } from "lucide-react";
 import {
   addRepo,
-  adoptSystemInstall,
   type DashboardItemEvent,
   type DashboardProgressEvent,
   bulkRemoveTrackedRepos,
@@ -60,15 +59,14 @@ import {
   getPrimaryActionAvailability,
   getRollbackAvailability,
   getInspectorDetailItems,
-  getAdoptSystemInstallAvailability,
   getLifecycleHistoryEntries,
   getSelectionActionAvailability,
   getSelectionSummary,
   buildReleaseActionGuidance,
   buildInspectorStatusSummary,
+  formatInstallFailureMessage,
   hasInstallableAsset,
   isManagedPathKind,
-  isSystemUninstallOnly,
   isSystemInstallerKind,
   isRemovableNoRelease,
   isRemovableTrackedItem,
@@ -84,12 +82,12 @@ import {
   isPreviewResponseCurrent,
   isActionRequired,
   resolvePrimaryActionKind,
+  resolveUninstallExecutionKind,
   releaseChannelForVersion,
   resolveLifecycleSelection,
   selectVisibleIds,
   systemPackageManagerLabel,
   shouldShowLifecyclePreviewAction,
-  shouldShowAdoptSystemInstallAction,
   shouldShowInstallLocationAction,
   shouldShowInstallLocationSecondary,
   shouldShowInstallerFolderSecondary,
@@ -132,6 +130,8 @@ type ConfigDraft = {
   themeMode: ThemeMode;
   backgroundCheckEnabled: boolean;
   checkIntervalMinutes: number;
+  downloadAccelerationEnabled: boolean;
+  downloadMaxConnections: string;
 };
 
 type TaskProgressView = Omit<TaskProgressEvent, "stage"> & {
@@ -168,7 +168,9 @@ export function App() {
     language: "en",
     themeMode: "system",
     backgroundCheckEnabled: true,
-    checkIntervalMinutes: 30
+    checkIntervalMinutes: 30,
+    downloadAccelerationEnabled: true,
+    downloadMaxConnections: "4"
   });
   const themeMode = normalizeThemeMode(configDraft.themeMode);
   const currentConfigKey = useRef(configDraftKey(configDraft));
@@ -556,7 +558,9 @@ export function App() {
         language: normalizeLanguage(data.language),
         themeMode: normalizeThemeMode(data.themeMode),
         backgroundCheckEnabled: data.backgroundCheckEnabled ?? true,
-        checkIntervalMinutes: data.checkIntervalMinutes ?? 30
+        checkIntervalMinutes: data.checkIntervalMinutes ?? 30,
+        downloadAccelerationEnabled: data.downloadAccelerationEnabled ?? true,
+        downloadMaxConnections: String(clampDownloadMaxConnections(data.downloadMaxConnections))
       };
       lastSavedConfigKey.current = configDraftKey(draft);
       currentConfigKey.current = configDraftKey(draft);
@@ -632,7 +636,9 @@ export function App() {
         language: normalizeLanguage(saved.language),
         themeMode: normalizeThemeMode(saved.themeMode),
         backgroundCheckEnabled: saved.backgroundCheckEnabled ?? true,
-        checkIntervalMinutes: saved.checkIntervalMinutes ?? 30
+        checkIntervalMinutes: saved.checkIntervalMinutes ?? 30,
+        downloadAccelerationEnabled: saved.downloadAccelerationEnabled ?? true,
+        downloadMaxConnections: String(clampDownloadMaxConnections(saved.downloadMaxConnections))
       };
       lastSavedConfigKey.current = configDraftKey(savedDraft);
       if (currentConfigKey.current === draftKey) {
@@ -748,14 +754,15 @@ export function App() {
       setTaskStatus(taskText.installedOrUpdated(item.name));
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
-      setError(message);
+      const installError = formatInstallFailureMessage(message, languageRef.current);
+      setError(installError);
       setTaskStatus(taskText.installFailed);
       setTaskProgress((current) =>
         current && current.repoId === item.id
           ? {
               ...current,
               stage: "failed",
-              message
+              message: installError
             }
           : current
       );
@@ -933,7 +940,7 @@ export function App() {
   }
 
   function requestUninstall(item: InboxItem | null) {
-    if (!item || item.status === "needsChoice" || isSystemUninstallOnly(item)) {
+    if (!item || item.status === "needsChoice") {
       return;
     }
 
@@ -943,7 +950,27 @@ export function App() {
   }
 
   async function handleConfirmUninstall(item: InboxItem | null) {
-    if (!item || item.status === "needsChoice" || isSystemUninstallOnly(item)) {
+    if (!item || item.status === "needsChoice") {
+      return;
+    }
+
+    if (resolveUninstallExecutionKind(item) === "systemSettings") {
+      clearTaskProgress();
+      setBusy(true);
+      setError(null);
+      try {
+        await openSystemUninstallSettings();
+        setPendingInstall(null);
+        setPendingRollback(null);
+        setPendingUninstall(null);
+        setTaskStatus(taskText.openedSystemUninstall(item.name));
+      } catch (caught) {
+        const message = caught instanceof Error ? caught.message : String(caught);
+        setError(message);
+        setTaskStatus(taskText.uninstallFailed);
+      } finally {
+        setBusy(false);
+      }
       return;
     }
 
@@ -1138,31 +1165,6 @@ export function App() {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
       setTaskStatus(taskText.openFolderFailed);
-    }
-  }
-
-  async function handleAdoptSystemInstall(item: InboxItem | null) {
-    if (!item || !getAdoptSystemInstallAvailability(item, busy, language).enabled) {
-      clearTaskProgress();
-      setTaskStatus(taskText.detectSystemInstallFailed);
-      return;
-    }
-
-    clearTaskProgress();
-    setBusy(true);
-    setError(null);
-    setTaskStatus(taskText.detectingSystemInstall(item.name));
-    try {
-      const data = await adoptSystemInstall(item.id);
-      setApps(data);
-      setSelectedId(data.find((app) => app.id === item.id)?.id ?? data[0]?.id ?? null);
-      setTaskStatus(taskText.detectedSystemInstall(item.name));
-    } catch (caught) {
-      const message = caught instanceof Error ? caught.message : String(caught);
-      setError(message);
-      setTaskStatus(taskText.detectSystemInstallFailed);
-    } finally {
-      setBusy(false);
     }
   }
 
@@ -1493,9 +1495,6 @@ export function App() {
                   onOpenInstallerFolder={() => {
                     void handleOpenInstallerFolder(selected);
                   }}
-                  onAdoptSystemInstall={() => {
-                    void handleAdoptSystemInstall(selected);
-                  }}
                   onOpenApp={() => {
                     void handleOpenApp(selected);
                   }}
@@ -1655,8 +1654,8 @@ export function App() {
                     <small>{ui.proxyUrlHelp}</small>
                   </label>
 
-                  <div className="fieldRow backgroundCheckRow">
-                    <div className="backgroundCheckHeader">
+                  <div className="fieldRow compoundSettingRow">
+                    <div className="compoundSettingHeader">
                       <span>{ui.backgroundCheck}</span>
                       <label className="toggleRow">
                         <input
@@ -1667,7 +1666,7 @@ export function App() {
                         <span>{configDraft.backgroundCheckEnabled ? ui.backgroundCheckEnabled : ui.backgroundCheckDisabled}</span>
                       </label>
                     </div>
-                    <div className="backgroundCheckControls">
+                    <div className="compoundSettingControls">
                       <label className="intervalField">
                         <span>{ui.checkInterval}</span>
                         <input
@@ -1686,6 +1685,42 @@ export function App() {
                       </label>
                     </div>
                     <small>{ui.backgroundCheckHelp} {ui.checkIntervalHelp}</small>
+                  </div>
+
+                  <div className="fieldRow compoundSettingRow">
+                    <div className="compoundSettingHeader">
+                      <span>{ui.downloadAcceleration}</span>
+                      <label className="toggleRow">
+                        <input
+                          type="checkbox"
+                          checked={configDraft.downloadAccelerationEnabled}
+                          onChange={(event) => setConfigDraft((current) => ({ ...current, downloadAccelerationEnabled: event.target.checked }))}
+                        />
+                        <span>{configDraft.downloadAccelerationEnabled ? ui.downloadAccelerationEnabled : ui.downloadAccelerationDisabled}</span>
+                      </label>
+                    </div>
+                    <div className="compoundSettingControls">
+                      <label className="intervalField">
+                        <span>{ui.downloadMaxConnections}</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={8}
+                          value={configDraft.downloadMaxConnections}
+                          onChange={(event) => setConfigDraft((current) => ({
+                            ...current,
+                            downloadMaxConnections: event.target.value
+                          }))}
+                          onBlur={() => setConfigDraft((current) => ({
+                            ...current,
+                            downloadMaxConnections: String(clampDownloadMaxConnections(current.downloadMaxConnections))
+                          }))}
+                          disabled={!configDraft.downloadAccelerationEnabled}
+                        />
+                        <span className="intervalUnit">{ui.downloadConnectionsUnit}</span>
+                      </label>
+                    </div>
+                    <small>{ui.downloadAccelerationHelp} {ui.downloadMaxConnectionsHelp}</small>
                   </div>
 
                 </div>
@@ -1845,7 +1880,6 @@ function Inspector({
   onOpenApp,
   onOpenInstallPath,
   onOpenInstallerFolder,
-  onAdoptSystemInstall,
   onOpenRelease,
   onCopyReleaseNote,
   onCopyValue,
@@ -1877,7 +1911,6 @@ function Inspector({
   onOpenApp: () => void;
   onOpenInstallPath: () => void;
   onOpenInstallerFolder: () => void;
-  onAdoptSystemInstall: () => void;
   onOpenRelease: () => void;
   onCopyReleaseNote: (note?: string) => void;
   onCopyValue: (label: string, value: string) => void;
@@ -1919,7 +1952,6 @@ function Inspector({
   const primaryActionAvailability = getPrimaryActionAvailability(item, busy, language);
   const confirmInstallAvailability = getConfirmInstallAvailability(item, busy, language);
   const uninstallAvailability = getUninstallAvailability(item, busy, language);
-  const adoptSystemInstallAvailability = getAdoptSystemInstallAvailability(item, busy, language);
   const primaryActionKind = resolvePrimaryActionKind(item);
   const detailItems = getInspectorDetailItems(item, language);
   const lifecycleHistory = getLifecycleHistoryEntries(item, language);
@@ -1948,7 +1980,6 @@ function Inspector({
       ? `${inspectorSummary.detail} · ${selectedReleasePublishedAt}`
       : inspectorSummary?.detail ?? null;
   const showLifecyclePreviewAction = shouldShowLifecyclePreviewAction(item) && !installedLifecycleItem;
-  const showAdoptSystemInstallAction = isWindowsPlatform() && shouldShowAdoptSystemInstallAction(item);
   const showOpenAppSecondary = shouldShowOpenAppSecondary(item);
   const showOpenReleaseSecondary = shouldShowOpenReleaseSecondary(item, language);
   const showInstallLocationSecondary = shouldShowInstallLocationSecondary(item);
@@ -1958,7 +1989,6 @@ function Inspector({
     || showOpenReleaseSecondary
     || showInstallLocationSecondary
     || showInstallerFolderSecondary;
-  const showSystemUninstallAction = isSystemUninstallOnly(item);
   const pendingInstallSafetyText = pendingInstall
     ? [
         pendingInstall.integrity.checksumAssetName ?? ui.installPreviewNoChecksumHint,
@@ -1985,25 +2015,12 @@ function Inspector({
               <ExternalLink size={16} />
             ) : primaryActionKind === "openInstallLocation" || primaryActionKind === "openInstallerFile" ? (
               <FolderOpen size={16} />
+            ) : primaryActionKind == null ? (
+              <CircleAlert size={16} />
             ) : (
               <Download size={16} />
             )}
             <span>{item.actionLabel}</span>
-          </button>
-        </div>
-      ) : null}
-
-      {showAdoptSystemInstallAction ? (
-        <div className="inspectorActionsGroup repairActionGroup">
-          <button
-            type="button"
-            className="ghostButton actionButton wide inspectorRepairAction"
-            onClick={onAdoptSystemInstall}
-            disabled={!adoptSystemInstallAvailability.enabled}
-            aria-label={adoptSystemInstallAvailability.reason ?? ui.detectSystemInstall}
-          >
-            <RefreshCw size={16} />
-            <span>{ui.detectSystemInstall}</span>
           </button>
         </div>
       ) : null}
@@ -2056,39 +2073,16 @@ function Inspector({
       {/* 已安装的软件才露出卸载入口；未安装的跟踪项只保留版本预览路径。 */}
       {showDangerInspectorActions ? (
         <div className="inspectorActionsGroup dangerActionGroup">
-          {showSystemUninstallAction ? (
-            isWindowsPlatform() ? (
-              <TooltipButton
-                label={ui.openSystemUninstall}
-                onClick={() => void openSystemUninstallSettings()}
-                className="dangerButton actionButton wide inspectorDangerAction"
-              >
-                <Trash2 size={16} />
-                <span>{ui.openSystemUninstall}</span>
-              </TooltipButton>
-            ) : (
-              <button
-                type="button"
-                className="ghostButton actionButton wide inspectorDangerAction"
-                disabled
-                aria-label={uninstallAvailability.reason ?? ui.model.useSystemUninstall}
-              >
-                <Trash2 size={16} />
-                <span>{ui.model.useSystemUninstall}</span>
-              </button>
-            )
-          ) : (
-            <button
-              type="button"
-              className="dangerButton actionButton wide inspectorDangerAction"
-              onClick={onRequestUninstall}
-              disabled={!uninstallAvailability.enabled}
-              aria-label={uninstallAvailability.reason ?? ui.uninstallAbility}
-            >
-              <Trash2 size={16} />
-              <span>{ui.uninstallAbility}</span>
-            </button>
-          )}
+          <button
+            type="button"
+            className="dangerButton actionButton wide inspectorDangerAction"
+            onClick={onRequestUninstall}
+            disabled={!uninstallAvailability.enabled}
+            aria-label={uninstallAvailability.reason ?? ui.uninstallAbility}
+          >
+            <Trash2 size={16} />
+            <span>{ui.uninstallAbility}</span>
+          </button>
         </div>
       ) : null}
     </div>
@@ -2677,7 +2671,9 @@ function configDraftKey(config: ConfigDraft) {
     language: normalizeLanguage(config.language),
     themeMode: normalizeThemeMode(config.themeMode),
     backgroundCheckEnabled: config.backgroundCheckEnabled,
-    checkIntervalMinutes: config.checkIntervalMinutes
+    checkIntervalMinutes: config.checkIntervalMinutes,
+    downloadAccelerationEnabled: config.downloadAccelerationEnabled,
+    downloadMaxConnections: clampDownloadMaxConnections(config.downloadMaxConnections)
   });
 }
 
@@ -2690,8 +2686,18 @@ function desktopConfigFromDraft(config: ConfigDraft): DesktopConfig {
     language: config.language,
     themeMode: normalizeThemeMode(config.themeMode),
     backgroundCheckEnabled: config.backgroundCheckEnabled,
-    checkIntervalMinutes: config.checkIntervalMinutes
+    checkIntervalMinutes: config.checkIntervalMinutes,
+    downloadAccelerationEnabled: config.downloadAccelerationEnabled,
+    downloadMaxConnections: clampDownloadMaxConnections(config.downloadMaxConnections)
   };
+}
+
+function clampDownloadMaxConnections(value: number | string | null | undefined) {
+  const numericValue = typeof value === "string" ? Number.parseInt(value, 10) : value;
+  if (typeof numericValue !== "number" || Number.isNaN(numericValue)) {
+    return 4;
+  }
+  return Math.max(1, Math.min(8, Math.round(numericValue)));
 }
 
 function filterLabel(status: InboxFilter, language: Language) {

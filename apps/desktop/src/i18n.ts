@@ -108,8 +108,6 @@ type Copy = {
   openInstallLocation: string;
   openInstallerFile: string;
   openInstallerFolder: string;
-  detectSystemInstall: string;
-  openSystemUninstall: string;
   removeTracked: string;
   noSelection: string;
   settingsTitleSmall: string;
@@ -170,6 +168,13 @@ type Copy = {
   checkInterval: string;
   checkIntervalUnit: string;
   checkIntervalHelp: string;
+  downloadAcceleration: string;
+  downloadAccelerationEnabled: string;
+  downloadAccelerationDisabled: string;
+  downloadAccelerationHelp: string;
+  downloadMaxConnections: string;
+  downloadConnectionsUnit: string;
+  downloadMaxConnectionsHelp: string;
   trayBadge: (count: number) => string;
   currentStatusLoading: string;
   currentStatusLoaded: (count: number) => string;
@@ -248,11 +253,11 @@ type Copy = {
     selectApp: string;
     noInstallableAsset: string;
     selectAssetBeforeUninstall: string;
-    useSystemUninstall: string;
     noLaunchTarget: string;
     onlyUntracked: string;
     selectAtLeastOne: string;
     selectInstalledSeparately: string;
+    installManagementKindChange: string;
     skippedCount: (count: number) => string;
     searchHint: string;
   };
@@ -369,11 +374,9 @@ const copy: Record<Language, Copy> = {
     openInstallLocation: "Open install location",
     openInstallerFile: "Run installer",
     openInstallerFolder: "Open installer folder",
-    detectSystemInstall: "Re-detect install result",
-    openSystemUninstall: "Open system uninstall",
     removeTracked: "Remove tracking",
     noSelection: "No app selected",
-    settingsTitleSmall: "5 local settings",
+    settingsTitleSmall: "6 local settings",
     installRoot: "Install root",
     installRootHelp: "Downloaded installers and managed apps live under this root.",
     usingDefaultInstallRoot: "Using default install root",
@@ -431,6 +434,13 @@ const copy: Record<Language, Copy> = {
     checkInterval: "Check interval",
     checkIntervalUnit: "minutes",
     checkIntervalHelp: "Time between background update checks. Default is 30 minutes.",
+    downloadAcceleration: "Download acceleration",
+    downloadAccelerationEnabled: "Enabled",
+    downloadAccelerationDisabled: "Disabled",
+    downloadAccelerationHelp: "Use multiple HTTP Range connections for large Release assets when supported; otherwise use the single-connection resume path.",
+    downloadMaxConnections: "Max connections",
+    downloadConnectionsUnit: "connections",
+    downloadMaxConnectionsHelp: "Default is 4. Values are limited to 1-8.",
     trayBadge: (count) => `${count} updates available`,
     currentStatusLoading: "Loading GitHub Release data",
     currentStatusLoaded: (count) => `Loaded ${count} apps`,
@@ -509,11 +519,11 @@ const copy: Record<Language, Copy> = {
       selectApp: "Select an app first",
       noInstallableAsset: "No installable asset for this platform",
       selectAssetBeforeUninstall: "Pick an asset before uninstalling",
-      useSystemUninstall: "Use system uninstall",
       noLaunchTarget: "No launch target found",
       onlyUntracked: "Only uninstalled tracked items can be removed",
       selectAtLeastOne: "Select at least one uninstalled tracked item",
       selectInstalledSeparately: "Select installed apps separately before uninstalling",
+      installManagementKindChange: "This record still looks like an external installer. Remove the old record, then install the new executable again.",
       skippedCount: (count) => `Skipping ${count} non-removable item(s)`,
       searchHint: "Local filtering only; this does not search GitHub"
     },
@@ -630,11 +640,9 @@ const copy: Record<Language, Copy> = {
     openInstallLocation: "打开安装目录",
     openInstallerFile: "执行安装包",
     openInstallerFolder: "打开安装包目录",
-    detectSystemInstall: "重新探测安装结果",
-    openSystemUninstall: "打开系统卸载",
     removeTracked: "移除跟踪",
     noSelection: "暂无可展示的软件",
-    settingsTitleSmall: "5 个本地配置项",
+    settingsTitleSmall: "6 个本地配置项",
     installRoot: "软件安装位置",
     installRootHelp: "下载缓存和自动管理的软件会放在这个位置下的 `apps` 目录中。",
     usingDefaultInstallRoot: "使用默认安装目录",
@@ -692,6 +700,13 @@ const copy: Record<Language, Copy> = {
     checkInterval: "检查间隔",
     checkIntervalUnit: "分钟",
     checkIntervalHelp: "后台检查更新的时间间隔，默认 30 分钟。",
+    downloadAcceleration: "下载加速",
+    downloadAccelerationEnabled: "已启用",
+    downloadAccelerationDisabled: "已关闭",
+    downloadAccelerationHelp: "服务器支持时，大型 Release 资产会使用多个 HTTP Range 连接下载；否则使用单连接断点续传。",
+    downloadMaxConnections: "最大连接数",
+    downloadConnectionsUnit: "连接",
+    downloadMaxConnectionsHelp: "默认 4，取值限制为 1-8。",
     trayBadge: (count) => `${count} 个有更新`,
     currentStatusLoading: "正在加载 GitHub Release 数据",
     currentStatusLoaded: (count) => `已加载 ${count} 个软件`,
@@ -770,11 +785,11 @@ const copy: Record<Language, Copy> = {
       selectApp: "请先选择一个软件",
       noInstallableAsset: "当前平台没有可安装资产",
       selectAssetBeforeUninstall: "先选择资产后才能卸载",
-      useSystemUninstall: "需使用系统卸载",
       noLaunchTarget: "未找到可启动目标",
       onlyUntracked: "只有未安装的跟踪项可以移除",
       selectAtLeastOne: "选择至少一个未安装的跟踪项",
       selectInstalledSeparately: "请单独选择已安装软件后再卸载",
+      installManagementKindChange: "这条记录仍像外部安装器。请先移除旧记录，再用新的可执行文件重新安装。",
       skippedCount: (count) => `将跳过 ${count} 个不可移除项`,
       searchHint: "这是本地筛选，不是 GitHub 全网搜索"
     },
@@ -850,11 +865,6 @@ export function createTaskStatusText(language: Language) {
     generatedInstallPreview: (name: string) =>
       localizedTemplate(language, `Generated install preview for ${name}`, `已生成 ${name} 的安装预览`),
     failedToBuildInstallPreview: localizedText(language, "Failed to build install preview", "生成安装预览失败"),
-    detectingSystemInstall: (name: string) =>
-      localizedTemplate(language, `Re-detecting install result for ${name}`, `正在重新探测 ${name} 的安装结果`),
-    detectedSystemInstall: (name: string) =>
-      localizedTemplate(language, `Re-detected install result for ${name}`, `已重新探测 ${name} 的安装结果`),
-    detectSystemInstallFailed: localizedText(language, "Failed to re-detect install result", "重新探测安装结果失败"),
     loadingReleaseVersions: ui.loadingVersions,
     releasePolicyUpdated: localizedText(language, "Release policy updated", "Release 策略已更新"),
     releasePolicyFailed: localizedText(language, "Failed to update release policy", "更新 Release 策略失败"),
@@ -903,6 +913,12 @@ export function createTaskStatusText(language: Language) {
     openedInstallerFile: (name: string) => localizedTemplate(language, `Opened ${name} installer`, `已打开 ${name} 的安装包`),
     openedInstallerFolder: (name: string) => localizedTemplate(language, `Opened ${name} installer folder`, `已打开 ${name} 的安装包目录`),
     openedInstallLocation: (name: string) => localizedTemplate(language, `Opened ${name} install location`, `已打开 ${name} 的安装目录`),
+    openedSystemUninstall: (name: string) =>
+      localizedTemplate(
+        language,
+        `Opened system uninstall for ${name}. Finish uninstalling there, then refresh ReleaseDock.`,
+        `已打开 ${name} 的系统卸载入口。请在系统工具中完成卸载，然后刷新 ReleaseDock。`
+      ),
     openFolderFailed: localizedText(language, "Open folder failed", "打开目录失败"),
     noInstallRootSelected: localizedText(language, "No install root selected", "没有选择安装根目录"),
     openedInstallRoot: localizedText(language, "Opened install root", "已打开安装根目录"),

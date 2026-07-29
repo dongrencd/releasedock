@@ -188,10 +188,10 @@ mod platform {
     };
     use anyhow::Result;
     use std::path::PathBuf;
+    use winreg::RegKey;
     use winreg::enums::{
         HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY,
     };
-    use winreg::RegKey;
 
     #[derive(Debug, Clone)]
     struct RegistryEntry {

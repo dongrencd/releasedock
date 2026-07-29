@@ -114,7 +114,7 @@ fn classify_install_type(os: OperatingSystem, arch: Architecture, name: &str) ->
     if os == OperatingSystem::Windows && is_windows_installer_asset_name(name) {
         return InstallType::WindowsInstaller;
     }
-    if os == OperatingSystem::Windows && is_windows_executable_asset_name(name) {
+    if os == OperatingSystem::Windows && is_windows_bare_executable_asset_name(name) {
         return InstallType::Executable;
     }
     if os == OperatingSystem::Linux && name.ends_with(".appimage") {
@@ -141,15 +141,13 @@ fn classify_install_type(os: OperatingSystem, arch: Architecture, name: &str) ->
     InstallType::Unknown
 }
 
-fn is_windows_executable_asset_name(name: &str) -> bool {
-    if !name.ends_with(".exe") {
-        return false;
-    }
-
-    !is_windows_installer_asset_name(name)
+pub(crate) fn is_windows_bare_executable_asset_name(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name.ends_with(".exe") && !is_windows_installer_asset_name(&name)
 }
 
-fn is_windows_installer_asset_name(name: &str) -> bool {
+pub(crate) fn is_windows_installer_asset_name(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
     if name.ends_with(".msi") {
         return true;
     }
@@ -159,7 +157,7 @@ fn is_windows_installer_asset_name(name: &str) -> bool {
     }
 
     contains_any(
-        name,
+        &name,
         &[
             "setup",
             "install",

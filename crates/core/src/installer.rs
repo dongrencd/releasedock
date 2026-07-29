@@ -17,8 +17,11 @@ use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
 use crate::{
-    asset_matcher::InstallType,
-    config::{Config, Language, effective_install_root},
+    asset_matcher::{InstallType, is_windows_bare_executable_asset_name},
+    config::{
+        Config, Language, download_acceleration_enabled, download_max_connections,
+        effective_install_root,
+    },
     install_plan::{InstallManagementKind, InstallPlan, InstallSelectionGuard},
     integrity::{IntegrityStatus, sha256_file, verify_file_sha256},
     manifest::{
@@ -115,6 +118,14 @@ pub fn adopt_system_installer_app(
     adopt_system_installer_app_with(manifest_store, repo, discover_installation)
 }
 
+/// 自动接管还没有真实启动路径的 Windows 系统安装器记录。
+///
+/// 这是 dashboard 刷新前的轻量后台修正：单条记录探测失败只表示系统里还没有
+/// 可匹配的 ARP/Uninstall 记录，不应该影响列表继续展示原始 installer 记录。
+pub fn adopt_pending_system_installer_apps(manifest_store: &ManifestStore) -> Result<usize> {
+    adopt_pending_system_installer_apps_with(manifest_store, discover_installation)
+}
+
 fn load_adoptable_system_installer(
     manifest_store: &ManifestStore,
     repo: &RepoRef,
@@ -132,6 +143,75 @@ fn load_adoptable_system_installer(
     }
 
     Ok((manifest, app_index, repo_id))
+}
+
+#[cfg(target_os = "windows")]
+pub fn adopt_pending_system_installer_apps_with<F>(
+    manifest_store: &ManifestStore,
+    mut discover: F,
+) -> Result<usize>
+where
+    F: FnMut(
+        &[&str],
+        &[&str],
+    ) -> Result<Option<crate::windows_install_registry::WindowsInstallDiscovery>>,
+{
+    let mut manifest = manifest_store.load()?;
+    let mut adopted_count = 0usize;
+
+    for app in &mut manifest.apps {
+        if !matches!(app.install_path_kind, InstallPathKind::SystemInstaller)
+            || app.launch_path.is_some()
+            || matches!(app.install_type, InstallType::Executable)
+        {
+            continue;
+        }
+
+        let Ok(repo) = RepoRef::parse(&app.repo_url) else {
+            continue;
+        };
+        let installer_path = app
+            .installer_path
+            .clone()
+            .unwrap_or_else(|| app.install_path.clone());
+        let repo_id = repo.id();
+        let repo_tail = repo_id.rsplit('/').next().unwrap_or_default().to_string();
+        let candidate_names = [
+            repo.name.as_str(),
+            repo_tail.as_str(),
+            app.asset_name.as_str(),
+        ];
+        let candidate_versions = [app.installed_version.as_str()];
+
+        let Ok(Some(discovery)) = discover(&candidate_names, &candidate_versions) else {
+            continue;
+        };
+
+        app.install_path = discovery.install_path;
+        app.launch_path = discovery.launch_path;
+        app.installer_path = Some(installer_path);
+        adopted_count += 1;
+    }
+
+    if adopted_count > 0 {
+        manifest_store.save(&manifest)?;
+    }
+
+    Ok(adopted_count)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn adopt_pending_system_installer_apps_with<F>(
+    _manifest_store: &ManifestStore,
+    _discover: F,
+) -> Result<usize>
+where
+    F: FnMut(
+        &[&str],
+        &[&str],
+    ) -> Result<Option<crate::windows_install_registry::WindowsInstallDiscovery>>,
+{
+    Ok(0)
 }
 
 /// 可注入 discovery 的接管入口，便于单测验证 manifest 更新行为。
@@ -1502,12 +1582,15 @@ where
     P: FnMut(&Manifest) -> Result<()>,
 {
     // 已安装应用的 manifest 路径是磁盘事实；用户后来修改 install_root 只影响新安装。
-    let layout = if let Some(previous) = previous_app.as_ref() {
+    let previous_managed_app = previous_app
+        .as_ref()
+        .filter(|previous| matches!(previous.install_path_kind, InstallPathKind::ManagedPath));
+    let layout = if let Some(previous) = previous_managed_app {
         validate_managed_layout(previous, manifest_store, runtime_config)?
     } else {
         prepare_new_managed_layout(manifest_store, repo, runtime_config)?
     };
-    if let Some(previous) = previous_app.as_ref()
+    if let Some(previous) = previous_managed_app
         && let Some(snapshot) = previous.rollback.as_ref()
     {
         validate_rollback_snapshot(previous, snapshot, &layout)?;
@@ -1576,6 +1659,9 @@ where
         .expected_sha256
         .as_ref()
         .and(plan.integrity.checksum_asset_name.clone());
+    if matches!(plan.install_type, InstallType::AppImage) {
+        app.desktop_entry_path = Some(appimage_desktop_entry_path(&layout.trusted_root, repo));
+    }
     if let Some(previous_app) = previous_app.as_ref() {
         app.release_policy = previous_app.release_policy.clone();
     } else if let Some(target_policy) = plan.target_policy.as_ref() {
@@ -1625,6 +1711,14 @@ where
         rename_managed_path,
         remove_path,
     )?;
+    if matches!(app.install_type, InstallType::AppImage) {
+        write_appimage_desktop_entry(&app)?;
+    } else if let Some(previous_desktop_entry) = previous_app
+        .as_ref()
+        .and_then(|previous| previous.desktop_entry_path.as_ref())
+    {
+        remove_appimage_desktop_entry(previous_desktop_entry)?;
+    }
 
     Ok((app, install_path, InstallPathKind::ManagedPath, true))
 }
@@ -1814,17 +1908,11 @@ fn ensure_management_kind_compatible(
     let Some(previous_app) = previous_app else {
         return Ok(());
     };
-    let installed_kind = match previous_app.install_path_kind {
-        InstallPathKind::ManagedPath => InstallManagementKind::ManagedLocal,
-        InstallPathKind::SystemInstaller | InstallPathKind::Unknown => {
-            if matches!(previous_app.install_type, InstallType::LinuxPackage) {
-                InstallManagementKind::SystemPackage
-            } else {
-                InstallManagementKind::ExternalInstaller
-            }
-        }
-    };
+    let installed_kind = installed_management_kind(previous_app);
     if installed_kind != plan.management_kind {
+        if allows_legacy_external_executable_migration(previous_app, plan, installed_kind) {
+            return Ok(());
+        }
         anyhow::bail!(
             "management kind change for {} from {:?} to {:?} is not supported",
             previous_app.id,
@@ -1833,6 +1921,51 @@ fn ensure_management_kind_compatible(
         );
     }
     Ok(())
+}
+
+fn installed_management_kind(app: &InstalledApp) -> InstallManagementKind {
+    match app.install_path_kind {
+        InstallPathKind::ManagedPath => InstallManagementKind::ManagedLocal,
+        InstallPathKind::SystemInstaller | InstallPathKind::Unknown => {
+            if matches!(app.install_type, InstallType::LinuxPackage) {
+                InstallManagementKind::SystemPackage
+            } else {
+                InstallManagementKind::ExternalInstaller
+            }
+        }
+    }
+}
+
+fn allows_legacy_external_executable_migration(
+    previous_app: &InstalledApp,
+    plan: &InstallPlan,
+    installed_kind: InstallManagementKind,
+) -> bool {
+    if installed_kind != InstallManagementKind::ExternalInstaller
+        || plan.management_kind != InstallManagementKind::ManagedLocal
+        || !matches!(previous_app.install_type, InstallType::WindowsInstaller)
+        || !matches!(plan.install_type, InstallType::Executable)
+    {
+        return false;
+    }
+
+    // 只接管旧版误分类的裸 Windows exe 记录；真正的 setup/msi 安装器仍由系统卸载/接管流程管理。
+    if !is_windows_bare_executable_asset_name(&previous_app.asset_name)
+        || !is_windows_bare_executable_asset_name(&plan.asset_name)
+    {
+        return false;
+    }
+
+    // 已有启动路径、系统包身份或独立 installer_path 通常表示记录已经接管到真实系统安装。
+    previous_app.launch_path.is_none()
+        && previous_app.system_package_name.is_none()
+        && previous_app.system_package_manager.is_none()
+        && previous_app.rollback.is_none()
+        && previous_app
+            .installer_path
+            .as_ref()
+            .map(|installer_path| installer_path == &previous_app.install_path)
+            .unwrap_or(true)
 }
 
 fn install_lifecycle_summary(
@@ -2054,6 +2187,14 @@ where
     restored.artifact_sha256 = snapshot.artifact_sha256.clone();
     restored.integrity_status = snapshot.integrity_status;
     restored.checksum_asset_name = snapshot.checksum_asset_name.clone();
+    if matches!(restored.install_type, InstallType::AppImage) {
+        restored.desktop_entry_path = app
+            .desktop_entry_path
+            .clone()
+            .or_else(|| Some(appimage_desktop_entry_path(&layout.trusted_root, &repo)));
+    } else {
+        restored.desktop_entry_path = None;
+    }
     restored.rollback = Some(rollback_snapshot(&app, snapshot.snapshot_path.clone()));
 
     let temporary = staging_path(&active_dir, "rollback-swap");
@@ -2158,6 +2299,11 @@ where
             "rollback committed but journal cleanup failed for {}: {error:#}",
             app.id
         );
+    }
+    if matches!(restored.install_type, InstallType::AppImage) {
+        write_appimage_desktop_entry(&restored)?;
+    } else if let Some(desktop_entry) = app.desktop_entry_path.as_ref() {
+        remove_appimage_desktop_entry(desktop_entry)?;
     }
 
     report_progress(
@@ -2797,7 +2943,23 @@ where
     let mut next_manifest = manifest;
     next_manifest.apps.retain(|existing| existing.id != app.id);
     next_manifest.append_lifecycle_event(event);
+    if let Some(desktop_entry) = app.desktop_entry_path.as_ref() {
+        remove_appimage_desktop_entry(desktop_entry).with_context(|| {
+            format!(
+                "failed to remove AppImage desktop entry {}",
+                desktop_entry.display()
+            )
+        })?;
+    }
     if let Err(persist_error) = persist(&next_manifest) {
+        if app.desktop_entry_path.is_some()
+            && let Err(restore_desktop_error) = write_appimage_desktop_entry(&app)
+        {
+            eprintln!(
+                "managed uninstall failed and AppImage desktop entry restore also failed for {}: {restore_desktop_error:#}",
+                app.id
+            );
+        }
         if let Err(restore_error) = restore_managed_transaction_moves_with(&journal, &mut rename) {
             return Err(persist_error.context(format!(
                 "also failed to restore managed uninstall paths: {restore_error:#}"
@@ -3100,7 +3262,10 @@ async fn download_asset(
 
     let token = runtime_config.and_then(|config| config.github_token.as_deref());
     let proxy = runtime_config.and_then(|config| config.proxy_url.as_deref());
-    let client = ReleaseClient::new(token, proxy)?;
+    let client = ReleaseClient::new(token, proxy)?.with_download_acceleration(
+        download_acceleration_enabled(runtime_config),
+        download_max_connections(runtime_config),
+    );
     report_progress(
         progress.as_ref(),
         TaskProgress {
@@ -3840,6 +4005,63 @@ fn cache_root(manifest_store: &ManifestStore, runtime_config: Option<&Config>) -
         runtime_config,
         manifest_store.path().parent().map(Path::to_path_buf),
     )
+}
+
+fn appimage_desktop_entry_path(trusted_root: &Path, repo: &RepoRef) -> PathBuf {
+    trusted_root.join("applications").join(format!(
+        "io.releasedock.{}-{}.desktop",
+        repo.owner, repo.name
+    ))
+}
+
+fn write_appimage_desktop_entry(app: &InstalledApp) -> Result<()> {
+    let Some(desktop_entry_path) = app.desktop_entry_path.as_ref() else {
+        return Ok(());
+    };
+    if !matches!(app.install_type, InstallType::AppImage) {
+        return Ok(());
+    }
+    let launch_path = app.launch_path.as_ref().unwrap_or(&app.install_path);
+    if let Some(parent) = desktop_entry_path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create AppImage desktop entry directory {}",
+                parent.display()
+            )
+        })?;
+    }
+    let contents = format!(
+        "[Desktop Entry]\nType=Application\nName={}\nExec={}\nIcon=application-x-executable\nTerminal=false\nCategories=Utility;\n",
+        desktop_escape_value(&app.name),
+        desktop_quote_exec(launch_path),
+    );
+    fs::write(desktop_entry_path, contents).with_context(|| {
+        format!(
+            "failed to write AppImage desktop entry {}",
+            desktop_entry_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn remove_appimage_desktop_entry(path: &Path) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    fs::remove_file(path)
+        .with_context(|| format!("failed to remove desktop entry {}", path.display()))
+}
+
+fn desktop_escape_value(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('\n', " ")
+        .replace('\r', " ")
+}
+
+fn desktop_quote_exec(path: &Path) -> String {
+    let value = path.to_string_lossy();
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 fn mark_executable(path: &Path) -> Result<()> {
@@ -4676,6 +4898,136 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn update_allows_legacy_windows_bare_exe_external_record_to_become_managed() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = ManifestStore::at_path(temp.path().join("apps.json"));
+        let old_installer = temp.path().join("ReleaseDock-windows-x64.exe");
+        fs::write(&old_installer, b"old external payload").unwrap();
+        manifest
+            .upsert_app(
+                InstalledApp::with_install_metadata(
+                    "owner/project",
+                    "project",
+                    "v0.2.5",
+                    "ReleaseDock-windows-x64.exe",
+                    old_installer.clone(),
+                    InstallType::WindowsInstaller,
+                    InstallPathKind::SystemInstaller,
+                    false,
+                )
+                .with_installer_path(Some(old_installer.clone())),
+            )
+            .unwrap();
+
+        let fixture = temp.path().join("ReleaseDock-windows-x64-v0.2.10.exe");
+        fs::write(&fixture, b"new managed payload").unwrap();
+        let mut plan = sample_plan(InstallType::Executable, "ReleaseDock-windows-x64.exe");
+        plan.version = "v0.2.10".to_string();
+
+        let outcome = install_from_plan(&plan, &manifest, Some(&fixture), None, Language::En, None)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.install_type, InstallType::Executable);
+        assert_eq!(outcome.install_path_kind, InstallPathKind::ManagedPath);
+        assert!(outcome.uninstall_supported);
+        assert_eq!(
+            fs::read(&outcome.install_path).unwrap(),
+            b"new managed payload"
+        );
+        assert_eq!(fs::read(&old_installer).unwrap(), b"old external payload");
+
+        let stored = manifest.load().unwrap();
+        assert_eq!(stored.apps.len(), 1);
+        let app = &stored.apps[0];
+        assert_eq!(app.install_type, InstallType::Executable);
+        assert_eq!(app.install_path_kind, InstallPathKind::ManagedPath);
+        assert!(app.uninstall_supported);
+        assert!(app.rollback.is_none());
+        assert!(app.launch_path.is_none());
+        assert_eq!(app.installer_path, None);
+    }
+
+    #[tokio::test]
+    async fn update_still_rejects_setup_installer_to_managed_executable() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = ManifestStore::at_path(temp.path().join("apps.json"));
+        let setup_path = temp.path().join("project-setup.exe");
+        fs::write(&setup_path, b"setup installer").unwrap();
+        manifest
+            .upsert_app(
+                InstalledApp::with_install_metadata(
+                    "owner/project",
+                    "project",
+                    "v1.0.0",
+                    "project-setup.exe",
+                    setup_path.clone(),
+                    InstallType::WindowsInstaller,
+                    InstallPathKind::SystemInstaller,
+                    false,
+                )
+                .with_installer_path(Some(setup_path)),
+            )
+            .unwrap();
+
+        let missing_fixture = temp.path().join("missing.exe");
+        let error = install_from_plan(
+            &sample_plan(InstallType::Executable, "project-windows-x64.exe"),
+            &manifest,
+            Some(&missing_fixture),
+            None,
+            Language::En,
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("management kind change"));
+        assert_eq!(
+            manifest.load().unwrap().apps[0].asset_name,
+            "project-setup.exe"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_still_rejects_adopted_installer_to_managed_executable() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = ManifestStore::at_path(temp.path().join("apps.json"));
+        let installed_dir = temp.path().join("installed-project");
+        let installer_path = temp.path().join("ReleaseDock-windows-x64.exe");
+        fs::create_dir_all(&installed_dir).unwrap();
+        fs::write(&installer_path, b"cached installer").unwrap();
+        let mut adopted = InstalledApp::with_install_metadata(
+            "owner/project",
+            "project",
+            "v1.0.0",
+            "ReleaseDock-windows-x64.exe",
+            installed_dir.clone(),
+            InstallType::WindowsInstaller,
+            InstallPathKind::SystemInstaller,
+            false,
+        )
+        .with_installer_path(Some(installer_path));
+        adopted.launch_path = Some(installed_dir.join("project.exe"));
+        manifest.upsert_app(adopted).unwrap();
+
+        let missing_fixture = temp.path().join("missing.exe");
+        let error = install_from_plan(
+            &sample_plan(InstallType::Executable, "ReleaseDock-windows-x64.exe"),
+            &manifest,
+            Some(&missing_fixture),
+            None,
+            Language::En,
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("management kind change"));
+        assert_eq!(manifest.load().unwrap().apps[0].install_path, installed_dir);
+    }
+
     fn temp_path_for_manifest(store: &ManifestStore) -> PathBuf {
         store.path().parent().unwrap().join("apps/other-repo")
     }
@@ -4743,6 +5095,103 @@ mod tests {
             fs::read(rollback.snapshot_path.join("demo-v1.AppImage")).unwrap(),
             b"first appimage payload"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn appimage_install_update_rollback_and_uninstall_maintain_desktop_entry() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = ManifestStore::at_path(temp.path().join("apps.json"));
+        let first_fixture = temp.path().join("payload-v1.AppImage");
+        let second_fixture = temp.path().join("payload-v2.AppImage");
+        fs::write(&first_fixture, b"first appimage payload").unwrap();
+        fs::write(&second_fixture, b"second appimage payload").unwrap();
+
+        let first_plan = sample_plan(InstallType::AppImage, "demo-v1.AppImage");
+        let installed = install_from_plan(
+            &first_plan,
+            &manifest,
+            Some(&first_fixture),
+            None,
+            Language::En,
+            None,
+        )
+        .await
+        .unwrap();
+        let desktop_entry = installed
+            .app
+            .desktop_entry_path
+            .clone()
+            .expect("AppImage install should create a desktop entry");
+        assert!(desktop_entry.starts_with(temp.path().join("applications")));
+        let first_desktop = fs::read_to_string(&desktop_entry).unwrap();
+        assert!(first_desktop.contains("Type=Application"));
+        assert!(first_desktop.contains("Name=project"));
+        assert!(first_desktop.contains(&format!("Exec=\"{}\"", installed.install_path.display())));
+
+        let mut second_plan = sample_plan(InstallType::AppImage, "demo-v2.AppImage");
+        second_plan.version = "v2.0.0".to_string();
+        let updated = install_from_plan(
+            &second_plan,
+            &manifest,
+            Some(&second_fixture),
+            None,
+            Language::En,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            updated.app.desktop_entry_path.as_ref(),
+            Some(&desktop_entry)
+        );
+        let updated_desktop = fs::read_to_string(&desktop_entry).unwrap();
+        assert!(updated_desktop.contains(&format!("Exec=\"{}\"", updated.install_path.display())));
+
+        let rolled_back = rollback_repo(&manifest, "owner/project", Language::En, None)
+            .unwrap()
+            .expect("rollback should restore app");
+        let rollback_desktop = fs::read_to_string(&desktop_entry).unwrap();
+        assert!(
+            rollback_desktop.contains(&format!("Exec=\"{}\"", rolled_back.install_path.display()))
+        );
+
+        uninstall_repo(&manifest, "owner/project", Language::En, None)
+            .unwrap()
+            .expect("uninstall should remove app");
+        assert!(!desktop_entry.exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn appimage_install_does_not_leave_desktop_entry_when_manifest_commit_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = ManifestStore::at_path(temp.path().join("apps.json"));
+        let fixture = temp.path().join("payload.AppImage");
+        fs::write(&fixture, b"appimage payload").unwrap();
+
+        let error = install_from_plan_with_persist(
+            &sample_plan(InstallType::AppImage, "demo.AppImage"),
+            &manifest,
+            Some(&fixture),
+            None,
+            Language::En,
+            None,
+            |_| anyhow::bail!("simulated manifest write failure"),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("simulated manifest write failure")
+        );
+        let desktop_entry = temp
+            .path()
+            .join("applications")
+            .join("io.releasedock.owner-project.desktop");
+        assert!(!desktop_entry.exists());
     }
 
     #[tokio::test]

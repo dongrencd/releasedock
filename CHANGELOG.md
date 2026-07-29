@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.11] - 2026-07-29
+
+### Added
+- Large Release asset downloads can use multi-connection HTTP Range acceleration with settings for enablement and maximum connections
+- Managed AppImage installs now create, update, roll back, and remove a basic Linux desktop entry
+
+### Changed
+- Windows system-installer records without a launch target are now adopted automatically during dashboard refresh when uninstall-registry metadata is available
+- The desktop inspector no longer shows the secondary Open Release or manual re-detect install-result actions
+- The desktop inspector and single-selection list action now use one Uninstall entry for managed files, Linux packages, and Windows system-installer records
+- Installed app primary actions no longer fall back to Open Release when no launch or install path can be used
+
+### Fixed
+- Legacy Windows bare `.exe` records that were previously classified as external installers can update into managed-local executable installs
+
 ## [0.2.10] - 2026-07-29
 
 ### Changed

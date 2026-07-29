@@ -10,7 +10,8 @@ A GitHub Release asset is not automatically trustworthy. The project may be comp
 - Installers require a second confirmation step. The CLI exposes `--yes`, and the desktop app keeps an explicit confirm button.
 - The desktop app shows an install preview before running the install.
 - Linux `.deb` / `.rpm` installs through the system installer only keep traceable state. The local cache directory is not treated as the actual installed result.
-- Windows system-installer discovery and manual re-adoption only read ARP/Uninstall registry metadata. They do not assume the installer package path is the real app directory, and they do not call `UninstallString` automatically during adoption or re-detection.
+- Windows system-installer uninstall opens the OS uninstall tool from the normal Uninstall confirmation. ReleaseDock does not directly delete the discovered system install directory.
+- Windows system-installer discovery and automatic adoption only read ARP/Uninstall registry metadata. They do not assume the installer package path is the real app directory, and they do not call `UninstallString` during adoption.
 - Private tokens are only used for GitHub API requests, stay on the local machine, and are not sent back to the repository.
 - Tokens must not be written to logs.
 

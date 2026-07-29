@@ -540,7 +540,7 @@ input {
 }
 
 .fieldRow.wide,
-.backgroundCheckRow {
+.compoundSettingRow {
   grid-column: 1 / -1;
 }
 
@@ -2260,13 +2260,13 @@ h2 {
 
 }
 
-/* 后台检查设置区 */
-.backgroundCheckRow {
+/* 复合设置区用于把开关、数值输入和说明聚合到同一设置项。 */
+.compoundSettingRow {
   grid-template-columns: minmax(0, 1fr);
   gap: 10px;
 }
 
-.backgroundCheckHeader {
+.compoundSettingHeader {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2274,14 +2274,14 @@ h2 {
   min-width: 0;
 }
 
-.backgroundCheckHeader > span:first-child,
-.backgroundCheckRow > span:first-child {
+.compoundSettingHeader > span:first-child,
+.compoundSettingRow > span:first-child {
   color: #334155;
   font-size: 13px;
   font-weight: 700;
 }
 
-.backgroundCheckControls {
+.compoundSettingControls {
   display: flex;
   align-items: center;
   justify-content: flex-start;
@@ -2289,7 +2289,7 @@ h2 {
   min-width: 0;
 }
 
-.backgroundCheckControls .intervalField {
+.compoundSettingControls .intervalField {
   flex-wrap: wrap;
 }
 
@@ -2433,8 +2433,8 @@ html[data-theme="dark"] .intervalField > span:first-child {
 html[data-theme="dark"] .topbarCopy h1,
 html[data-theme="dark"] .settingsCardEyebrow,
 html[data-theme="dark"] .fieldRow > span,
-html[data-theme="dark"] .backgroundCheckHeader > span:first-child,
-html[data-theme="dark"] .backgroundCheckRow > span:first-child,
+html[data-theme="dark"] .compoundSettingHeader > span:first-child,
+html[data-theme="dark"] .compoundSettingRow > span:first-child,
 html[data-theme="dark"] .intervalField > span:first-child {
   color: #e5eef4;
 }

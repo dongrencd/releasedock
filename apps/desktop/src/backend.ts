@@ -65,6 +65,8 @@ export type DesktopConfig = {
   themeMode: "system" | "light" | "dark" | null;
   backgroundCheckEnabled: boolean | null;
   checkIntervalMinutes: number | null;
+  downloadAccelerationEnabled: boolean | null;
+  downloadMaxConnections: number | null;
 };
 
 export type BulkRemoveResult = {
@@ -160,10 +162,6 @@ export async function previewInstall(
 
 export async function installRepo(plan: InstallPlan): Promise<ManagedApp[]> {
   return invoke<ManagedApp[]>("install_repo", { preview: plan });
-}
-
-export async function adoptSystemInstall(repoInput: string): Promise<ManagedApp[]> {
-  return invoke<ManagedApp[]>("adopt_system_install", { repoInput });
 }
 
 export async function setReleaseChannel(repoInput: string, channel: ReleaseChannel): Promise<ManagedApp[]> {

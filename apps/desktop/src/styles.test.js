@@ -109,6 +109,18 @@ describe("workspace layout CSS", () => {
     expect(appSource).not.toContain("languagePill");
   });
 
+  it("renders download acceleration settings with bounded connection input", () => {
+    expect(appSource).toContain("<span>{ui.downloadAcceleration}</span>");
+    expect(appSource).toContain("checked={configDraft.downloadAccelerationEnabled}");
+    expect(appSource).toContain("<span>{ui.downloadMaxConnections}</span>");
+    expect(appSource).toContain("value={configDraft.downloadMaxConnections}");
+    expect(appSource).toContain("max={8}");
+    expect(appSource).toContain("downloadMaxConnections: event.target.value");
+    expect(appSource).toContain("onBlur={() => setConfigDraft((current) => ({");
+    expect(appSource).toContain("downloadMaxConnections: String(clampDownloadMaxConnections(current.downloadMaxConnections))");
+    expect(appSource).toContain('className="fieldRow compoundSettingRow"');
+  });
+
   it("keeps the install preview focused on install-critical details", () => {
     const pendingInstallStart = appSource.indexOf("{pendingInstall ? (");
     const pendingInstallEnd = appSource.indexOf("className=\"installPreview pendingRollback\"", pendingInstallStart);

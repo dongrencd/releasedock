@@ -120,12 +120,14 @@ describe("createTaskStatusText", () => {
     expect(resolveEffectiveThemeMode("light", true)).toBe("light");
   });
 
-  it("counts the local settings summary after adding theme controls", () => {
+  it("counts the local settings summary after adding download controls", () => {
     const zh = createUiText("zh-CN");
     const en = createUiText("en");
 
-    expect(zh.settingsTitleSmall).toBe("5 个本地配置项");
-    expect(en.settingsTitleSmall).toBe("5 local settings");
+    expect(zh.settingsTitleSmall).toBe("6 个本地配置项");
+    expect(en.settingsTitleSmall).toBe("6 local settings");
+    expect(zh.downloadAcceleration).toBe("下载加速");
+    expect(en.downloadMaxConnections).toBe("Max connections");
   });
 
   it("provides task labels for verification and rollback progress", () => {
@@ -207,5 +209,17 @@ describe("createTaskStatusText", () => {
     expect(en.uninstallLinuxPackageConfirmation).toContain("system package manager");
     expect(zh.uninstallExternalInstallerConfirmation).toContain("系统卸载入口");
     expect(en.uninstallExternalInstallerConfirmation).toContain("system uninstall path");
+  });
+
+  it("includes a localized install management kind conflict message", () => {
+    const zh = createUiText("zh-CN");
+    const en = createUiText("en");
+
+    expect(zh.model.installManagementKindChange).toBe(
+      "这条记录仍像外部安装器。请先移除旧记录，再用新的可执行文件重新安装。"
+    );
+    expect(en.model.installManagementKindChange).toBe(
+      "This record still looks like an external installer. Remove the old record, then install the new executable again."
+    );
   });
 });

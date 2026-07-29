@@ -1,4 +1,9 @@
-use std::{fs, io::Write, path::Path, time::Duration};
+use std::{
+    fs,
+    io::{Read, Write},
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -16,6 +21,8 @@ const GITHUB_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const GITHUB_DOWNLOAD_READ_TIMEOUT: Duration = Duration::from_secs(60);
 const GITHUB_API_BASE_URL: &str = "https://api.github.com";
 const DOWNLOAD_MAX_ATTEMPTS: usize = 3;
+const DEFAULT_ACCELERATED_DOWNLOAD_CONNECTIONS: u8 = 4;
+const MIN_ACCELERATED_DOWNLOAD_SIZE: u64 = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Release {
@@ -94,6 +101,22 @@ pub struct ReleaseClient {
     client: reqwest::Client,
     api_timeout: Duration,
     api_base_url: Url,
+    download_acceleration: DownloadAcceleration,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DownloadAcceleration {
+    enabled: bool,
+    max_connections: u8,
+}
+
+impl Default for DownloadAcceleration {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_connections: DEFAULT_ACCELERATED_DOWNLOAD_CONNECTIONS,
+        }
+    }
 }
 
 impl ReleaseClient {
@@ -156,7 +179,16 @@ impl ReleaseClient {
             client: builder.build().context("failed to build GitHub client")?,
             api_timeout,
             api_base_url,
+            download_acceleration: DownloadAcceleration::default(),
         })
+    }
+
+    pub fn with_download_acceleration(mut self, enabled: bool, max_connections: u8) -> Self {
+        self.download_acceleration = DownloadAcceleration {
+            enabled,
+            max_connections: max_connections.clamp(1, 8),
+        };
+        self
     }
 
     /// 只在本模块 HTTP 单测中替换 API 地址，生产构建不会暴露该入口。
@@ -394,6 +426,35 @@ impl ReleaseClient {
         let resume_from = fs::metadata(part_path)
             .map(|metadata| metadata.len())
             .unwrap_or(0);
+        if resume_from == 0 {
+            match self.probe_accelerated_download(url).await {
+                Ok(Some(total)) => {
+                    match self
+                        .download_to_segments(url, path, part_path, total, on_progress)
+                        .await
+                    {
+                        Ok(()) => return Ok(()),
+                        Err(error) => {
+                            if !is_temporary_download_error(&error) {
+                                return Err(error);
+                            }
+                            eprintln!(
+                                "accelerated download failed for {url}; falling back to single connection: {error:#}"
+                            );
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    if !is_temporary_download_error(&error) {
+                        return Err(error);
+                    }
+                    eprintln!(
+                        "accelerated download probe failed for {url}; falling back to single connection: {error:#}"
+                    );
+                }
+            }
+        }
         let mut request = self.client.get(url);
         if resume_from > 0 {
             request = request.header(RANGE, format!("bytes={resume_from}-"));
@@ -433,6 +494,174 @@ impl ReleaseClient {
         replace_download(path, part_path)?;
         Ok(())
     }
+
+    async fn probe_accelerated_download(&self, url: &str) -> Result<Option<u64>> {
+        if !self.download_acceleration.enabled || self.download_acceleration.max_connections <= 1 {
+            return Ok(None);
+        }
+
+        let response = self
+            .client
+            .get(url)
+            .header(RANGE, "bytes=0-0")
+            .send()
+            .await
+            .context("failed to probe GitHub asset range support")?;
+        if !response.status().is_success() {
+            let error = github_response_error("GitHub asset", response).await;
+            anyhow::bail!(error);
+        }
+        if response.status() != StatusCode::PARTIAL_CONTENT {
+            return Ok(None);
+        }
+        Ok(content_range_total(response.headers())
+            .filter(|total| *total >= MIN_ACCELERATED_DOWNLOAD_SIZE))
+    }
+
+    async fn download_to_segments<F>(
+        &self,
+        url: &str,
+        path: &Path,
+        part_path: &Path,
+        total: u64,
+        on_progress: &mut F,
+    ) -> Result<()>
+    where
+        F: FnMut(u64, Option<u64>),
+    {
+        let connections = self
+            .download_acceleration
+            .max_connections
+            .min(total.min(u64::from(u8::MAX)).max(1) as u8)
+            .max(1);
+        let segments = download_segments(total, connections);
+        let already_downloaded = existing_segment_bytes(part_path, &segments);
+        on_progress(already_downloaded, Some(total));
+
+        let mut handles = Vec::new();
+        for segment in segments.clone() {
+            let segment_path = segment_download_path(part_path, segment.index);
+            if fs::metadata(&segment_path)
+                .map(|metadata| metadata.len() == segment.len())
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let client = self.client.clone();
+            let url = url.to_string();
+            handles.push(tokio::spawn(async move {
+                download_segment(client, url, segment, segment_path).await
+            }));
+        }
+
+        let mut downloaded = already_downloaded;
+        for handle in handles {
+            let segment_bytes = handle.await.context("download segment task failed")??;
+            downloaded = downloaded.saturating_add(segment_bytes);
+            on_progress(downloaded.min(total), Some(total));
+        }
+
+        merge_download_segments(part_path, &segments)?;
+        replace_download(path, part_path)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct DownloadSegment {
+    index: usize,
+    start: u64,
+    end: u64,
+}
+
+impl DownloadSegment {
+    fn len(&self) -> u64 {
+        self.end - self.start + 1
+    }
+}
+
+fn download_segments(total: u64, connections: u8) -> Vec<DownloadSegment> {
+    let connections = u64::from(connections).max(1).min(total.max(1));
+    let base = total / connections;
+    let remainder = total % connections;
+    let mut start = 0u64;
+    let mut segments = Vec::new();
+
+    for index in 0..connections {
+        let len = base + u64::from(index < remainder);
+        let end = start + len - 1;
+        segments.push(DownloadSegment {
+            index: index as usize,
+            start,
+            end,
+        });
+        start = end + 1;
+    }
+    segments
+}
+
+async fn download_segment(
+    client: reqwest::Client,
+    url: String,
+    segment: DownloadSegment,
+    segment_path: PathBuf,
+) -> Result<u64> {
+    let existing = fs::metadata(&segment_path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    if existing > segment.len() {
+        fs::remove_file(&segment_path)
+            .with_context(|| format!("failed to reset segment {}", segment_path.display()))?;
+    }
+    let existing = fs::metadata(&segment_path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    if existing == segment.len() {
+        return Ok(0);
+    }
+
+    let start = segment.start + existing;
+    let request_range = format!("bytes={start}-{}", segment.end);
+    let mut response = client
+        .get(url)
+        .header(RANGE, request_range)
+        .send()
+        .await
+        .context("failed to request GitHub asset segment")?;
+    if response.status() != StatusCode::PARTIAL_CONTENT {
+        let error = github_response_error("GitHub asset", response).await;
+        anyhow::bail!("accelerated segment download expected 206 Partial Content: {error}");
+    }
+
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&segment_path)
+        .with_context(|| format!("failed to open segment {}", segment_path.display()))?;
+    let mut written = 0u64;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .context("failed to read GitHub asset segment body")?
+    {
+        file.write_all(&chunk)
+            .with_context(|| format!("failed to write segment {}", segment_path.display()))?;
+        written += chunk.len() as u64;
+    }
+    file.flush()
+        .with_context(|| format!("failed to flush segment {}", segment_path.display()))?;
+    let final_len = fs::metadata(&segment_path)
+        .map(|metadata| metadata.len())
+        .with_context(|| format!("failed to inspect segment {}", segment_path.display()))?;
+    if final_len != segment.len() {
+        anyhow::bail!(
+            "segment {} has {} bytes, expected {}",
+            segment.index,
+            final_len,
+            segment.len()
+        );
+    }
+    Ok(written)
 }
 
 fn prepare_download_file(
@@ -477,6 +706,73 @@ fn partial_download_path(path: &Path) -> std::path::PathBuf {
         .map(|name| format!("{name}.part"))
         .unwrap_or_else(|| "download.part".to_string());
     path.with_file_name(file_name)
+}
+
+fn segment_download_path(part_path: &Path, index: usize) -> PathBuf {
+    let file_name = part_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| format!("{name}.{index}"))
+        .unwrap_or_else(|| format!("download.part.{index}"));
+    part_path.with_file_name(file_name)
+}
+
+fn existing_segment_bytes(part_path: &Path, segments: &[DownloadSegment]) -> u64 {
+    segments
+        .iter()
+        .map(|segment| {
+            fs::metadata(segment_download_path(part_path, segment.index))
+                .map(|metadata| metadata.len().min(segment.len()))
+                .unwrap_or(0)
+        })
+        .sum()
+}
+
+fn merge_download_segments(part_path: &Path, segments: &[DownloadSegment]) -> Result<()> {
+    let mut output = fs::File::create(part_path)
+        .with_context(|| format!("failed to create download {}", part_path.display()))?;
+    let mut buffer = [0u8; 64 * 1024];
+
+    for segment in segments {
+        let segment_path = segment_download_path(part_path, segment.index);
+        let mut input = fs::File::open(&segment_path)
+            .with_context(|| format!("failed to open segment {}", segment_path.display()))?;
+        let mut copied = 0u64;
+        loop {
+            let read = input
+                .read(&mut buffer)
+                .with_context(|| format!("failed to read segment {}", segment_path.display()))?;
+            if read == 0 {
+                break;
+            }
+            copied += read as u64;
+            output
+                .write_all(&buffer[..read])
+                .with_context(|| format!("failed to merge segment {}", segment_path.display()))?;
+        }
+        if copied != segment.len() {
+            anyhow::bail!(
+                "segment {} has {} bytes, expected {}",
+                segment.index,
+                copied,
+                segment.len()
+            );
+        }
+    }
+    output
+        .flush()
+        .with_context(|| format!("failed to flush download {}", part_path.display()))?;
+
+    for segment in segments {
+        let segment_path = segment_download_path(part_path, segment.index);
+        if let Err(error) = fs::remove_file(&segment_path)
+            && segment_path.exists()
+        {
+            return Err(error)
+                .with_context(|| format!("failed to remove segment {}", segment_path.display()));
+        }
+    }
+    Ok(())
 }
 
 fn replace_download(path: &Path, part_path: &Path) -> Result<()> {
@@ -691,13 +987,16 @@ mod tests {
     use std::{
         net::SocketAddr,
         sync::{
-            Arc,
+            Arc, Mutex,
             atomic::{AtomicUsize, Ordering},
         },
         time::Duration,
     };
 
-    use super::{DOWNLOAD_MAX_ATTEMPTS, ReleaseClient, format_github_response_error};
+    use super::{
+        DOWNLOAD_MAX_ATTEMPTS, ReleaseClient, download_segments, format_github_response_error,
+        segment_download_path,
+    };
     use crate::repo::RepoRef;
     use reqwest::{
         StatusCode,
@@ -1006,7 +1305,8 @@ mod tests {
             Duration::from_millis(500),
             Duration::from_millis(200),
         )
-        .unwrap();
+        .unwrap()
+        .with_download_acceleration(false, 1);
         let download_dir = tempfile::tempdir().unwrap();
         let download_path = download_dir.path().join("asset.bin");
 
@@ -1090,7 +1390,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retries_temporary_download_failures_and_keeps_final_file() {
+    async fn falls_back_to_single_connection_when_range_probe_fails_transiently() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let attempts = Arc::new(AtomicUsize::new(0));
@@ -1114,6 +1414,214 @@ mod tests {
         });
 
         let client = ReleaseClient::new(None, None).unwrap();
+        let download_dir = tempfile::tempdir().unwrap();
+        let download_path = download_dir.path().join("asset.bin");
+
+        client
+            .download_to_path(&format!("http://{addr}/asset"), &download_path, |_, _| {})
+            .await
+            .unwrap();
+
+        server.await.unwrap();
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(std::fs::read(&download_path).unwrap(), b"payload");
+    }
+
+    #[tokio::test]
+    async fn accelerates_large_range_downloads_with_multiple_segments() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let payload = Arc::new(
+            (0..(33 * 1024 * 1024))
+                .map(|index| (index % 251) as u8)
+                .collect::<Vec<_>>(),
+        );
+        let requested_ranges = Arc::new(Mutex::new(Vec::new()));
+        let server_payload = Arc::clone(&payload);
+        let server_ranges = Arc::clone(&requested_ranges);
+
+        let server = tokio::spawn(async move {
+            let mut served_segments = 0usize;
+            while served_segments < 4 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let request = read_http_request(&mut stream).await;
+                if request.contains("range: bytes=0-0") {
+                    stream
+                        .write_all(
+                            format!(
+                                "HTTP/1.1 206 Partial Content\r\nContent-Length: 1\r\nContent-Range: bytes 0-0/{}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n",
+                                server_payload.len()
+                            )
+                            .as_bytes(),
+                        )
+                        .await
+                        .unwrap();
+                    stream.write_all(&server_payload[0..1]).await.unwrap();
+                    continue;
+                }
+
+                let Some(range) = request
+                    .lines()
+                    .find_map(|line| line.strip_prefix("range: bytes="))
+                    .and_then(|value| value.split_once('-'))
+                    .and_then(|(start, end)| {
+                        Some((start.parse::<usize>().ok()?, end.parse::<usize>().ok()?))
+                    })
+                else {
+                    panic!("expected segmented range request, got {request}");
+                };
+                server_ranges.lock().unwrap().push(range);
+                let (start, end) = range;
+                let body = &server_payload[start..=end];
+                stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n",
+                            body.len(),
+                            server_payload.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+                stream.write_all(body).await.unwrap();
+                served_segments += 1;
+            }
+        });
+
+        let client = ReleaseClient::new(None, None).unwrap();
+        let download_dir = tempfile::tempdir().unwrap();
+        let download_path = download_dir.path().join("asset.bin");
+
+        client
+            .download_to_path(&format!("http://{addr}/asset"), &download_path, |_, _| {})
+            .await
+            .unwrap();
+
+        server.await.unwrap();
+        assert_eq!(std::fs::read(&download_path).unwrap(), payload.as_slice());
+        assert!(
+            requested_ranges.lock().unwrap().len() > 1,
+            "download should split the file into multiple range requests"
+        );
+    }
+
+    #[tokio::test]
+    async fn resumes_accelerated_download_segments_without_refetching_complete_segments() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let payload = Arc::new(
+            (0..(33 * 1024 * 1024))
+                .map(|index| (index % 251) as u8)
+                .collect::<Vec<_>>(),
+        );
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let server_payload = Arc::clone(&payload);
+        let server_requests = Arc::clone(&requests);
+
+        let server = tokio::spawn(async move {
+            let mut served_segments = 0usize;
+            while served_segments < 3 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let request = read_http_request(&mut stream).await;
+                if request.contains("range: bytes=0-0") {
+                    stream
+                        .write_all(
+                            format!(
+                                "HTTP/1.1 206 Partial Content\r\nContent-Length: 1\r\nContent-Range: bytes 0-0/{}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n",
+                                server_payload.len()
+                            )
+                            .as_bytes(),
+                        )
+                        .await
+                        .unwrap();
+                    stream.write_all(&server_payload[0..1]).await.unwrap();
+                    continue;
+                }
+                let Some(range) = request
+                    .lines()
+                    .find_map(|line| line.strip_prefix("range: bytes="))
+                    .and_then(|value| value.split_once('-'))
+                    .and_then(|(start, end)| {
+                        Some((start.parse::<usize>().ok()?, end.parse::<usize>().ok()?))
+                    })
+                else {
+                    panic!("expected segmented range request, got {request}");
+                };
+                server_requests.lock().unwrap().push(range);
+                let (start, end) = range;
+                let body = &server_payload[start..=end];
+                stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n",
+                            body.len(),
+                            server_payload.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+                stream.write_all(body).await.unwrap();
+                served_segments += 1;
+            }
+        });
+
+        let client = ReleaseClient::new(None, None).unwrap();
+        let download_dir = tempfile::tempdir().unwrap();
+        let download_path = download_dir.path().join("asset.bin");
+        let part_path = download_dir.path().join("asset.bin.part");
+        let segments = download_segments(payload.len() as u64, 4);
+        std::fs::write(
+            segment_download_path(&part_path, 0),
+            &payload[segments[0].start as usize..=segments[0].end as usize],
+        )
+        .unwrap();
+        std::fs::write(
+            segment_download_path(&part_path, 1),
+            &payload[segments[1].start as usize..(segments[1].start as usize + 128)],
+        )
+        .unwrap();
+
+        client
+            .download_to_path(&format!("http://{addr}/asset"), &download_path, |_, _| {})
+            .await
+            .unwrap();
+
+        server.await.unwrap();
+        assert_eq!(std::fs::read(&download_path).unwrap(), payload.as_slice());
+        let ranges = requests.lock().unwrap();
+        assert!(!ranges.contains(&(segments[0].start as usize, segments[0].end as usize)));
+        assert!(ranges.contains(&(segments[1].start as usize + 128, segments[1].end as usize)));
+    }
+
+    #[tokio::test]
+    async fn retries_temporary_download_failures_and_keeps_final_file() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let server_attempts = Arc::clone(&attempts);
+
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let _request = read_http_request(&mut stream).await;
+                let current = server_attempts.fetch_add(1, Ordering::SeqCst);
+                if current == 0 {
+                    continue;
+                }
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\npayload",
+                    )
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let client = ReleaseClient::new(None, None)
+            .unwrap()
+            .with_download_acceleration(false, 1);
         let download_dir = tempfile::tempdir().unwrap();
         let download_path = download_dir.path().join("asset.bin");
 
@@ -1284,7 +1792,8 @@ mod tests {
             Duration::from_millis(500),
             Duration::from_millis(100),
         )
-        .unwrap();
+        .unwrap()
+        .with_download_acceleration(false, 1);
         let download_dir = tempfile::tempdir().unwrap();
         let download_path = download_dir.path().join("asset.bin");
 
