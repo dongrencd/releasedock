@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.10] - 2026-07-29
+
+### Changed
+- GitHub Actions release workflow now uses current official artifact, checkout, and Node setup action versions to avoid Node.js 20 deprecation annotations
+- Release artifact and packaging version markers updated to `0.2.10`
+
 ## [0.2.9] - 2026-07-29
 
 ### Fixed
