@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.8] - 2026-07-29
+
+### Fixed
+- Windows Tauri release builds now compile the registry adoption matcher with explicit score typing
+- Windows release builds no longer emit the related platform-only unused import and argument warnings
+
 ## [0.2.7] - 2026-07-29
 
 ### Changed

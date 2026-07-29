@@ -3437,6 +3437,9 @@ fn is_pacman_package(path: &Path) -> bool {
 }
 
 fn query_linux_package_name(path: &Path, manager: SystemPackageManager) -> Result<String> {
+    #[cfg(not(target_os = "linux"))]
+    let _ = manager;
+
     #[cfg(target_os = "linux")]
     {
         let spec = linux_package_command_spec(manager);
@@ -3487,6 +3490,9 @@ fn run_linux_package_installer(
     path: &Path,
     manager: SystemPackageManager,
 ) -> Result<std::process::ExitStatus> {
+    #[cfg(not(target_os = "linux"))]
+    let _ = manager;
+
     #[cfg(target_os = "linux")]
     {
         let spec = linux_package_command_spec(manager);
@@ -3515,6 +3521,9 @@ fn uninstall_linux_package(
     package_name: &str,
     manager: SystemPackageManager,
 ) -> Result<std::process::ExitStatus> {
+    #[cfg(not(target_os = "linux"))]
+    let _ = manager;
+
     #[cfg(target_os = "linux")]
     {
         let spec = linux_package_command_spec(manager);
@@ -3833,6 +3842,9 @@ fn cache_root(manifest_store: &ManifestStore, runtime_config: Option<&Config>) -
 }
 
 fn mark_executable(path: &Path) -> Result<()> {
+    #[cfg(not(unix))]
+    let _ = path;
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

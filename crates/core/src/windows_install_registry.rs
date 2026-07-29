@@ -1,7 +1,5 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowsInstallDiscovery {
     pub install_path: PathBuf,
@@ -189,12 +187,11 @@ mod platform {
         resolve_launch_path,
     };
     use anyhow::Result;
-    use std::collections::HashMap;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
     use winreg::enums::{
         HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY,
     };
-    use winreg::{RegKey, enums::RegType};
+    use winreg::RegKey;
 
     #[derive(Debug, Clone)]
     struct RegistryEntry {
@@ -300,7 +297,7 @@ mod platform {
             return None;
         }
 
-        let mut best = None;
+        let mut best: Option<i32> = None;
         for candidate in candidate_names {
             let normalized_candidate = normalize(candidate);
             if normalized_candidate.len() < 3 {
@@ -356,7 +353,7 @@ pub use platform::discover_installation;
 pub fn discover_installation(
     _candidate_names: &[&str],
     _candidate_versions: &[&str],
-) -> Result<Option<WindowsInstallDiscovery>> {
+) -> anyhow::Result<Option<WindowsInstallDiscovery>> {
     Ok(None)
 }
 
