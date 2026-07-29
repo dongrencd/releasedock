@@ -1049,6 +1049,7 @@ struct LinuxPackageCommandSpec {
     remove_program: &'static str,
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 impl LinuxPackageCommandSpec {
     fn inspect_args(&self, path: &Path) -> Vec<String> {
         let path = path.to_string_lossy().to_string();

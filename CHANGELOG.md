@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.9] - 2026-07-29
+
+### Fixed
+- Windows release packaging now renames the built desktop executable relative to the desktop job working directory
+- Windows release builds suppress Linux package command helper dead-code warnings on non-Linux targets
+
 ## [0.2.8] - 2026-07-29
 
 ### Fixed

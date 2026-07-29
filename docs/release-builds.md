@@ -15,7 +15,7 @@ Workflow file:
 Triggers:
 
 - push to `main`
-- push a tag such as `v0.2.8`
+- push a tag such as `v0.2.9`
 - pull request
 - manual `workflow_dispatch` from the GitHub UI
 
@@ -34,8 +34,8 @@ The Windows desktop release uses the GUI subsystem, so it should open without a 
 Create a release by tagging the repository:
 
 ```bash
-git tag v0.2.8
-git push origin v0.2.8
+git tag v0.2.9
+git push origin v0.2.9
 ```
 
 When the tag workflow finishes, the matching release appears on the repository Releases page. Release assets include the Linux CLI executable, Linux desktop executable, Linux Debian package, Linux RPM package, Windows desktop executable, NSIS installer, and MSI.

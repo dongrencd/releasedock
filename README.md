@@ -135,8 +135,8 @@ Pushes to `main` and manual `CI Release Artifacts` workflow runs publish GitHub 
 Tags that match `v*.*.*` create a GitHub Release with the same version and upload available Linux and Windows artifacts.
 
 ```bash
-git tag v0.2.8
-git push origin v0.2.8
+git tag v0.2.9
+git push origin v0.2.9
 ```
 
 ## Documentation

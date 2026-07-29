@@ -135,8 +135,8 @@ bash scripts/linux/build-desktop.sh
 匹配 `v*.*.*` 的 tag 会创建同版本 GitHub Release，并上传可用的 Linux 和 Windows 产物。
 
 ```bash
-git tag v0.2.8
-git push origin v0.2.8
+git tag v0.2.9
+git push origin v0.2.9
 ```
 
 ## 文档

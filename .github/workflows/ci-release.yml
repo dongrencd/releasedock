@@ -75,7 +75,7 @@ jobs:
 
       - name: Rename Windows desktop executable
         shell: pwsh
-        run: Copy-Item apps/desktop/src-tauri/target/release/releasedock.exe apps/desktop/src-tauri/target/release/ReleaseDock-windows-x64.exe
+        run: Copy-Item src-tauri/target/release/releasedock.exe src-tauri/target/release/ReleaseDock-windows-x64.exe
 
       - name: Upload Windows desktop bundle
         uses: actions/upload-artifact@v4
