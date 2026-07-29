@@ -7,6 +7,7 @@ A GitHub Release asset is not automatically trustworthy. The project may be comp
 ## Initial Policy
 
 - Windows `.exe` / `.msi` files are never executed silently.
+- Official tagged Windows release assets are Authenticode-signed through CI. Code signing removes the unknown-publisher warning for official builds, but SmartScreen reputation can still depend on certificate type and download history.
 - Installers require a second confirmation step. The CLI exposes `--yes`, and the desktop app keeps an explicit confirm button.
 - The desktop app shows an install preview before running the install.
 - Linux `.deb` / `.rpm` installs through the system installer only keep traceable state. The local cache directory is not treated as the actual installed result.

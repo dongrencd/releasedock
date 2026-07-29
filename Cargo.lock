@@ -1262,7 +1262,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "releasedock-cli"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -1277,7 +1277,7 @@ dependencies = [
 
 [[package]]
 name = "releasedock-core"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "anyhow",
  "chrono",

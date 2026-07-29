@@ -1153,6 +1153,26 @@ describe("buildUpdateInbox", () => {
     });
   });
 
+  it("routes executable records through ReleaseDock even if a legacy kind is still system installer", () => {
+    const executable = buildUpdateInbox([
+      {
+        id: "owner/tool",
+        name: "Tool",
+        currentVersion: "v1.0.0",
+        latestVersion: "v1.0.0",
+        status: "current",
+        source: "GitHub",
+        installPath: "C:/Users/test/AppData/Local/ReleaseDock/apps/owner-tool/tool.exe",
+        installPathKind: "systemInstaller",
+        installType: "Executable",
+        uninstallSupported: false
+      }
+    ], language)[0];
+
+    expect(isSystemUninstallOnly(executable)).toBe(false);
+    expect(resolveUninstallExecutionKind(executable)).toBe("releasedock");
+  });
+
   it("routes uninstall confirmations by install management type", () => {
     const [managed, linuxPackage, systemInstaller] = buildUpdateInbox([
       {

@@ -1,9 +1,10 @@
 use std::sync::{Arc, Barrier};
 
 use releasedock_core::{
-    asset_matcher::{Architecture, AssetMatcher, OperatingSystem},
-    config::Language,
+    asset_matcher::{Architecture, AssetMatcher, InstallType, OperatingSystem},
+    config::{Config, Language},
     install_plan::{InstallManagementKind, InstallPlan, InstallSelectionGuard},
+    installer::repair_managed_windows_executable_records,
     integrity::{IntegrityPlan, IntegrityStatus},
     manifest::{
         InstallPathKind, InstalledApp, LifecycleAction, LifecycleEvent, Manifest, ManifestStore,
@@ -394,6 +395,202 @@ fn records_installer_path_for_system_installer_apps() {
             .unwrap()
             .to_string_lossy(),
         "ReleaseDock_0.2.5_x64_en-US.msi"
+    );
+}
+
+#[test]
+fn repairs_managed_windows_executable_records_misclassified_as_system_installers() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ManifestStore::at_path(temp.path().join("apps.json"));
+    let install_path = temp
+        .path()
+        .join("apps/owner-project/project-windows-x64.exe");
+    std::fs::create_dir_all(install_path.parent().unwrap()).unwrap();
+    std::fs::write(&install_path, b"fake exe").unwrap();
+
+    store
+        .save_apps(&[InstalledApp::with_install_metadata(
+            "owner/project",
+            "project",
+            "v1.0.0",
+            "project-windows-x64.exe",
+            install_path.clone(),
+            InstallType::WindowsInstaller,
+            InstallPathKind::SystemInstaller,
+            false,
+        )])
+        .unwrap();
+
+    let repaired = repair_managed_windows_executable_records(&store, None).unwrap();
+
+    assert_eq!(repaired, 1);
+    let manifest = store.load().unwrap();
+    let app = &manifest.apps[0];
+    assert_eq!(app.install_type, InstallType::Executable);
+    assert_eq!(app.install_path_kind, InstallPathKind::ManagedPath);
+    assert!(app.uninstall_supported);
+    assert_eq!(app.launch_path, None);
+    assert_eq!(app.installer_path, None);
+    assert_eq!(app.managed_root.as_deref(), Some(temp.path()));
+}
+
+#[test]
+fn does_not_repair_real_windows_setup_installers_as_managed_executables() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ManifestStore::at_path(temp.path().join("apps.json"));
+    let install_path = temp.path().join("apps/owner-project/project-setup.exe");
+    std::fs::create_dir_all(install_path.parent().unwrap()).unwrap();
+    std::fs::write(&install_path, b"fake setup").unwrap();
+
+    store
+        .save_apps(&[InstalledApp::with_install_metadata(
+            "owner/project",
+            "project",
+            "v1.0.0",
+            "project-setup.exe",
+            install_path.clone(),
+            InstallType::WindowsInstaller,
+            InstallPathKind::SystemInstaller,
+            false,
+        )])
+        .unwrap();
+
+    let repaired = repair_managed_windows_executable_records(&store, None).unwrap();
+
+    assert_eq!(repaired, 0);
+    let manifest = store.load().unwrap();
+    assert_eq!(manifest.apps[0].install_type, InstallType::WindowsInstaller);
+    assert_eq!(
+        manifest.apps[0].install_path_kind,
+        InstallPathKind::SystemInstaller
+    );
+    assert!(!manifest.apps[0].uninstall_supported);
+}
+
+#[test]
+fn repairs_managed_windows_executable_records_after_install_root_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ManifestStore::at_path(temp.path().join("manifest/apps.json"));
+    let old_root = temp.path().join("old-root");
+    let new_root = temp.path().join("new-root");
+    let install_path = old_root.join("apps/owner-project/project-windows-x64.exe");
+    std::fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+    std::fs::create_dir_all(install_path.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(&new_root).unwrap();
+    std::fs::write(&install_path, b"fake exe").unwrap();
+
+    store
+        .save_apps(&[InstalledApp::with_install_metadata(
+            "owner/project",
+            "project",
+            "v1.0.0",
+            "project-windows-x64.exe",
+            install_path.clone(),
+            InstallType::WindowsInstaller,
+            InstallPathKind::SystemInstaller,
+            false,
+        )])
+        .unwrap();
+
+    let config = Config {
+        install_root: Some(new_root),
+        ..Config::default()
+    };
+    let repaired = repair_managed_windows_executable_records(&store, Some(&config)).unwrap();
+
+    assert_eq!(repaired, 1);
+    let manifest = store.load().unwrap();
+    assert_eq!(manifest.apps[0].install_type, InstallType::Executable);
+    assert_eq!(
+        manifest.apps[0].install_path_kind,
+        InstallPathKind::ManagedPath
+    );
+    assert_eq!(
+        manifest.apps[0].managed_root.as_deref(),
+        Some(old_root.as_path())
+    );
+}
+
+#[test]
+fn does_not_repair_adopted_system_installers_with_launch_targets() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ManifestStore::at_path(temp.path().join("apps.json"));
+    let install_path = temp
+        .path()
+        .join("apps/owner-project/project-windows-x64.exe");
+    let launch_path = temp.path().join("Program Files/project/project.exe");
+    std::fs::create_dir_all(install_path.parent().unwrap()).unwrap();
+    std::fs::write(&install_path, b"fake exe").unwrap();
+
+    let mut app = InstalledApp::with_install_metadata(
+        "owner/project",
+        "project",
+        "v1.0.0",
+        "project-windows-x64.exe",
+        install_path.clone(),
+        InstallType::WindowsInstaller,
+        InstallPathKind::SystemInstaller,
+        false,
+    );
+    app.launch_path = Some(launch_path.clone());
+    store.save_apps(&[app]).unwrap();
+
+    let repaired = repair_managed_windows_executable_records(&store, None).unwrap();
+
+    assert_eq!(repaired, 0);
+    let manifest = store.load().unwrap();
+    assert_eq!(
+        manifest.apps[0].launch_path.as_deref(),
+        Some(launch_path.as_path())
+    );
+    assert_eq!(manifest.apps[0].install_type, InstallType::WindowsInstaller);
+}
+
+#[test]
+fn does_not_repair_missing_or_non_managed_windows_executable_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ManifestStore::at_path(temp.path().join("apps.json"));
+    let outside_path = temp.path().join("downloads/project-windows-x64.exe");
+    let missing_path = temp
+        .path()
+        .join("apps/owner-missing/missing-windows-x64.exe");
+    std::fs::create_dir_all(outside_path.parent().unwrap()).unwrap();
+    std::fs::write(&outside_path, b"fake exe").unwrap();
+
+    store
+        .save_apps(&[
+            InstalledApp::with_install_metadata(
+                "owner/project",
+                "project",
+                "v1.0.0",
+                "project-windows-x64.exe",
+                outside_path.clone(),
+                InstallType::WindowsInstaller,
+                InstallPathKind::SystemInstaller,
+                false,
+            ),
+            InstalledApp::with_install_metadata(
+                "owner/missing",
+                "missing",
+                "v1.0.0",
+                "missing-windows-x64.exe",
+                missing_path.clone(),
+                InstallType::WindowsInstaller,
+                InstallPathKind::SystemInstaller,
+                false,
+            ),
+        ])
+        .unwrap();
+
+    let repaired = repair_managed_windows_executable_records(&store, None).unwrap();
+
+    assert_eq!(repaired, 0);
+    let manifest = store.load().unwrap();
+    assert!(
+        manifest
+            .apps
+            .iter()
+            .all(|app| matches!(app.install_path_kind, InstallPathKind::SystemInstaller))
     );
 }
 

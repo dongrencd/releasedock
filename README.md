@@ -136,10 +136,11 @@ Pushes to `main` and manual `CI Release Artifacts` workflow runs publish GitHub 
 - `releasedock-windows-x64-desktop`: Windows desktop build, including the executable plus NSIS and MSI installers when available.
 
 Tags that match `v*.*.*` create a GitHub Release with the same version and upload available Linux and Windows artifacts.
+Tagged Windows releases publish Authenticode-signed executable, NSIS, and MSI assets when the repository's code-signing secrets are configured. Builds without a trusted certificate may still show Windows SmartScreen warnings.
 
 ```bash
-git tag v0.2.11
-git push origin v0.2.11
+git tag v0.2.12
+git push origin v0.2.12
 ```
 
 ## Documentation
@@ -156,6 +157,7 @@ git push origin v0.2.11
 ## Security Notes
 
 - Windows `.exe` / `.msi` and Linux `.deb` / `.rpm` installers require explicit confirmation.
+- Official tagged Windows release assets are code-signed; unsigned local builds or fork builds can still appear as an unknown publisher in Windows SmartScreen.
 - `GITHUB_TOKEN` is only used for GitHub API requests and must not be written to logs.
 - ReleaseDock manages files it installed under its own install root. It only auto-adopts Windows system-installer records that ReleaseDock created and still lack a launch target.
 - Windows system install detection reads uninstall-registry metadata only; it does not run uninstall commands during adoption.

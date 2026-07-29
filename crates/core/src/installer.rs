@@ -126,6 +126,115 @@ pub fn adopt_pending_system_installer_apps(manifest_store: &ManifestStore) -> Re
     adopt_pending_system_installer_apps_with(manifest_store, discover_installation)
 }
 
+/// 修正早期或误分类记录：如果 Windows `.exe` 实际位于 ReleaseDock 管理目录，
+/// 它应当按托管可执行文件删除，而不是打开系统卸载入口。
+pub fn repair_managed_windows_executable_records(
+    manifest_store: &ManifestStore,
+    runtime_config: Option<&Config>,
+) -> Result<usize> {
+    let mut manifest = manifest_store.load()?;
+    let mut repaired_count = 0usize;
+
+    for app in &mut manifest.apps {
+        if !is_repairable_managed_windows_executable(app) {
+            continue;
+        }
+
+        let Ok(repo) = RepoRef::parse(&app.repo_url) else {
+            continue;
+        };
+        let current_root = cache_root(manifest_store, runtime_config);
+        let Some(repair) = repair_managed_executable_layout(app, &repo, &current_root) else {
+            continue;
+        };
+
+        app.install_path = repair.install_path;
+        app.install_type = InstallType::Executable;
+        app.install_path_kind = InstallPathKind::ManagedPath;
+        app.uninstall_supported = true;
+        app.launch_path = None;
+        app.installer_path = None;
+        app.managed_root = Some(repair.managed_root);
+        repaired_count += 1;
+    }
+
+    if repaired_count > 0 {
+        manifest_store.save(&manifest)?;
+    }
+
+    Ok(repaired_count)
+}
+
+fn is_repairable_managed_windows_executable(app: &InstalledApp) -> bool {
+    matches!(app.install_path_kind, InstallPathKind::SystemInstaller)
+        && app.launch_path.is_none()
+        && !matches!(app.install_type, InstallType::LinuxPackage)
+        && is_windows_bare_executable_asset_name(&app.asset_name)
+}
+
+struct ManagedExecutableRepair {
+    managed_root: PathBuf,
+    install_path: PathBuf,
+}
+
+fn repair_managed_executable_layout(
+    app: &InstalledApp,
+    repo: &RepoRef,
+    current_root: &Path,
+) -> Option<ManagedExecutableRepair> {
+    let install_path = fs::canonicalize(&app.install_path).ok()?;
+    if !install_path.is_file() {
+        return None;
+    }
+
+    let repo_dir_name = format!("{}-{}", repo.owner, repo.name);
+    if let Some(repair) = repair_managed_executable_layout_at_root(
+        &install_path,
+        &repo_dir_name,
+        &app.asset_name,
+        current_root,
+    ) {
+        return Some(repair);
+    }
+
+    // 用户可能改过 install root；旧记录自身的路径仍能证明它在 ReleaseDock 布局内。
+    let active_dir = install_path.parent()?;
+    if active_dir.file_name().and_then(|name| name.to_str()) != Some(&repo_dir_name) {
+        return None;
+    }
+    let apps_dir = active_dir.parent()?;
+    if apps_dir.file_name().and_then(|name| name.to_str()) != Some("apps") {
+        return None;
+    }
+    repair_managed_executable_layout_at_root(
+        &install_path,
+        &repo_dir_name,
+        &app.asset_name,
+        apps_dir.parent()?,
+    )
+}
+
+fn repair_managed_executable_layout_at_root(
+    install_path: &Path,
+    repo_dir_name: &str,
+    asset_name: &str,
+    managed_root: &Path,
+) -> Option<ManagedExecutableRepair> {
+    let canonical_root = fs::canonicalize(managed_root).ok()?;
+    let apps_dir = canonical_root.join("apps");
+    let active_dir = apps_dir.join(repo_dir_name);
+    let expected_path = active_dir.join(asset_name);
+    let canonical_expected = fs::canonicalize(&expected_path).ok()?;
+    if canonical_expected != install_path {
+        return None;
+    }
+
+    Some(ManagedExecutableRepair {
+        managed_root: canonical_root,
+        install_path: install_path.to_path_buf(),
+    })
+}
+
 fn load_adoptable_system_installer(
     manifest_store: &ManifestStore,
     repo: &RepoRef,

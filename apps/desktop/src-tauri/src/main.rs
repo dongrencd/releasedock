@@ -26,6 +26,7 @@ use releasedock_core::{
     installer::{
         ProgressReporter, RollbackGuard, TaskProgress, adopt_pending_system_installer_apps,
         adopt_system_installer_app, infer_launch_target, install_from_plan,
+        repair_managed_windows_executable_records,
         rollback_repo_guarded as core_rollback_repo_guarded, uninstall_repo as core_uninstall_repo,
     },
     integrity::{IntegrityPlan, IntegrityStatus, IntegrityVerifier},
@@ -606,8 +607,10 @@ async fn open_system_uninstall_settings() -> Result<(), String> {
 
 async fn build_dashboard(app: &tauri::AppHandle, refresh_id: u64) -> Result<Vec<ManagedAppView>> {
     let store = ManifestStore::default()?;
-    // Dashboard 刷新不能被后台接管影响；失败时继续使用现有 manifest 记录渲染。
+    let runtime_config = runtime_config()?;
+    // Dashboard 刷新不能被后台修正影响；失败时继续使用现有 manifest 记录渲染。
     let _ = adopt_pending_system_installer_apps(&store);
+    let _ = repair_managed_windows_executable_records(&store, Some(&runtime_config));
     let manifest = store.load()?;
     let tracked_store = TrackedRepoStore::default()?;
     tracked_store.seed_if_missing(&[DEFAULT_TRACKED_REPO_ID])?;
@@ -615,7 +618,6 @@ async fn build_dashboard(app: &tauri::AppHandle, refresh_id: u64) -> Result<Vec<
     let recent_activities = Arc::new(group_recent_activities(&manifest.lifecycle_events));
     let releasedock_core::manifest::Manifest { apps, .. } = manifest;
     let installed_ids: HashSet<String> = apps.iter().map(|app| app.id.clone()).collect();
-    let runtime_config = runtime_config()?;
     let language = ui_language(&runtime_config);
     let client = release_client(Some(&runtime_config))?;
     let work_items = build_dashboard_work_items(apps, tracked_repos, installed_ids);

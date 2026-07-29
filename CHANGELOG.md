@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.12] - 2026-07-29
+
+### Changed
+- Tagged Windows release artifacts use Authenticode signing when signing secrets are configured and otherwise continue publishing unsigned artifacts with an explicit CI warning
+
+### Fixed
+- Bare Windows `.exe` records already stored in ReleaseDock's managed app layout now stay on ReleaseDock-managed uninstall instead of opening Windows system uninstall settings
+
 ## [0.2.11] - 2026-07-29
 
 ### Added
