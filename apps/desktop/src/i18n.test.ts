@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createTaskStatusText, createUiText } from "./i18n";
+import { createTaskStatusText, createUiText, normalizeThemeMode, resolveEffectiveThemeMode, themeModeOptions } from "./i18n";
 
 describe("createTaskStatusText", () => {
   it("localizes dashboard and action status strings", () => {
@@ -29,11 +29,11 @@ describe("createTaskStatusText", () => {
     const en = createUiText("en");
     const zhTask = createTaskStatusText("zh-CN");
 
-    expect(zh.openInstallerFile).toBe("打开安装包");
+    expect(zh.openInstallerFile).toBe("执行安装包");
     expect(zh.openInstallerFolder).toBe("打开安装包目录");
     expect(zhTask.openedInstallerFile("ReleaseDock")).toContain("打开 ReleaseDock 的安装包");
     expect(zhTask.openedInstallerFolder("ReleaseDock")).toContain("打开 ReleaseDock 的安装包目录");
-    expect(en.openInstallerFile).toBe("Open installer");
+    expect(en.openInstallerFile).toBe("Run installer");
     expect(en.openInstallerFolder).toBe("Open installer folder");
   });
 
@@ -102,6 +102,30 @@ describe("createTaskStatusText", () => {
     expect(en.networkProxyFormat).toContain("http://proxy.example.com:port");
     expect(en.networkProxyFormat).not.toMatch(/\b\d{1,3}(?:\.\d{1,3}){3}:\d+\b/);
     expect(enTask.testingGithubConnectivity).toBe("Testing GitHub connection");
+  });
+
+  it("provides theme labels and normalizes unknown values to follow system", () => {
+    const zh = createUiText("zh-CN");
+    const en = createUiText("en");
+
+    expect(zh.theme).toBe("主题");
+    expect(zh.themeSystem).toBe("跟随系统");
+    expect(zh.themeLight).toBe("浅色");
+    expect(zh.themeDark).toBe("深色");
+    expect(en.theme).toBe("Theme");
+    expect(themeModeOptions("en").map((item) => item.value)).toEqual(["system", "light", "dark"]);
+    expect(normalizeThemeMode(null)).toBe("system");
+    expect(normalizeThemeMode("dark")).toBe("dark");
+    expect(resolveEffectiveThemeMode("system", true)).toBe("dark");
+    expect(resolveEffectiveThemeMode("light", true)).toBe("light");
+  });
+
+  it("counts the local settings summary after adding theme controls", () => {
+    const zh = createUiText("zh-CN");
+    const en = createUiText("en");
+
+    expect(zh.settingsTitleSmall).toBe("5 个本地配置项");
+    expect(en.settingsTitleSmall).toBe("5 local settings");
   });
 
   it("provides task labels for verification and rollback progress", () => {

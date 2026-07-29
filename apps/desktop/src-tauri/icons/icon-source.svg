@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="ReleaseDock icon">
+  <defs>
+    <linearGradient id="bg" x1="160" y1="80" x2="880" y2="944" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#064E4A"/>
+      <stop offset="1" stop-color="#0F766E"/>
+    </linearGradient>
+    <linearGradient id="dock" x1="220" y1="520" x2="804" y2="820" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5EEAD4"/>
+      <stop offset="1" stop-color="#14B8A6"/>
+    </linearGradient>
+    <linearGradient id="arrow" x1="512" y1="228" x2="512" y2="588" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#CCFBF1"/>
+      <stop offset="1" stop-color="#5EEAD4"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="24" stdDeviation="22" flood-color="#042F2E" flood-opacity=".35"/>
+    </filter>
+  </defs>
+
+  <rect width="1024" height="1024" rx="220" fill="url(#bg)"/>
+
+  <g filter="url(#shadow)">
+    <path d="M236 584c0-44 36-80 80-80h74c26 0 46 20 46 46v56c0 42 34 76 76 76s76-34 76-76v-56c0-26 20-46 46-46h74c44 0 80 36 80 80v146c0 70-58 128-128 128H364c-70 0-128-58-128-128V584Z" fill="url(#dock)"/>
+    <path d="M236 584c0-44 36-80 80-80h74c26 0 46 20 46 46v56c0 42 34 76 76 76s76-34 76-76v-56c0-26 20-46 46-46h74c44 0 80 36 80 80v22c-55 70-145 112-276 112s-221-42-276-112v-22Z" fill="#F8FAFC"/>
+    <path d="M364 644h296c-18 64-72 108-148 108s-130-44-148-108Z" fill="#0F766E"/>
+    <path d="M392 706c78 24 162 24 240 0" fill="none" stroke="#5EEAD4" stroke-width="20" stroke-linecap="round" opacity=".5"/>
+    <path d="M688 748h86M710 794h48" stroke="#FBBF24" stroke-width="20" stroke-linecap="round"/>
+  </g>
+
+  <g filter="url(#shadow)">
+    <path d="M512 206c34 0 62 28 62 62v206l61-61c24-24 63-24 87 0s24 63 0 87L556 666c-24 24-64 24-88 0L302 500c-24-24-24-63 0-87s63-24 87 0l61 61V268c0-34 28-62 62-62Z" fill="url(#arrow)"/>
+    <path d="M512 230c21 0 38 17 38 38v264l102-102c15-15 39-15 54 0s15 39 0 54L539 651c-15 15-39 15-54 0L318 484c-15-15-15-39 0-54s39-15 54 0l102 102V268c0-21 17-38 38-38Z" fill="#2DD4BF"/>
+  </g>
+</svg>

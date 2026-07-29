@@ -14,6 +14,11 @@ use releasedock_core::{
     repo::RepoRef,
 };
 
+#[cfg(target_os = "windows")]
+use releasedock_core::{
+    installer::adopt_system_installer_app_with, windows_install_registry::WindowsInstallDiscovery,
+};
+
 #[test]
 fn parses_owner_repo_and_github_urls() {
     assert_eq!(
@@ -51,6 +56,49 @@ fn prefers_windows_portable_archive_over_installer() {
 
     assert_eq!(matched.asset.name, "demo-windows-x64.zip");
     assert!(matched.score > 0);
+}
+
+#[test]
+fn prefers_windows_bare_executable_over_installer() {
+    let release = Release::fixture(
+        "v0.2.5",
+        vec![
+            ReleaseAsset::fixture("ReleaseDock_0.2.5_x64_en-US.msi"),
+            ReleaseAsset::fixture("ReleaseDock-windows-x64.exe"),
+            ReleaseAsset::fixture("ReleaseDock_0.2.5_x64-setup.exe"),
+        ],
+    );
+
+    let matched = AssetMatcher::new(OperatingSystem::Windows, Architecture::X64)
+        .select_best(&release)
+        .unwrap();
+
+    assert_eq!(matched.asset.name, "ReleaseDock-windows-x64.exe");
+    assert_eq!(
+        matched.install_type,
+        releasedock_core::asset_matcher::InstallType::Executable
+    );
+}
+
+#[test]
+fn prefers_windows_setup_exe_over_msi() {
+    let release = Release::fixture(
+        "v0.2.5",
+        vec![
+            ReleaseAsset::fixture("ReleaseDock_0.2.5_x64_en-US.msi"),
+            ReleaseAsset::fixture("ReleaseDock_0.2.5_x64-setup.exe"),
+        ],
+    );
+
+    let matched = AssetMatcher::new(OperatingSystem::Windows, Architecture::X64)
+        .select_best(&release)
+        .unwrap();
+
+    assert_eq!(matched.asset.name, "ReleaseDock_0.2.5_x64-setup.exe");
+    assert_eq!(
+        matched.install_type,
+        releasedock_core::asset_matcher::InstallType::WindowsInstaller
+    );
 }
 
 #[test]
@@ -234,11 +282,50 @@ fn upgrades_legacy_manifest_entries_to_current_install_metadata() {
 
     let manifest = store.load().unwrap();
     assert_eq!(manifest.schema_version, 4);
-    assert!(!manifest.apps[0].uninstall_supported);
+    assert!(manifest.apps[0].uninstall_supported);
+    assert_eq!(
+        manifest.apps[0].install_type,
+        releasedock_core::asset_matcher::InstallType::Executable
+    );
+    assert_eq!(
+        manifest.apps[0].install_path_kind,
+        releasedock_core::manifest::InstallPathKind::ManagedPath
+    );
+}
+
+#[test]
+fn upgrades_legacy_windows_setup_manifest_entries_to_system_installers() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ManifestStore::at_path(temp.path().join("apps.json"));
+    std::fs::write(
+        store.path(),
+        r#"{
+          "schema_version": 1,
+          "apps": [
+            {
+              "id": "owner/project",
+              "name": "project",
+              "repo_url": "https://github.com/owner/project",
+              "installed_version": "v1.0.0",
+              "installed_at": "2026-07-21T10:20:30Z",
+              "asset_name": "project-windows-x64-setup.exe",
+              "install_path": "/tmp/project/project-windows-x64-setup.exe"
+            }
+          ]
+        }"#,
+    )
+    .unwrap();
+
+    let manifest = store.load().unwrap();
+    assert_eq!(
+        manifest.apps[0].install_type,
+        releasedock_core::asset_matcher::InstallType::WindowsInstaller
+    );
     assert_eq!(
         manifest.apps[0].install_path_kind,
         releasedock_core::manifest::InstallPathKind::SystemInstaller
     );
+    assert!(!manifest.apps[0].uninstall_supported);
 }
 
 #[test]
@@ -272,6 +359,151 @@ fn upgrades_legacy_linux_executable_manifest_entries() {
     );
     assert_eq!(manifest.apps[0].launch_path.as_deref(), None);
     assert!(manifest.apps[0].uninstall_supported);
+}
+
+#[test]
+fn records_installer_path_for_system_installer_apps() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ManifestStore::at_path(temp.path().join("apps.json"));
+
+    store
+        .save_apps(&[InstalledApp::with_install_metadata(
+            "owner/project",
+            "project",
+            "v1.0.0",
+            "project-windows-x64.exe",
+            temp.path().join("Program Files/ReleaseDock"),
+            releasedock_core::asset_matcher::InstallType::WindowsInstaller,
+            InstallPathKind::SystemInstaller,
+            false,
+        )
+        .with_installer_path(Some(
+            temp.path()
+                .join("Downloads/ReleaseDock_0.2.5_x64_en-US.msi"),
+        ))])
+        .unwrap();
+
+    let manifest = store.load().unwrap();
+    assert_eq!(
+        manifest.apps[0]
+            .installer_path
+            .as_ref()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy(),
+        "ReleaseDock_0.2.5_x64_en-US.msi"
+    );
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn adopts_system_installer_apps_with_a_discovery_result() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ManifestStore::at_path(temp.path().join("apps.json"));
+    let repo = RepoRef::parse("owner/project").unwrap();
+
+    store
+        .save_apps(&[InstalledApp::with_install_metadata(
+            "owner/project",
+            "project",
+            "v1.0.0",
+            "project-windows-x64.exe",
+            temp.path()
+                .join("Downloads/ReleaseDock_0.2.5_x64_en-US.msi"),
+            releasedock_core::asset_matcher::InstallType::WindowsInstaller,
+            InstallPathKind::SystemInstaller,
+            false,
+        )])
+        .unwrap();
+
+    let adopted = adopt_system_installer_app_with(&store, &repo, |_names, _versions| {
+        let install_path = temp.path().join("Program Files/ReleaseDock");
+        let launch_path = install_path.join("ReleaseDock.exe");
+        Ok(Some(WindowsInstallDiscovery {
+            install_path,
+            launch_path: Some(launch_path),
+        }))
+    })
+    .unwrap();
+
+    let install_path = temp.path().join("Program Files/ReleaseDock");
+    let launch_path = install_path.join("ReleaseDock.exe");
+    let installer_path = temp
+        .path()
+        .join("Downloads/ReleaseDock_0.2.5_x64_en-US.msi");
+
+    assert_eq!(adopted.install_path, install_path);
+    assert_eq!(adopted.launch_path.as_deref(), Some(launch_path.as_path()));
+    assert_eq!(
+        adopted.installer_path.as_deref(),
+        Some(installer_path.as_path())
+    );
+
+    let manifest = store.load().unwrap();
+    assert_eq!(manifest.apps[0].install_path, adopted.install_path);
+    assert_eq!(manifest.apps[0].launch_path, adopted.launch_path);
+    assert_eq!(manifest.apps[0].installer_path, adopted.installer_path);
+}
+
+#[cfg(not(target_os = "windows"))]
+#[test]
+fn adopt_rejects_non_system_installer_entries_before_platform_check() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ManifestStore::at_path(temp.path().join("apps.json"));
+    let repo = RepoRef::parse("owner/project").unwrap();
+
+    store
+        .save_apps(&[InstalledApp::with_install_metadata(
+            "owner/project",
+            "project",
+            "v1.0.0",
+            "project-linux-x86_64.tar.gz",
+            temp.path().join("project"),
+            releasedock_core::asset_matcher::InstallType::Archive,
+            InstallPathKind::ManagedPath,
+            true,
+        )])
+        .unwrap();
+
+    let error = releasedock_core::installer::adopt_system_installer_app(&store, &repo).unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("only system installer entries can be adopted"),
+        "{error:#}"
+    );
+}
+
+#[cfg(not(target_os = "windows"))]
+#[test]
+fn adopt_reports_windows_only_after_confirming_system_installer_entry() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ManifestStore::at_path(temp.path().join("apps.json"));
+    let repo = RepoRef::parse("owner/project").unwrap();
+
+    store
+        .save_apps(&[InstalledApp::with_install_metadata(
+            "owner/project",
+            "project",
+            "v1.0.0",
+            "project-windows-x64.exe",
+            temp.path().join("Downloads/project-windows-x64.exe"),
+            releasedock_core::asset_matcher::InstallType::WindowsInstaller,
+            InstallPathKind::SystemInstaller,
+            false,
+        )])
+        .unwrap();
+
+    let error = releasedock_core::installer::adopt_system_installer_app(&store, &repo).unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("system installer adoption is only available on Windows"),
+        "{error:#}"
+    );
 }
 
 #[test]
@@ -468,7 +700,12 @@ fn creates_install_plan_without_executing_installer() {
     assert_eq!(plan.repo_id, "owner/project");
     assert_eq!(plan.version, "v1.0.0");
     assert_eq!(plan.asset_name, "project-windows-x64.exe");
-    assert!(plan.requires_user_confirmation);
+    assert!(!plan.requires_user_confirmation);
+    assert_eq!(plan.management_kind, InstallManagementKind::ManagedLocal);
+    assert_eq!(
+        plan.install_type,
+        releasedock_core::asset_matcher::InstallType::Executable
+    );
     assert_eq!(plan.integrity, IntegrityPlan::default());
     assert_eq!(plan.integrity.status, IntegrityStatus::RecordedOnly);
 }

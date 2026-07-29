@@ -5,6 +5,7 @@ import {
   buildConnectivityTestStatus,
   buildConnectivityTestViewState,
   buildNetworkConfigHealth,
+  resolveBackgroundUpdateCountAfterDashboardRefresh,
   getNetworkConfigKey,
   shouldRunAutoConnectivityCheck,
   buildStatusDockPresentation,
@@ -21,9 +22,11 @@ import {
   getRollbackAvailability,
   hasInstallableAsset,
   getInspectorDetailItems,
+  getAdoptSystemInstallAvailability,
   getLifecycleHistoryEntries,
   hasSecondaryInspectorActions,
   isFailedInstallProgress,
+  isSystemUninstallOnly,
   installManagementKindLabel,
   integrityStatusLabel,
   installPreviewIntegrityLabel,
@@ -43,6 +46,7 @@ import {
   shouldShowInstallerFolderSecondary,
   shouldShowInstallLocationAction,
   shouldShowInstallLocationSecondary,
+  shouldShowAdoptSystemInstallAction,
   systemPackageManagerLabel,
   taskActionLabel,
   taskStageLabel,
@@ -282,6 +286,13 @@ describe("automatic GitHub connectivity checks", () => {
       usedToken: false,
       usedProxy: false
     }, { githubToken: "", proxyUrl: "" }).status).toBe("failed");
+  });
+});
+
+describe("background update badge", () => {
+  it("clears stale background update counts after a successful dashboard refresh", () => {
+    expect(resolveBackgroundUpdateCountAfterDashboardRefresh(4)).toBe(0);
+    expect(resolveBackgroundUpdateCountAfterDashboardRefresh(0)).toBe(0);
   });
 });
 
@@ -1020,13 +1031,91 @@ describe("buildUpdateInbox", () => {
         status: "current",
         source: "GitHub",
         installPath: "/tmp/setup.msi",
+        installerPath: "/tmp/setup.msi",
         installPathKind: "systemInstaller"
       }
     ], "zh-CN")[0];
 
-    expect(systemInstaller.actionLabel).toBe("打开安装包");
+    expect(systemInstaller.actionLabel).toBe("执行安装包");
     expect(shouldShowInstallerFolderSecondary(systemInstaller)).toBe(true);
     expect(shouldShowInstallLocationSecondary(systemInstaller)).toBe(false);
+    expect(isSystemUninstallOnly(systemInstaller)).toBe(false);
+    expect(shouldShowAdoptSystemInstallAction(systemInstaller)).toBe(true);
+    expect(getAdoptSystemInstallAvailability(systemInstaller, false, language)).toEqual({
+      enabled: true
+    });
+  });
+
+  it("opens adopted system installers like installed apps when a launch target exists", () => {
+    const adoptedInstaller = buildUpdateInbox([
+      {
+        id: "owner/setup",
+        name: "Setup",
+        currentVersion: "v1.0.0",
+        latestVersion: "v1.0.0",
+        status: "current",
+        source: "GitHub",
+        installPath: "C:/Program Files/ReleaseDock",
+        installerPath: "C:/Users/test/Downloads/ReleaseDock_0.2.5_x64_en-US.msi",
+        launchPath: "C:/Program Files/ReleaseDock/ReleaseDock.exe",
+        installPathKind: "systemInstaller"
+      }
+    ], language)[0];
+
+    expect(adoptedInstaller.actionLabel).toBe("Open app");
+    expect(getPrimaryActionAvailability(adoptedInstaller, false, language)).toEqual({ enabled: true });
+    expect(getOpenAppAvailability(adoptedInstaller, false, language)).toEqual({ enabled: true });
+    expect(shouldShowInstallLocationSecondary(adoptedInstaller)).toBe(true);
+    expect(shouldShowInstallerFolderSecondary(adoptedInstaller)).toBe(false);
+    expect(shouldShowAdoptSystemInstallAction(adoptedInstaller)).toBe(false);
+    expect(getInspectorDetailItems(adoptedInstaller, language)).toEqual([
+      {
+        label: "Asset file",
+        value: "No installable asset for this platform",
+        fullWidth: true,
+        monospace: true
+      },
+      {
+        label: "Install path",
+        value: "C:/Program Files/ReleaseDock",
+        fullWidth: true,
+        monospace: true
+      },
+      {
+        label: "Installer file",
+        value: "C:/Users/test/Downloads/ReleaseDock_0.2.5_x64_en-US.msi",
+        fullWidth: true,
+        monospace: true
+      }
+    ]);
+  });
+
+  it("keeps executable installs on the managed uninstall path even when legacy support is false", () => {
+    const executable = buildUpdateInbox([
+      {
+        id: "owner/tool",
+        name: "Tool",
+        currentVersion: "v1.0.0",
+        latestVersion: "v1.0.0",
+        status: "current",
+        source: "GitHub",
+        installPath: "C:/Users/test/AppData/Local/ReleaseDock/apps/tool/tool.exe",
+        installPathKind: "managedPath",
+        installType: "Executable",
+        uninstallSupported: false
+      }
+    ], language)[0];
+
+    expect(isSystemUninstallOnly(executable)).toBe(false);
+    expect(getUninstallAvailability(executable, false, language)).toEqual({ enabled: true });
+    expect(getSelectionActionAvailability([executable], [executable.id], false, language)).toEqual({
+      enabled: true,
+      kind: "uninstall",
+      label: "Uninstall",
+      uninstallTargetId: "owner/tool",
+      candidateCount: 0,
+      skippedCount: 0
+    });
   });
 
   it("uses a plain uninstall label in Chinese", () => {

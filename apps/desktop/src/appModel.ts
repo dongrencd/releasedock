@@ -26,6 +26,7 @@ export type ManagedApp = {
   systemPackageManager?: SystemPackageManagerName | null;
   managementKind?: InstallManagementKind | null;
   installPath: string;
+  installerPath?: string | null;
   installType?: "WindowsInstaller" | "PortableArchive" | "AppImage" | "LinuxPackage" | "Executable" | "Archive" | "Unknown";
   installPathKind?: "managedPath" | "systemInstaller" | "unknown";
   uninstallSupported?: boolean;
@@ -342,6 +343,10 @@ export function shouldRunAutoConnectivityCheck(config: ConfigConnectivityInput, 
   return getNetworkConfigKey(config) !== lastCheckedKey;
 }
 
+export function resolveBackgroundUpdateCountAfterDashboardRefresh(_currentCount: number): number {
+  return 0;
+}
+
 export function buildConnectivityTestViewState(
   result: GithubConnectivityResultLike,
   config: ConfigConnectivityInput
@@ -454,6 +459,10 @@ export function shouldShowInstallLocationSecondary(item: ManagedApp | null): boo
     return false;
   }
 
+  if (isSystemInstallerKind(item.installPathKind) && !isAdoptedSystemInstaller(item)) {
+    return false;
+  }
+
   const primaryActionKind = resolvePrimaryActionKind(item);
   return primaryActionKind !== "openInstallLocation" && primaryActionKind !== "openInstallerFile";
 }
@@ -463,7 +472,65 @@ export function shouldShowInstallerFolderSecondary(item: ManagedApp | null): boo
     return false;
   }
 
-  return item.status !== "needsChoice" && isSystemInstallerKind(item.installPathKind);
+  return item.status !== "needsChoice"
+    && isSystemInstallerKind(item.installPathKind)
+    && !isAdoptedSystemInstaller(item)
+    && Boolean(resolveInstallerPackagePath(item));
+}
+
+export function isSystemUninstallOnly(item: ManagedApp | null): boolean {
+  if (!item) {
+    return false;
+  }
+
+  return item.uninstallSupported === false
+    && isSystemInstallerKind(item.installPathKind)
+    && item.installType !== "Executable";
+}
+
+function isAdoptedSystemInstaller(item: ManagedApp): boolean {
+  // 有 launchPath 表示系统安装器结果已被接管，installPath 此时代表真实安装目录。
+  return isSystemInstallerKind(item.installPathKind) && Boolean(item.launchPath);
+}
+
+function resolveInstallerPackagePath(item: ManagedApp): string | null {
+  if (!isSystemInstallerKind(item.installPathKind)) {
+    return null;
+  }
+
+  return item.installerPath || item.installPath || null;
+}
+
+export function shouldShowAdoptSystemInstallAction(item: ManagedApp | null): boolean {
+  if (!item) {
+    return false;
+  }
+
+  // 只有还没探测出可执行目标的系统安装器，才需要手动重新探测。
+  return item.status !== "needsChoice"
+    && isSystemInstallerKind(item.installPathKind)
+    && !item.launchPath;
+}
+
+export function getAdoptSystemInstallAvailability(
+  item: ManagedApp | null,
+  busy: boolean,
+  language: Language
+): ActionAvailability {
+  const ui = createUiText(language);
+  if (busy) {
+    return { enabled: false, reason: ui.model.busy };
+  }
+
+  if (!item) {
+    return { enabled: false, reason: ui.model.selectApp };
+  }
+
+  if (!shouldShowAdoptSystemInstallAction(item)) {
+    return { enabled: false, reason: ui.model.noLaunchTarget };
+  }
+
+  return { enabled: true };
 }
 
 export function isRemovableNoRelease(item: ManagedApp): boolean {
@@ -875,11 +942,11 @@ export function getOpenAppAvailability(
     return { enabled: false, reason: ui.model.noLaunchTarget };
   }
 
-  if (!isManagedPathKind(item.installPathKind)) {
+  if (!item.launchPath) {
     return { enabled: false, reason: ui.model.noLaunchTarget };
   }
 
-  if (!item.launchPath) {
+  if (isUnknownInstallPathKind(item.installPathKind)) {
     return { enabled: false, reason: ui.model.noLaunchTarget };
   }
 
@@ -899,7 +966,7 @@ export function resolvePrimaryActionKind(item: ManagedApp | null): PrimaryAction
       return hasInstallableAsset(item) ? "install" : "openRelease";
     case "noRelease":
     case "current":
-      if (isManagedPathKind(item.installPathKind) && item.launchPath) {
+      if (item.launchPath && !isUnknownInstallPathKind(item.installPathKind)) {
         return "openApp";
       }
 
@@ -933,8 +1000,8 @@ export function shouldShowOpenAppSecondary(item: InboxItem | null): boolean {
   }
 
   return (item.status === "updateAvailable" || item.status === "downgradeAvailable")
-    && isManagedPathKind(item.installPathKind)
-    && Boolean(item.launchPath);
+    && Boolean(item.launchPath)
+    && !isUnknownInstallPathKind(item.installPathKind);
 }
 
 export function shouldShowLifecyclePreviewAction(item: ManagedApp | null): boolean {
@@ -1024,7 +1091,7 @@ export function getDetailPathLabel(item: ManagedApp | null, language: Language):
     return ui.defaultInstallPath;
   }
 
-  return isSystemInstallerKind(item.installPathKind) ? ui.installerFile : ui.installPath;
+  return isSystemInstallerKind(item.installPathKind) && !item.installerPath ? ui.installerFile : ui.installPath;
 }
 
 export function getInspectorDetailItems(item: ManagedApp | null, language: Language): InspectorDetailItem[] {
@@ -1048,6 +1115,15 @@ export function getInspectorDetailItems(item: ManagedApp | null, language: Langu
       monospace: true
     }
   ];
+
+  if (item.installerPath && item.installerPath !== item.installPath) {
+    items.push({
+      label: ui.installerFile,
+      value: item.installerPath,
+      fullWidth: true,
+      monospace: true
+    });
+  }
 
   if (item.systemPackageName) {
     items.push({
@@ -1155,7 +1231,7 @@ export function getUninstallAvailability(
     return { enabled: false, reason: ui.model.selectAssetBeforeUninstall };
   }
 
-  if (item.uninstallSupported === false) {
+  if (isSystemUninstallOnly(item)) {
     return { enabled: false, reason: ui.model.useSystemUninstall };
   }
 
@@ -1273,7 +1349,7 @@ export function getSelectionActionAvailability(
   const selectedSet = new Set(selectedIds);
   const selectedApps = apps.filter((app) => selectedSet.has(app.id));
   const uninstallableApps = selectedApps.filter(
-    (app) => !isRemovableTrackedItem(app) && app.status !== "needsChoice" && app.uninstallSupported !== false
+    (app) => !isRemovableTrackedItem(app) && app.status !== "needsChoice" && !isSystemUninstallOnly(app)
   );
 
   // 单个已安装软件时，列表危险动作进入现有卸载确认流；移除跟踪只保留给未安装项。

@@ -9,7 +9,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::Result;
@@ -30,11 +30,44 @@ const BACKGROUND_CHECK_EVENT: &str = "background-check-complete";
 const BACKGROUND_CHECK_CONCURRENCY: usize = 6;
 
 /// 后台检查结果
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BackgroundCheckStatus {
+    Success,
+    Failed,
+}
+
+/// 后台检查结果
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackgroundCheckResult {
     pub update_count: usize,
     pub total_checked: usize,
+    pub checked_at: String,
+    pub status: BackgroundCheckStatus,
+    pub error: Option<String>,
+}
+
+impl BackgroundCheckResult {
+    fn success(update_count: usize, total_checked: usize) -> Self {
+        Self {
+            update_count,
+            total_checked,
+            checked_at: checked_at_now(),
+            status: BackgroundCheckStatus::Success,
+            error: None,
+        }
+    }
+
+    fn failed(error: impl Into<String>) -> Self {
+        Self {
+            update_count: 0,
+            total_checked: 0,
+            checked_at: checked_at_now(),
+            status: BackgroundCheckStatus::Failed,
+            error: Some(error.into()),
+        }
+    }
 }
 
 /// 版本比对纯函数
@@ -49,10 +82,9 @@ pub fn has_update(installed: Option<&str>, latest: &str) -> bool {
 /// 启动后台定时检查任务
 pub fn spawn_background_checker(app: AppHandle, interval_minutes: u64) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(Duration::from_secs(interval_minutes * 60));
-        ticker.tick().await;
+        let interval = Duration::from_secs(interval_minutes * 60);
+        let mut last_notified_update_count: Option<usize> = None;
         loop {
-            ticker.tick().await;
             match run_background_check().await {
                 Ok(result) => {
                     let _ = app.emit(BACKGROUND_CHECK_EVENT, &result);
@@ -65,13 +97,18 @@ pub fn spawn_background_checker(app: AppHandle, interval_minutes: u64) -> JoinHa
                             _ => Language::En,
                         })
                         .unwrap_or(Language::En);
-                    if result.update_count > 0 {
+                    if should_notify_updates(last_notified_update_count, result.update_count) {
                         notify_updates(&app, result.update_count, lang);
                     }
+                    last_notified_update_count = Some(result.update_count);
                     crate::tray::update_tray_tooltip(&app, result.update_count, lang);
                 }
-                Err(_) => {}
+                Err(error) => {
+                    let result = BackgroundCheckResult::failed(error.to_string());
+                    let _ = app.emit(BACKGROUND_CHECK_EVENT, &result);
+                }
             }
+            tokio::time::sleep(interval).await;
         }
     })
 }
@@ -132,10 +169,7 @@ async fn run_background_check() -> Result<BackgroundCheckResult> {
         }
     }
 
-    Ok(BackgroundCheckResult {
-        update_count,
-        total_checked,
-    })
+    Ok(BackgroundCheckResult::success(update_count, total_checked))
 }
 
 fn spawn_check_task(
@@ -155,6 +189,17 @@ fn spawn_check_task(
             Err(_) => Ok(false),
         }
     });
+}
+
+fn should_notify_updates(previous_count: Option<usize>, current_count: usize) -> bool {
+    current_count > 0 && previous_count != Some(current_count)
+}
+
+fn checked_at_now() -> String {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs().to_string())
+        .unwrap_or_else(|_| "0".to_string())
 }
 
 /// 发送系统通知
@@ -210,5 +255,36 @@ mod tests {
     #[test]
     fn has_update_returns_true_when_not_installed() {
         assert!(has_update(None, "v1.0.0"));
+    }
+
+    #[test]
+    fn notification_is_sent_only_when_positive_update_count_changes() {
+        assert!(should_notify_updates(None, 2));
+        assert!(!should_notify_updates(Some(2), 2));
+        assert!(should_notify_updates(Some(2), 3));
+        assert!(!should_notify_updates(Some(2), 0));
+        assert!(should_notify_updates(Some(0), 1));
+    }
+
+    #[test]
+    fn successful_background_result_records_status_and_check_time() {
+        let result = BackgroundCheckResult::success(2, 7);
+
+        assert_eq!(result.update_count, 2);
+        assert_eq!(result.total_checked, 7);
+        assert_eq!(result.status, BackgroundCheckStatus::Success);
+        assert!(result.error.is_none());
+        assert!(!result.checked_at.is_empty());
+    }
+
+    #[test]
+    fn failed_background_result_keeps_error_summary_without_update_count() {
+        let result = BackgroundCheckResult::failed("config load failed");
+
+        assert_eq!(result.update_count, 0);
+        assert_eq!(result.total_checked, 0);
+        assert_eq!(result.status, BackgroundCheckStatus::Failed);
+        assert_eq!(result.error.as_deref(), Some("config load failed"));
+        assert!(!result.checked_at.is_empty());
     }
 }

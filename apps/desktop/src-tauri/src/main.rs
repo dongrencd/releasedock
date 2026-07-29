@@ -21,8 +21,9 @@ use releasedock_core::{
     config::{background_check_enabled, check_interval_minutes, effective_install_root},
     install_plan::{InstallManagementKind, InstallPlan, InstallSelectionGuard},
     installer::{
-        ProgressReporter, RollbackGuard, TaskProgress, infer_launch_target, install_from_plan,
-        rollback_repo_guarded as core_rollback_repo_guarded, uninstall_repo as core_uninstall_repo,
+        ProgressReporter, RollbackGuard, TaskProgress, adopt_system_installer_app,
+        infer_launch_target, install_from_plan, rollback_repo_guarded as core_rollback_repo_guarded,
+        uninstall_repo as core_uninstall_repo,
     },
     integrity::{IntegrityPlan, IntegrityStatus, IntegrityVerifier},
     manifest::{
@@ -92,6 +93,7 @@ struct ManagedAppView {
     published_at: Option<String>,
     asset_name: Option<String>,
     launch_path: Option<String>,
+    installer_path: Option<String>,
     system_package_name: Option<String>,
     system_package_manager: Option<SystemPackageManager>,
     management_kind: Option<InstallManagementKind>,
@@ -269,6 +271,7 @@ async fn main() -> Result<()> {
             uninstall_repo,
             remove_tracked_repo,
             bulk_remove_tracked_repos,
+            adopt_system_install,
             open_app,
             open_url,
             open_path,
@@ -879,6 +882,10 @@ fn render_app(
             .map(|value| value.to_rfc3339()),
         asset_name: Some(asset_name),
         launch_path,
+        installer_path: app
+            .installer_path
+            .as_ref()
+            .map(|value| value.display().to_string()),
         system_package_name: app.system_package_name.clone(),
         system_package_manager: app.system_package_manager,
         management_kind: Some(management_kind),
@@ -921,6 +928,10 @@ fn build_failed_installed_view(
         published_at: None,
         asset_name: None,
         launch_path,
+        installer_path: app
+            .installer_path
+            .as_ref()
+            .map(|value| value.display().to_string()),
         system_package_name: app.system_package_name.clone(),
         system_package_manager: app.system_package_manager,
         management_kind: Some(management_kind),
@@ -962,6 +973,10 @@ fn build_no_release_installed_view(
         published_at: None,
         asset_name: None,
         launch_path,
+        installer_path: app
+            .installer_path
+            .as_ref()
+            .map(|value| value.display().to_string()),
         system_package_name: app.system_package_name.clone(),
         system_package_manager: app.system_package_manager,
         management_kind: Some(management_kind),
@@ -1008,6 +1023,7 @@ fn render_tracked_repo(repo: RepoRef, release: Release, language: Language) -> M
             .map(|value| value.to_rfc3339()),
         asset_name: matched.map(|asset| asset.asset.name),
         launch_path: None,
+        installer_path: None,
         system_package_name: None,
         system_package_manager: None,
         management_kind: None,
@@ -1044,6 +1060,7 @@ fn build_no_release_tracked_view(repo: RepoRef, language: Language) -> ManagedAp
         published_at: None,
         asset_name: None,
         launch_path: None,
+        installer_path: None,
         system_package_name: None,
         system_package_manager: None,
         management_kind: None,
@@ -1085,6 +1102,7 @@ fn build_failed_view(
         published_at: None,
         asset_name: None,
         launch_path: None,
+        installer_path: None,
         system_package_name: None,
         system_package_manager: None,
         management_kind: None,
@@ -1251,6 +1269,16 @@ async fn remove_tracked_repo_from_tracking(
     build_dashboard(app, 0).await
 }
 
+#[tauri::command]
+async fn adopt_system_install(
+    app: tauri::AppHandle,
+    repo_input: String,
+) -> Result<Vec<ManagedAppView>, String> {
+    adopt_system_install_in_tracking(&app, &repo_input)
+        .await
+        .map_err(format_error)
+}
+
 async fn bulk_remove_tracked_repos_from_tracking(
     app: &tauri::AppHandle,
     repo_inputs: Vec<String>,
@@ -1271,6 +1299,16 @@ async fn bulk_remove_tracked_repos_from_tracking(
         apps,
         removed_count: removed_ids.len(),
     })
+}
+
+async fn adopt_system_install_in_tracking(
+    app: &tauri::AppHandle,
+    repo_input: &str,
+) -> Result<Vec<ManagedAppView>> {
+    let repo = RepoRef::parse(repo_input)?;
+    let store = ManifestStore::default()?;
+    let _adopted = adopt_system_installer_app(&store, &repo)?;
+    build_dashboard(app, 0).await
 }
 
 fn task_progress_reporter(app: &tauri::AppHandle) -> Option<ProgressReporter> {
@@ -1742,6 +1780,7 @@ struct DesktopConfig {
     install_root: Option<PathBuf>,
     effective_install_root: Option<PathBuf>,
     language: Option<String>,
+    theme_mode: Option<String>,
     background_check_enabled: Option<bool>,
     check_interval_minutes: Option<u32>,
     tray_hint_shown: Option<bool>,
@@ -1754,6 +1793,7 @@ impl From<DesktopConfig> for Config {
             proxy_url: value.proxy_url,
             install_root: value.install_root,
             language: value.language,
+            theme_mode: value.theme_mode,
             background_check_enabled: value.background_check_enabled,
             check_interval_minutes: value.check_interval_minutes,
             tray_hint_shown: value.tray_hint_shown,
@@ -1769,6 +1809,7 @@ fn desktop_config_from_runtime(value: Config) -> DesktopConfig {
         install_root: value.install_root,
         effective_install_root: Some(effective_install_root),
         language: value.language,
+        theme_mode: value.theme_mode,
         background_check_enabled: value.background_check_enabled,
         check_interval_minutes: value.check_interval_minutes,
         tray_hint_shown: value.tray_hint_shown,

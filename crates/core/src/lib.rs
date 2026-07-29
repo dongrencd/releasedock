@@ -12,3 +12,4 @@ pub mod manifest;
 pub mod release;
 pub mod release_policy;
 pub mod repo;
+pub mod windows_install_registry;

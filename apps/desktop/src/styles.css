@@ -1,4 +1,5 @@
 :root {
+  color-scheme: light;
   color: #18212f;
   background: #f5f7fa;
   font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
@@ -550,13 +551,13 @@ input {
   margin-top: 0;
 }
 
-.languageSwitch {
+.segmentedControl {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
 
-.languagePill {
+.segmentedPill {
   display: inline-flex;
   align-items: center;
   min-height: 34px;
@@ -569,7 +570,7 @@ input {
   white-space: nowrap;
 }
 
-.languagePill.active {
+.segmentedPill.active {
   color: #0f766e;
   border-color: #99d4ce;
   background: #ecfdf5;
@@ -2373,4 +2374,376 @@ h2 {
   color: #64748b;
   font-size: 12px;
   white-space: nowrap;
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+html[data-theme="dark"],
+html[data-theme="dark"] body {
+  background: #0d1218;
+  color: #e7edf4;
+}
+
+html[data-theme="dark"] .sidebar {
+  color: #d0dddb;
+  background: linear-gradient(180deg, #0d1f23 0%, #12252a 100%);
+  border-right-color: #20353b;
+}
+
+html[data-theme="dark"] .sidebarLabel,
+html[data-theme="dark"] .brandCopy span,
+html[data-theme="dark"] .sidebarFooter span:last-child {
+  color: #a8bfbb;
+}
+
+html[data-theme="dark"] .brandMark {
+  border-color: #2f5d59;
+  color: #ecfdf5;
+  background: #0f766e;
+}
+
+html[data-theme="dark"] .topbar,
+html[data-theme="dark"] .dashboardView,
+html[data-theme="dark"] .settingsPanel,
+html[data-theme="dark"] .statusDock {
+  background: #111922;
+}
+
+html[data-theme="dark"] .topbar,
+html[data-theme="dark"] .statusDock {
+  border-color: #243341;
+}
+
+html[data-theme="dark"] .topbarCopy h1,
+html[data-theme="dark"] .topbarCopy,
+html[data-theme="dark"] .topbarMeta,
+html[data-theme="dark"] .sectionMeta,
+html[data-theme="dark"] .workbenchHeaderActions,
+html[data-theme="dark"] .settingsCardHeader p,
+html[data-theme="dark"] .networkConfigGuide,
+html[data-theme="dark"] .connectivityResult,
+html[data-theme="dark"] .intervalUnit,
+html[data-theme="dark"] .fieldRow small,
+html[data-theme="dark"] .intervalField > span:first-child {
+  color: #a9bac8;
+}
+
+html[data-theme="dark"] .topbarCopy h1,
+html[data-theme="dark"] .settingsCardEyebrow,
+html[data-theme="dark"] .fieldRow > span,
+html[data-theme="dark"] .backgroundCheckHeader > span:first-child,
+html[data-theme="dark"] .backgroundCheckRow > span:first-child,
+html[data-theme="dark"] .intervalField > span:first-child {
+  color: #e5eef4;
+}
+
+html[data-theme="dark"] .settingsForm,
+html[data-theme="dark"] .settingsCard,
+html[data-theme="dark"] .inboxPanel,
+html[data-theme="dark"] .inspector,
+html[data-theme="dark"] .tableHead,
+html[data-theme="dark"] .tableRow,
+html[data-theme="dark"] .searchBox,
+html[data-theme="dark"] .repoBox,
+html[data-theme="dark"] .fieldRow input,
+html[data-theme="dark"] .selectControl,
+html[data-theme="dark"] .releaseNotePreview,
+html[data-theme="dark"] .copyableValue {
+  background: #16212b;
+  border-color: #2b3b4a;
+  color: #e7edf4;
+}
+
+html[data-theme="dark"] .fieldRow.attention {
+  border-color: #b45309;
+  background: #2a2115;
+}
+
+html[data-theme="dark"] .searchBox,
+html[data-theme="dark"] .repoBox {
+  color: #a9bac8;
+}
+
+html[data-theme="dark"] .searchBox input,
+html[data-theme="dark"] .repoBox input,
+html[data-theme="dark"] .fieldRow input,
+html[data-theme="dark"] .intervalField input {
+  color: #eef4f8;
+  background: transparent;
+}
+
+html[data-theme="dark"] .ghostButton,
+html[data-theme="dark"] .iconButton,
+html[data-theme="dark"] .filterPill,
+html[data-theme="dark"] .segmentedPill,
+html[data-theme="dark"] .statePill.subtle,
+html[data-theme="dark"] .statePill,
+html[data-theme="dark"] .selectControl,
+html[data-theme="dark"] .linkButton {
+  border-color: #2b3b4a;
+  color: #dbe6ee;
+  background: #17212c;
+}
+
+html[data-theme="dark"] .primaryButton,
+html[data-theme="dark"] .iconButton.primaryIconButton,
+html[data-theme="dark"] .previewConfirmAction,
+html[data-theme="dark"] .inspectorPrimaryAction {
+  border-color: #0f766e;
+  color: #ffffff;
+  background: #0f766e;
+}
+
+html[data-theme="dark"] .dangerButton,
+html[data-theme="dark"] .inspectorDangerAction {
+  border-color: #7f1d1d;
+  color: #fecaca;
+  background: #2a1619;
+}
+
+html[data-theme="dark"] .statePill.success,
+html[data-theme="dark"] .statePill.warning,
+html[data-theme="dark"] .statePill.danger,
+html[data-theme="dark"] .statePill.busy {
+  border-color: transparent;
+}
+
+html[data-theme="dark"] .statePill.success {
+  color: #99f6e4;
+  background: #123b39;
+}
+
+html[data-theme="dark"] .statePill.warning {
+  color: #fbbf24;
+  background: #2c2210;
+}
+
+html[data-theme="dark"] .statePill.danger {
+  color: #fca5a5;
+  background: #30171a;
+}
+
+html[data-theme="dark"] .statePill.busy {
+  color: #93c5fd;
+  background: #15263d;
+}
+
+html[data-theme="dark"] .tableHead {
+  background: #121b24;
+}
+
+html[data-theme="dark"] .tableRow:hover,
+html[data-theme="dark"] .tableRow.selected {
+  background: #1a2631;
+}
+
+html[data-theme="dark"] .tableRow.selected {
+  box-shadow: inset 0 0 0 1px #32526a;
+}
+
+html[data-theme="dark"] .rowAction:hover:not(:disabled),
+html[data-theme="dark"] .rowAction.confirming:hover:not(:disabled),
+html[data-theme="dark"] .rowAction:focus-visible {
+  background: #1c2b37;
+}
+
+html[data-theme="dark"] .inspectorHead .iconButton,
+html[data-theme="dark"] .inspectorHead .ghostButton,
+html[data-theme="dark"] .previewCancelAction,
+html[data-theme="dark"] .previewConfirmAction {
+  border-color: #2b3b4a;
+}
+
+html[data-theme="dark"] .inspectorBlock,
+html[data-theme="dark"] .decisionBlock,
+html[data-theme="dark"] .releaseNotePreview,
+html[data-theme="dark"] .previewHero,
+html[data-theme="dark"] .previewMeta,
+html[data-theme="dark"] .previewSafetyNote,
+html[data-theme="dark"] .detailList dt,
+html[data-theme="dark"] .detailList dd {
+  background: transparent;
+}
+
+html[data-theme="dark"] .decisionBlock.installedDecision,
+html[data-theme="dark"] .inspectorBlock.accent,
+html[data-theme="dark"] .detailList div,
+html[data-theme="dark"] .historyItem,
+html[data-theme="dark"] .emptyState,
+html[data-theme="dark"] .emptyInspector,
+html[data-theme="dark"] .rowCheckbox {
+  border-color: #2b3b4a;
+  background: #121b24;
+}
+
+html[data-theme="dark"] .decisionHeaderValue,
+html[data-theme="dark"] .historyItemHeader strong {
+  color: #eef4f8;
+}
+
+html[data-theme="dark"] .decisionDetailList,
+html[data-theme="dark"] .decisionDetailList div,
+html[data-theme="dark"] .decisionBlock .inspectorActionsGroup.dangerActionGroup {
+  border-color: #2b3b4a;
+}
+
+html[data-theme="dark"] .decisionBlock.installedDecision .lifecycleBlock {
+  border-color: #2b3b4a;
+  background: #16212b;
+}
+
+html[data-theme="dark"] .decisionBlock.installedDecision .dangerActionGroup,
+html[data-theme="dark"] .historyItem.failed {
+  border-color: #7f1d1d;
+  background: #201416;
+}
+
+html[data-theme="dark"] .decisionBlock .inspectorDangerAction,
+html[data-theme="dark"] .inspectorDangerAction {
+  border-color: #7f1d1d;
+  color: #fecaca;
+  background: #2a1619;
+}
+
+html[data-theme="dark"] .inspectorSecondaryAction,
+html[data-theme="dark"] .previewCancelAction {
+  border-color: #2b3b4a;
+  color: #dbe6ee;
+  background: #17212c;
+  box-shadow: none;
+}
+
+html[data-theme="dark"] .inspectorSecondaryAction:hover:not(:disabled),
+html[data-theme="dark"] .previewCancelAction:hover:not(:disabled) {
+  border-color: #35546a;
+  color: #eef4f8;
+  background: #1c2b37;
+}
+
+html[data-theme="dark"] .guidanceBlock {
+  border-color: #7c5d1b;
+  background: #20190f;
+}
+
+html[data-theme="dark"] .guidanceHeadline {
+  color: #f8d8ab;
+}
+
+html[data-theme="dark"] .installPreview.pendingInstall {
+  border-color: #7c5d1b;
+  background: #181b17;
+}
+
+html[data-theme="dark"] .installPreview.pendingRollback {
+  border-color: #2f6f69;
+  background: #12201f;
+}
+
+html[data-theme="dark"] .installPreview.pendingUninstall {
+  border-color: #7f1d1d;
+  background: #201416;
+}
+
+html[data-theme="dark"] .installPreview.pendingInstall .blockTitle,
+html[data-theme="dark"] .installPreview.pendingInstall .previewLine,
+html[data-theme="dark"] .installPreview.pendingRollback .blockTitle,
+html[data-theme="dark"] .installPreview.pendingRollback .previewLine {
+  color: #9ef0df;
+}
+
+html[data-theme="dark"] .installPreview.pendingUninstall .blockTitle,
+html[data-theme="dark"] .installPreview.pendingUninstall .previewLine {
+  color: #fecaca;
+}
+
+html[data-theme="dark"] .installPreview.pendingInstall .previewMetaLabel,
+html[data-theme="dark"] .installPreview.pendingRollback .previewMetaLabel,
+html[data-theme="dark"] .installPreview.pendingUninstall .previewMetaLabel,
+html[data-theme="dark"] .installPreview.pendingUninstall .mutedText {
+  color: #a9bac8;
+}
+
+html[data-theme="dark"] .installPreview.pendingInstall .previewMetaValue,
+html[data-theme="dark"] .installPreview.pendingRollback .previewMetaValue,
+html[data-theme="dark"] .installPreview.pendingUninstall .previewMetaValue {
+  color: #eef4f8;
+}
+
+html[data-theme="dark"] .installPreview.pendingInstall .copyableValue,
+html[data-theme="dark"] .installPreview.pendingRollback .copyableValue,
+html[data-theme="dark"] .installPreview.pendingUninstall .copyableValue {
+  background: #121b24;
+  border-color: #2b3b4a;
+  color: #eef4f8;
+}
+
+html[data-theme="dark"] .installPreview.pendingInstall .copyValueButton,
+html[data-theme="dark"] .installPreview.pendingRollback .copyValueButton,
+html[data-theme="dark"] .installPreview.pendingUninstall .copyValueButton {
+  border-color: #35546a;
+  color: #dbe6ee;
+  background: #17212c;
+}
+
+html[data-theme="dark"] .previewHeroTitle,
+html[data-theme="dark"] .blockTitle,
+html[data-theme="dark"] .inspectorSummary,
+html[data-theme="dark"] .previewMetaValue,
+html[data-theme="dark"] .detailList dd {
+  color: #eef4f8;
+}
+
+html[data-theme="dark"] .previewHeroMeta,
+html[data-theme="dark"] .previewMetaLabel,
+html[data-theme="dark"] .inspectorSummaryDetail,
+html[data-theme="dark"] .detailList dt {
+  color: #a9bac8;
+}
+
+html[data-theme="dark"] .previewBadge {
+  border-color: #2f6f69;
+  color: #9ef0df;
+  background: #123d38;
+}
+
+html[data-theme="dark"] .previewSafetyNote {
+  color: #f8d8ab;
+  background: #2f230f;
+}
+
+html[data-theme="dark"] .releaseNotePreview .noteHeading,
+html[data-theme="dark"] .releaseNotePreview .noteParagraph,
+html[data-theme="dark"] .releaseNotePreview .noteList,
+html[data-theme="dark"] .releaseNotePreview .noteQuote,
+html[data-theme="dark"] .releaseNotePreview .noteCode,
+html[data-theme="dark"] .releaseNotePreview code,
+html[data-theme="dark"] .releaseNotePreview a {
+  color: #e7edf4;
+}
+
+html[data-theme="dark"] .releaseNotePreview .noteQuote {
+  border-left-color: #35546a;
+  background: #16212b;
+}
+
+html[data-theme="dark"] .releaseNotePreview .noteTable th,
+html[data-theme="dark"] .releaseNotePreview .noteTable td {
+  border-color: #2b3b4a;
+}
+
+html[data-theme="dark"] .releaseNotePreview .noteImage,
+html[data-theme="dark"] .releaseNotePreview .noteTableScroller,
+html[data-theme="dark"] .releaseNotePreview .noteCode {
+  border-color: #2b3b4a;
+  background: #121b24;
+}
+
+html[data-theme="dark"] .toggleRow input[type="checkbox"] {
+  background: #2b3b4a;
+}
+
+html[data-theme="dark"] .toggleRow input[type="checkbox"]::before {
+  background: #eef4f8;
 }

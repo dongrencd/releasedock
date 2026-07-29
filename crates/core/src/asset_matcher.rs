@@ -100,7 +100,7 @@ impl AssetMatcher {
             _ => 0,
         };
 
-        score += format_score(self.os, install_type);
+        score += format_score(self.os, install_type, &name);
 
         (score, install_type)
     }
@@ -111,8 +111,11 @@ fn contains_any(value: &str, needles: &[&str]) -> bool {
 }
 
 fn classify_install_type(os: OperatingSystem, arch: Architecture, name: &str) -> InstallType {
-    if os == OperatingSystem::Windows && (name.ends_with(".msi") || name.ends_with(".exe")) {
+    if os == OperatingSystem::Windows && is_windows_installer_asset_name(name) {
         return InstallType::WindowsInstaller;
+    }
+    if os == OperatingSystem::Windows && is_windows_executable_asset_name(name) {
+        return InstallType::Executable;
     }
     if os == OperatingSystem::Linux && name.ends_with(".appimage") {
         return InstallType::AppImage;
@@ -136,6 +139,38 @@ fn classify_install_type(os: OperatingSystem, arch: Architecture, name: &str) ->
         return InstallType::Archive;
     }
     InstallType::Unknown
+}
+
+fn is_windows_executable_asset_name(name: &str) -> bool {
+    if !name.ends_with(".exe") {
+        return false;
+    }
+
+    !is_windows_installer_asset_name(name)
+}
+
+fn is_windows_installer_asset_name(name: &str) -> bool {
+    if name.ends_with(".msi") {
+        return true;
+    }
+
+    if !name.ends_with(".exe") {
+        return false;
+    }
+
+    contains_any(
+        name,
+        &[
+            "setup",
+            "install",
+            "installer",
+            "uninstall",
+            "bootstrap",
+            "updater",
+            "update",
+            "patch",
+        ],
+    )
 }
 
 pub(crate) fn is_linux_executable_asset_name(name: &str) -> bool {
@@ -167,11 +202,30 @@ fn is_auxiliary_asset_name(name: &str) -> bool {
     )
 }
 
-fn format_score(os: OperatingSystem, install_type: InstallType) -> i32 {
+fn format_score(os: OperatingSystem, install_type: InstallType, name: &str) -> i32 {
     match (os, install_type) {
         (OperatingSystem::Windows, InstallType::PortableArchive) => 60,
         (OperatingSystem::Windows, InstallType::Archive) => 55,
-        (OperatingSystem::Windows, InstallType::WindowsInstaller) => 10,
+        (OperatingSystem::Windows, InstallType::WindowsInstaller) => {
+            if name.ends_with(".msi") {
+                10
+            } else if contains_any(
+                name,
+                &[
+                    "setup",
+                    "install",
+                    "installer",
+                    "bootstrap",
+                    "updater",
+                    "update",
+                    "patch",
+                ],
+            ) {
+                20
+            } else {
+                15
+            }
+        }
         (OperatingSystem::Linux, InstallType::AppImage) => 80,
         (OperatingSystem::Linux, InstallType::Executable) => 40,
         (OperatingSystem::Linux, InstallType::Archive) => 70,

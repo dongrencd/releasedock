@@ -62,6 +62,7 @@ export type DesktopConfig = {
   installRoot: string | null;
   effectiveInstallRoot: string | null;
   language: "en" | "zh-CN" | null;
+  themeMode: "system" | "light" | "dark" | null;
   backgroundCheckEnabled: boolean | null;
   checkIntervalMinutes: number | null;
 };
@@ -83,6 +84,9 @@ export type GithubConnectivityTestResult = {
 export type BackgroundCheckEvent = {
   updateCount: number;
   totalChecked: number;
+  checkedAt: string;
+  status: "success" | "failed";
+  error?: string | null;
 };
 
 export type DashboardItemEvent = {
@@ -156,6 +160,10 @@ export async function previewInstall(
 
 export async function installRepo(plan: InstallPlan): Promise<ManagedApp[]> {
   return invoke<ManagedApp[]>("install_repo", { preview: plan });
+}
+
+export async function adoptSystemInstall(repoInput: string): Promise<ManagedApp[]> {
+  return invoke<ManagedApp[]>("adopt_system_install", { repoInput });
 }
 
 export async function setReleaseChannel(repoInput: string, channel: ReleaseChannel): Promise<ManagedApp[]> {

@@ -1,4 +1,5 @@
 export type Language = "en" | "zh-CN";
+export type ThemeMode = "system" | "light" | "dark";
 
 export type InboxFilter = "all" | "updateAvailable" | "actionRequired" | "failed";
 
@@ -107,6 +108,7 @@ type Copy = {
   openInstallLocation: string;
   openInstallerFile: string;
   openInstallerFolder: string;
+  detectSystemInstall: string;
   openSystemUninstall: string;
   removeTracked: string;
   noSelection: string;
@@ -154,6 +156,10 @@ type Copy = {
   language: string;
   languageEnglish: string;
   languageChinese: string;
+  theme: string;
+  themeSystem: string;
+  themeLight: string;
+  themeDark: string;
   showToken: string;
   hideToken: string;
   saveSettings: string;
@@ -361,12 +367,13 @@ const copy: Record<Language, Copy> = {
     uninstallExternalInstallerConfirmation: "This will open the system uninstall path for this app record.",
     openRelease: "Open release",
     openInstallLocation: "Open install location",
-    openInstallerFile: "Open installer",
+    openInstallerFile: "Run installer",
     openInstallerFolder: "Open installer folder",
+    detectSystemInstall: "Re-detect install result",
     openSystemUninstall: "Open system uninstall",
     removeTracked: "Remove tracking",
     noSelection: "No app selected",
-    settingsTitleSmall: "4 local settings",
+    settingsTitleSmall: "5 local settings",
     installRoot: "Install root",
     installRootHelp: "Downloaded installers and managed apps live under this root.",
     usingDefaultInstallRoot: "Using default install root",
@@ -410,6 +417,10 @@ const copy: Record<Language, Copy> = {
     language: "Language",
     languageEnglish: "English",
     languageChinese: "简体中文",
+    theme: "Theme",
+    themeSystem: "Follow system",
+    themeLight: "Light",
+    themeDark: "Dark",
     showToken: "Show token",
     hideToken: "Hide token",
     saveSettings: "Save settings",
@@ -617,12 +628,13 @@ const copy: Record<Language, Copy> = {
     uninstallExternalInstallerConfirmation: "这会打开这个软件记录对应的系统卸载入口。",
     openRelease: "打开 Release",
     openInstallLocation: "打开安装目录",
-    openInstallerFile: "打开安装包",
+    openInstallerFile: "执行安装包",
     openInstallerFolder: "打开安装包目录",
+    detectSystemInstall: "重新探测安装结果",
     openSystemUninstall: "打开系统卸载",
     removeTracked: "移除跟踪",
     noSelection: "暂无可展示的软件",
-    settingsTitleSmall: "4 个本地配置项",
+    settingsTitleSmall: "5 个本地配置项",
     installRoot: "软件安装位置",
     installRootHelp: "下载缓存和自动管理的软件会放在这个位置下的 `apps` 目录中。",
     usingDefaultInstallRoot: "使用默认安装目录",
@@ -666,6 +678,10 @@ const copy: Record<Language, Copy> = {
     language: "界面语言",
     languageEnglish: "English",
     languageChinese: "简体中文",
+    theme: "主题",
+    themeSystem: "跟随系统",
+    themeLight: "浅色",
+    themeDark: "深色",
     showToken: "显示 token",
     hideToken: "隐藏 token",
     saveSettings: "保存设置",
@@ -774,6 +790,22 @@ export function normalizeLanguage(value?: string | null): Language {
   return value === "zh-CN" ? "zh-CN" : "en";
 }
 
+export function normalizeThemeMode(value?: string | null): ThemeMode {
+  return value === "light" || value === "dark" ? value : "system";
+}
+
+export function resolveEffectiveThemeMode(themeMode: ThemeMode, prefersDark: boolean): "light" | "dark" {
+  if (themeMode === "light") {
+    return "light";
+  }
+
+  if (themeMode === "dark") {
+    return "dark";
+  }
+
+  return prefersDark ? "dark" : "light";
+}
+
 export function createUiText(language: Language) {
   return copy[language];
 }
@@ -818,6 +850,11 @@ export function createTaskStatusText(language: Language) {
     generatedInstallPreview: (name: string) =>
       localizedTemplate(language, `Generated install preview for ${name}`, `已生成 ${name} 的安装预览`),
     failedToBuildInstallPreview: localizedText(language, "Failed to build install preview", "生成安装预览失败"),
+    detectingSystemInstall: (name: string) =>
+      localizedTemplate(language, `Re-detecting install result for ${name}`, `正在重新探测 ${name} 的安装结果`),
+    detectedSystemInstall: (name: string) =>
+      localizedTemplate(language, `Re-detected install result for ${name}`, `已重新探测 ${name} 的安装结果`),
+    detectSystemInstallFailed: localizedText(language, "Failed to re-detect install result", "重新探测安装结果失败"),
     loadingReleaseVersions: ui.loadingVersions,
     releasePolicyUpdated: localizedText(language, "Release policy updated", "Release 策略已更新"),
     releasePolicyFailed: localizedText(language, "Failed to update release policy", "更新 Release 策略失败"),
@@ -879,6 +916,15 @@ export function languageOptions(language: Language) {
   return [
     { value: "en" as const, label: ui.languageEnglish },
     { value: "zh-CN" as const, label: ui.languageChinese }
+  ];
+}
+
+export function themeModeOptions(language: Language) {
+  const ui = createUiText(language);
+  return [
+    { value: "system" as const, label: ui.themeSystem },
+    { value: "light" as const, label: ui.themeLight },
+    { value: "dark" as const, label: ui.themeDark }
   ];
 }
 

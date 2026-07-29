@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import {
   addRepo,
+  adoptSystemInstall,
   type DashboardItemEvent,
   type DashboardProgressEvent,
   bulkRemoveTrackedRepos,
@@ -50,6 +51,7 @@ import {
   buildConnectivityTestStatus,
   buildConnectivityTestViewState,
   buildNetworkConfigHealth,
+  resolveBackgroundUpdateCountAfterDashboardRefresh,
   getNetworkConfigKey,
   shouldRunAutoConnectivityCheck,
   buildStatusDockPresentation,
@@ -58,6 +60,7 @@ import {
   getPrimaryActionAvailability,
   getRollbackAvailability,
   getInspectorDetailItems,
+  getAdoptSystemInstallAvailability,
   getLifecycleHistoryEntries,
   getSelectionActionAvailability,
   getSelectionSummary,
@@ -65,6 +68,7 @@ import {
   buildInspectorStatusSummary,
   hasInstallableAsset,
   isManagedPathKind,
+  isSystemUninstallOnly,
   isSystemInstallerKind,
   isRemovableNoRelease,
   isRemovableTrackedItem,
@@ -85,7 +89,12 @@ import {
   selectVisibleIds,
   systemPackageManagerLabel,
   shouldShowLifecyclePreviewAction,
+  shouldShowAdoptSystemInstallAction,
   shouldShowInstallLocationAction,
+  shouldShowInstallLocationSecondary,
+  shouldShowInstallerFolderSecondary,
+  shouldShowOpenAppSecondary,
+  shouldShowOpenReleaseSecondary,
   toggleSelection,
   type ConnectivityTestViewState,
   type InboxFilter,
@@ -99,6 +108,10 @@ import {
   isWindowsPlatform,
   languageOptions,
   normalizeLanguage,
+  normalizeThemeMode,
+  resolveEffectiveThemeMode,
+  themeModeOptions,
+  type ThemeMode,
   type Language
 } from "./i18n";
 import type {
@@ -116,6 +129,7 @@ type ConfigDraft = {
   installRoot: string;
   effectiveInstallRoot: string;
   language: Language;
+  themeMode: ThemeMode;
   backgroundCheckEnabled: boolean;
   checkIntervalMinutes: number;
 };
@@ -152,9 +166,11 @@ export function App() {
     installRoot: "",
     effectiveInstallRoot: "",
     language: "en",
+    themeMode: "system",
     backgroundCheckEnabled: true,
     checkIntervalMinutes: 30
   });
+  const themeMode = normalizeThemeMode(configDraft.themeMode);
   const currentConfigKey = useRef(configDraftKey(configDraft));
   const currentNetworkConfigKey = useRef(getNetworkConfigKey(configDraft));
   const connectivityCheckId = useRef(0);
@@ -334,6 +350,23 @@ export function App() {
   }, [configDraft]);
 
   useEffect(() => {
+    const mediaQuery = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+
+    const applyTheme = () => {
+      const nextTheme = resolveEffectiveThemeMode(configDraft.themeMode, mediaQuery?.matches ?? false);
+      document.documentElement.dataset.theme = nextTheme;
+      document.documentElement.style.colorScheme = nextTheme;
+    };
+
+    applyTheme();
+    mediaQuery?.addEventListener("change", applyTheme);
+
+    return () => {
+      mediaQuery?.removeEventListener("change", applyTheme);
+    };
+  }, [configDraft.themeMode]);
+
+  useEffect(() => {
     let unlisten: (() => void) | undefined;
     void listen<TaskProgressEvent>("task-progress", (event) => {
       const currentTask = activeTaskProgress.current;
@@ -361,7 +394,9 @@ export function App() {
 
     // 后台检查完成事件 — 更新 badge 计数
     void listen<BackgroundCheckEvent>("background-check-complete", (event) => {
-      setBackgroundUpdateCount(event.payload.updateCount);
+      if (event.payload.status === "success") {
+        setBackgroundUpdateCount(event.payload.updateCount);
+      }
     }).then((dispose) => {
       unlistenBackground = dispose;
     });
@@ -491,6 +526,7 @@ export function App() {
       }
       dashboardOrder.current = new Map(data.map((app, index) => [app.id, index]));
       setApps(data);
+      setBackgroundUpdateCount(resolveBackgroundUpdateCountAfterDashboardRefresh);
       setSelectedId((current) => (current && data.some((item) => item.id === current) ? current : data[0]?.id ?? null));
       setTaskStatus(data.length > 0 ? statusText.loadedApps(data.length) : statusText.noApps);
     } catch (caught) {
@@ -518,6 +554,7 @@ export function App() {
         installRoot: data.installRoot ?? "",
         effectiveInstallRoot: data.effectiveInstallRoot ?? data.installRoot ?? "",
         language: normalizeLanguage(data.language),
+        themeMode: normalizeThemeMode(data.themeMode),
         backgroundCheckEnabled: data.backgroundCheckEnabled ?? true,
         checkIntervalMinutes: data.checkIntervalMinutes ?? 30
       };
@@ -593,6 +630,7 @@ export function App() {
         installRoot: saved.installRoot ?? "",
         effectiveInstallRoot: saved.effectiveInstallRoot ?? saved.installRoot ?? "",
         language: normalizeLanguage(saved.language),
+        themeMode: normalizeThemeMode(saved.themeMode),
         backgroundCheckEnabled: saved.backgroundCheckEnabled ?? true,
         checkIntervalMinutes: saved.checkIntervalMinutes ?? 30
       };
@@ -895,7 +933,7 @@ export function App() {
   }
 
   function requestUninstall(item: InboxItem | null) {
-    if (!item || item.status === "needsChoice" || item.uninstallSupported === false) {
+    if (!item || item.status === "needsChoice" || isSystemUninstallOnly(item)) {
       return;
     }
 
@@ -905,7 +943,7 @@ export function App() {
   }
 
   async function handleConfirmUninstall(item: InboxItem | null) {
-    if (!item || item.status === "needsChoice" || item.uninstallSupported === false) {
+    if (!item || item.status === "needsChoice" || isSystemUninstallOnly(item)) {
       return;
     }
 
@@ -1044,7 +1082,7 @@ export function App() {
   }
 
   async function handleOpenApp(item: InboxItem | null) {
-    if (!item || !isManagedPathKind(item.installPathKind) || !item.launchPath) {
+    if (!item || !item.launchPath) {
       clearTaskProgress();
       setTaskStatus(ui.model.noLaunchTarget);
       return;
@@ -1072,7 +1110,7 @@ export function App() {
     try {
       await openInstallLocation(item.installPath, item.installPathKind);
       setTaskStatus(
-        isSystemInstallerKind(item.installPathKind)
+        isSystemInstallerKind(item.installPathKind) && !item.installerPath
           ? taskText.openedInstallerFile(item.name)
           : taskText.openedInstallLocation(item.name)
       );
@@ -1084,7 +1122,9 @@ export function App() {
   }
 
   async function handleOpenInstallerFolder(item: InboxItem | null) {
-    if (!item?.installPath || item.installPath === "unknown" || !isSystemInstallerKind(item.installPathKind)) {
+    const currentItem = item;
+    const installerPath = currentItem?.installerPath ?? currentItem?.installPath;
+    if (!currentItem || !installerPath || installerPath === "unknown" || !isSystemInstallerKind(currentItem.installPathKind)) {
       clearTaskProgress();
       setTaskStatus(taskText.noInstallPathAvailable);
       return;
@@ -1092,12 +1132,37 @@ export function App() {
 
     clearTaskProgress();
     try {
-      await openInstallerFolder(item.installPath);
-      setTaskStatus(taskText.openedInstallerFolder(item.name));
+      await openInstallerFolder(installerPath);
+      setTaskStatus(taskText.openedInstallerFolder(currentItem.name));
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
       setTaskStatus(taskText.openFolderFailed);
+    }
+  }
+
+  async function handleAdoptSystemInstall(item: InboxItem | null) {
+    if (!item || !getAdoptSystemInstallAvailability(item, busy, language).enabled) {
+      clearTaskProgress();
+      setTaskStatus(taskText.detectSystemInstallFailed);
+      return;
+    }
+
+    clearTaskProgress();
+    setBusy(true);
+    setError(null);
+    setTaskStatus(taskText.detectingSystemInstall(item.name));
+    try {
+      const data = await adoptSystemInstall(item.id);
+      setApps(data);
+      setSelectedId(data.find((app) => app.id === item.id)?.id ?? data[0]?.id ?? null);
+      setTaskStatus(taskText.detectedSystemInstall(item.name));
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setError(message);
+      setTaskStatus(taskText.detectSystemInstallFailed);
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -1428,6 +1493,9 @@ export function App() {
                   onOpenInstallerFolder={() => {
                     void handleOpenInstallerFolder(selected);
                   }}
+                  onAdoptSystemInstall={() => {
+                    void handleAdoptSystemInstall(selected);
+                  }}
                   onOpenApp={() => {
                     void handleOpenApp(selected);
                   }}
@@ -1519,22 +1587,39 @@ export function App() {
                     </div>
                   </label>
 
-                  <label className="fieldRow">
+                  <div className="fieldRow">
                     <span>{ui.language}</span>
-                    <div className="languageSwitch" role="group" aria-label={ui.language}>
+                    <div className="segmentedControl" role="group" aria-label={ui.language}>
                       {languageOptions(language).map((option) => (
                         <TooltipButton
                           key={option.value}
                           label={option.label}
                           onClick={() => setConfigDraft((current) => ({ ...current, language: option.value }))}
                           active={configDraft.language === option.value}
-                          className={configDraft.language === option.value ? "languagePill active" : "languagePill"}
+                          className={configDraft.language === option.value ? "segmentedPill active" : "segmentedPill"}
                         >
                           <span>{option.label}</span>
                         </TooltipButton>
                       ))}
                     </div>
-                  </label>
+                  </div>
+
+                  <div className="fieldRow">
+                    <span>{ui.theme}</span>
+                    <div className="segmentedControl" role="group" aria-label={ui.theme}>
+                      {themeModeOptions(language).map((option) => (
+                        <TooltipButton
+                          key={option.value}
+                          label={option.label}
+                          onClick={() => setConfigDraft((current) => ({ ...current, themeMode: option.value }))}
+                          active={themeMode === option.value}
+                          className={themeMode === option.value ? "segmentedPill active" : "segmentedPill"}
+                        >
+                          <span>{option.label}</span>
+                        </TooltipButton>
+                      ))}
+                    </div>
+                  </div>
 
                   <label className={networkFieldsAttention ? "fieldRow attention" : "fieldRow"}>
                     <span>{ui.githubToken}</span>
@@ -1760,6 +1845,7 @@ function Inspector({
   onOpenApp,
   onOpenInstallPath,
   onOpenInstallerFolder,
+  onAdoptSystemInstall,
   onOpenRelease,
   onCopyReleaseNote,
   onCopyValue,
@@ -1791,6 +1877,7 @@ function Inspector({
   onOpenApp: () => void;
   onOpenInstallPath: () => void;
   onOpenInstallerFolder: () => void;
+  onAdoptSystemInstall: () => void;
   onOpenRelease: () => void;
   onCopyReleaseNote: (note?: string) => void;
   onCopyValue: (label: string, value: string) => void;
@@ -1832,6 +1919,7 @@ function Inspector({
   const primaryActionAvailability = getPrimaryActionAvailability(item, busy, language);
   const confirmInstallAvailability = getConfirmInstallAvailability(item, busy, language);
   const uninstallAvailability = getUninstallAvailability(item, busy, language);
+  const adoptSystemInstallAvailability = getAdoptSystemInstallAvailability(item, busy, language);
   const primaryActionKind = resolvePrimaryActionKind(item);
   const detailItems = getInspectorDetailItems(item, language);
   const lifecycleHistory = getLifecycleHistoryEntries(item, language);
@@ -1860,6 +1948,17 @@ function Inspector({
       ? `${inspectorSummary.detail} · ${selectedReleasePublishedAt}`
       : inspectorSummary?.detail ?? null;
   const showLifecyclePreviewAction = shouldShowLifecyclePreviewAction(item) && !installedLifecycleItem;
+  const showAdoptSystemInstallAction = isWindowsPlatform() && shouldShowAdoptSystemInstallAction(item);
+  const showOpenAppSecondary = shouldShowOpenAppSecondary(item);
+  const showOpenReleaseSecondary = shouldShowOpenReleaseSecondary(item, language);
+  const showInstallLocationSecondary = shouldShowInstallLocationSecondary(item);
+  const showInstallerFolderSecondary = shouldShowInstallerFolderSecondary(item);
+  const showSecondaryInspectorActions =
+    showOpenAppSecondary
+    || showOpenReleaseSecondary
+    || showInstallLocationSecondary
+    || showInstallerFolderSecondary;
+  const showSystemUninstallAction = isSystemUninstallOnly(item);
   const pendingInstallSafetyText = pendingInstall
     ? [
         pendingInstall.integrity.checksumAssetName ?? ui.installPreviewNoChecksumHint,
@@ -1894,10 +1993,70 @@ function Inspector({
         </div>
       ) : null}
 
+      {showAdoptSystemInstallAction ? (
+        <div className="inspectorActionsGroup repairActionGroup">
+          <button
+            type="button"
+            className="ghostButton actionButton wide inspectorRepairAction"
+            onClick={onAdoptSystemInstall}
+            disabled={!adoptSystemInstallAvailability.enabled}
+            aria-label={adoptSystemInstallAvailability.reason ?? ui.detectSystemInstall}
+          >
+            <RefreshCw size={16} />
+            <span>{ui.detectSystemInstall}</span>
+          </button>
+        </div>
+      ) : null}
+
+      {showSecondaryInspectorActions ? (
+        <div className="inspectorActionsGroup secondaryActionGroup">
+          {showOpenAppSecondary ? (
+            <button
+              type="button"
+              className="ghostButton actionButton inspectorSecondaryAction"
+              onClick={onOpenApp}
+            >
+              <Play size={16} />
+              <span>{ui.action.openApp}</span>
+            </button>
+          ) : null}
+          {showInstallLocationSecondary ? (
+            <button
+              type="button"
+              className="ghostButton actionButton inspectorSecondaryAction"
+              onClick={onOpenInstallPath}
+            >
+              <FolderOpen size={16} />
+              <span>{ui.openInstallLocation}</span>
+            </button>
+          ) : null}
+          {showInstallerFolderSecondary ? (
+            <button
+              type="button"
+              className="ghostButton actionButton inspectorSecondaryAction"
+              onClick={onOpenInstallerFolder}
+            >
+              <FolderOpen size={16} />
+              <span>{ui.openInstallerFolder}</span>
+            </button>
+          ) : null}
+          {showOpenReleaseSecondary ? (
+            <button
+              type="button"
+              className="ghostButton actionButton inspectorSecondaryAction"
+              onClick={onOpenRelease}
+            >
+              <ExternalLink size={16} />
+              <span>{ui.openRelease}</span>
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
       {/* 已安装的软件才露出卸载入口；未安装的跟踪项只保留版本预览路径。 */}
       {showDangerInspectorActions ? (
         <div className="inspectorActionsGroup dangerActionGroup">
-          {item.uninstallSupported === false ? (
+          {showSystemUninstallAction ? (
             isWindowsPlatform() ? (
               <TooltipButton
                 label={ui.openSystemUninstall}
@@ -2516,6 +2675,7 @@ function configDraftKey(config: ConfigDraft) {
     proxyUrl: config.proxyUrl.trim(),
     installRoot: config.installRoot.trim(),
     language: normalizeLanguage(config.language),
+    themeMode: normalizeThemeMode(config.themeMode),
     backgroundCheckEnabled: config.backgroundCheckEnabled,
     checkIntervalMinutes: config.checkIntervalMinutes
   });
@@ -2528,6 +2688,7 @@ function desktopConfigFromDraft(config: ConfigDraft): DesktopConfig {
     installRoot: config.installRoot.trim() || null,
     effectiveInstallRoot: config.effectiveInstallRoot.trim() || null,
     language: config.language,
+    themeMode: normalizeThemeMode(config.themeMode),
     backgroundCheckEnabled: config.backgroundCheckEnabled,
     checkIntervalMinutes: config.checkIntervalMinutes
   };

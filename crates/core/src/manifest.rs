@@ -47,6 +47,8 @@ pub struct InstalledApp {
     #[serde(default)]
     pub launch_path: Option<PathBuf>,
     #[serde(default)]
+    pub installer_path: Option<PathBuf>,
+    #[serde(default)]
     pub system_package_name: Option<String>,
     #[serde(default)]
     pub system_package_manager: Option<SystemPackageManager>,
@@ -354,6 +356,7 @@ impl InstalledApp {
             install_path,
             managed_root: None,
             launch_path: None,
+            installer_path: None,
             system_package_name: None,
             system_package_manager: None,
             install_type,
@@ -365,6 +368,11 @@ impl InstalledApp {
             checksum_asset_name: None,
             rollback: None,
         }
+    }
+
+    pub fn with_installer_path(mut self, installer_path: Option<PathBuf>) -> Self {
+        self.installer_path = installer_path;
+        self
     }
 
     pub fn normalize_legacy(&mut self) {
@@ -382,7 +390,10 @@ impl InstalledApp {
             };
         }
 
-        if matches!(
+        if matches!(self.install_type, InstallType::Executable) {
+            self.install_path_kind = InstallPathKind::ManagedPath;
+            self.uninstall_supported = true;
+        } else if matches!(
             self.install_type,
             InstallType::WindowsInstaller | InstallType::LinuxPackage
         ) {
@@ -399,6 +410,12 @@ impl InstalledApp {
             self.launch_path = None;
         } else if self.launch_path.is_none() && matches!(self.install_type, InstallType::AppImage) {
             self.launch_path = Some(self.install_path.clone());
+        }
+
+        if matches!(self.install_path_kind, InstallPathKind::SystemInstaller)
+            && self.installer_path.is_none()
+        {
+            self.installer_path = Some(self.install_path.clone());
         }
     }
 }
@@ -751,8 +768,11 @@ fn default_uninstall_supported() -> bool {
 
 fn infer_install_type(asset_name: &str) -> InstallType {
     let lowered = asset_name.to_ascii_lowercase();
-    if lowered.ends_with(".msi") || lowered.ends_with(".exe") {
+    if is_windows_installer_asset_name(&lowered) {
         return InstallType::WindowsInstaller;
+    }
+    if lowered.ends_with(".exe") {
+        return InstallType::Executable;
     }
     if lowered.ends_with(".deb") || lowered.ends_with(".rpm") {
         return InstallType::LinuxPackage;
@@ -770,6 +790,28 @@ fn infer_install_type(asset_name: &str) -> InstallType {
         return InstallType::Archive;
     }
     InstallType::Unknown
+}
+
+fn is_windows_installer_asset_name(asset_name: &str) -> bool {
+    if asset_name.ends_with(".msi") {
+        return true;
+    }
+    if !asset_name.ends_with(".exe") {
+        return false;
+    }
+
+    [
+        "setup",
+        "install",
+        "installer",
+        "uninstall",
+        "bootstrap",
+        "updater",
+        "update",
+        "patch",
+    ]
+    .iter()
+    .any(|needle| asset_name.contains(needle))
 }
 
 #[cfg(test)]

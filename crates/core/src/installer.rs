@@ -29,6 +29,7 @@ use crate::{
     release::ReleaseClient,
     release_policy::ReleaseDirection,
     repo::RepoRef,
+    windows_install_registry::discover_installation,
 };
 
 pub type ProgressReporter = Arc<dyn Fn(TaskProgress) + Send + Sync>;
@@ -102,6 +103,92 @@ pub struct InstallOutcome {
     pub install_type: InstallType,
     pub install_path_kind: InstallPathKind,
     pub uninstall_supported: bool,
+}
+
+/// 重新探测系统安装器的真实安装位置，并把 manifest 中的记录切到可打开的应用路径。
+///
+/// 这一步只更新仓库记录，不会重新运行安装器，也不会执行卸载命令。
+pub fn adopt_system_installer_app(
+    manifest_store: &ManifestStore,
+    repo: &RepoRef,
+) -> Result<InstalledApp> {
+    adopt_system_installer_app_with(manifest_store, repo, discover_installation)
+}
+
+fn load_adoptable_system_installer(
+    manifest_store: &ManifestStore,
+    repo: &RepoRef,
+) -> Result<(crate::manifest::Manifest, usize, String)> {
+    let manifest = manifest_store.load()?;
+    let repo_id = repo.id();
+    let Some(app_index) = manifest.apps.iter().position(|app| app.id == repo_id) else {
+        anyhow::bail!("no managed app matched {}", repo_id);
+    };
+    if !matches!(
+        manifest.apps[app_index].install_path_kind,
+        InstallPathKind::SystemInstaller
+    ) {
+        anyhow::bail!("only system installer entries can be adopted");
+    }
+
+    Ok((manifest, app_index, repo_id))
+}
+
+/// 可注入 discovery 的接管入口，便于单测验证 manifest 更新行为。
+#[cfg(target_os = "windows")]
+pub fn adopt_system_installer_app_with<F>(
+    manifest_store: &ManifestStore,
+    repo: &RepoRef,
+    discover: F,
+) -> Result<InstalledApp>
+where
+    F: FnOnce(
+        &[&str],
+        &[&str],
+    ) -> Result<Option<crate::windows_install_registry::WindowsInstallDiscovery>>,
+{
+    let (mut manifest, app_index, repo_id) = load_adoptable_system_installer(manifest_store, repo)?;
+    let app = &manifest.apps[app_index];
+    let installer_path = app
+        .installer_path
+        .clone()
+        .unwrap_or_else(|| app.install_path.clone());
+    let repo_tail = repo_id.rsplit('/').next().unwrap_or_default().to_string();
+    let candidate_names = [
+        repo.name.as_str(),
+        repo_tail.as_str(),
+        app.asset_name.as_str(),
+    ];
+    let candidate_versions = [app.installed_version.as_str()];
+    let Some(discovery) = discover(&candidate_names, &candidate_versions)? else {
+        anyhow::bail!("no matching Windows installation was found for {}", repo_id);
+    };
+
+    let app = &mut manifest.apps[app_index];
+    app.install_path = discovery.install_path;
+    app.launch_path = discovery.launch_path;
+    app.installer_path = Some(installer_path);
+    let adopted_app = app.clone();
+    manifest_store.save(&manifest)?;
+
+    Ok(adopted_app)
+}
+
+/// 非 Windows 平台保留同签名入口，让 CLI/Tauri 调用得到明确的平台错误。
+#[cfg(not(target_os = "windows"))]
+pub fn adopt_system_installer_app_with<F>(
+    manifest_store: &ManifestStore,
+    repo: &RepoRef,
+    _discover: F,
+) -> Result<InstalledApp>
+where
+    F: FnOnce(
+        &[&str],
+        &[&str],
+    ) -> Result<Option<crate::windows_install_registry::WindowsInstallDiscovery>>,
+{
+    let _ = load_adoptable_system_installer(manifest_store, repo)?;
+    anyhow::bail!("system installer adoption is only available on Windows");
 }
 
 /// 托管安装以整个仓库 active 目录为边界，文件型资产和解压目录共享同一提交协议。
@@ -1561,22 +1648,9 @@ fn install_external_from_download<P>(
 where
     P: FnMut(&Manifest) -> Result<()>,
 {
-    let (install_path, uninstall_supported, package_metadata) = match plan.install_type {
-        InstallType::WindowsInstaller => (
-            install_windows_installer(
-                downloaded,
-                repo,
-                manifest_store,
-                &plan.asset_name,
-                runtime_config,
-                language,
-                progress,
-            )?,
-            false,
-            None,
-        ),
-        InstallType::LinuxPackage => {
-            let (path, metadata) = install_linux_package(
+    match plan.install_type {
+        InstallType::WindowsInstaller => {
+            let installer_path = install_windows_installer(
                 downloaded,
                 repo,
                 manifest_store,
@@ -1585,59 +1659,120 @@ where
                 language,
                 progress,
             )?;
-            (path, true, Some(metadata))
+            let repo_id = repo.id();
+            let repo_tail = repo_id.rsplit('/').next().unwrap_or_default().to_string();
+            let candidate_names = [
+                repo.name.as_str(),
+                repo_tail.as_str(),
+                plan.asset_name.as_str(),
+            ];
+            let candidate_versions = [plan.version.as_str()];
+            let adopted_installation =
+                discover_installation(&candidate_names, &candidate_versions)?;
+            let (install_path, launch_path, installer_path_record) =
+                if let Some(adopted) = adopted_installation {
+                    (
+                        adopted.install_path,
+                        adopted.launch_path,
+                        Some(installer_path.clone()),
+                    )
+                } else {
+                    (installer_path.clone(), None, None)
+                };
+
+            let mut app = InstalledApp::with_install_metadata(
+                repo.id(),
+                repo.name.clone(),
+                plan.version.clone(),
+                plan.asset_name.clone(),
+                install_path.clone(),
+                plan.install_type,
+                InstallPathKind::SystemInstaller,
+                false,
+            )
+            .with_installer_path(installer_path_record);
+            app.launch_path = launch_path;
+            app.artifact_sha256 = Some(artifact_sha256);
+            app.integrity_status = Some(integrity_status);
+            app.checksum_asset_name = plan
+                .integrity
+                .expected_sha256
+                .as_ref()
+                .and(plan.integrity.checksum_asset_name.clone());
+            if let Some(previous_app) = previous_app {
+                app.release_policy = previous_app.release_policy.clone();
+            } else if let Some(target_policy) = plan.target_policy.as_ref() {
+                app.release_policy = target_policy.clone();
+            }
+
+            let event = LifecycleEvent::succeeded(
+                repo.id(),
+                repo.name.clone(),
+                lifecycle_action,
+                lifecycle_summary,
+                Some(plan.version.clone()),
+                Some(plan.asset_name.clone()),
+                Some(install_path.clone()),
+                Some(InstallPathKind::SystemInstaller),
+            );
+            persist(&manifest_with_app_and_event(manifest, app.clone(), event))?;
+            Ok((app, install_path, InstallPathKind::SystemInstaller, false))
+        }
+        InstallType::LinuxPackage => {
+            let (install_path, metadata) = install_linux_package(
+                downloaded,
+                repo,
+                manifest_store,
+                &plan.asset_name,
+                runtime_config,
+                language,
+                progress,
+            )?;
+
+            let mut app = InstalledApp::with_install_metadata(
+                repo.id(),
+                repo.name.clone(),
+                plan.version.clone(),
+                plan.asset_name.clone(),
+                install_path.clone(),
+                plan.install_type,
+                InstallPathKind::SystemInstaller,
+                true,
+            );
+            app.artifact_sha256 = Some(artifact_sha256);
+            app.integrity_status = Some(integrity_status);
+            app.checksum_asset_name = plan
+                .integrity
+                .expected_sha256
+                .as_ref()
+                .and(plan.integrity.checksum_asset_name.clone());
+            if let Some(previous_app) = previous_app {
+                app.release_policy = previous_app.release_policy.clone();
+            } else if let Some(target_policy) = plan.target_policy.as_ref() {
+                app.release_policy = target_policy.clone();
+            }
+            app.system_package_name = Some(metadata.package_name);
+            app.system_package_manager = Some(metadata.manager);
+
+            let event = LifecycleEvent::succeeded(
+                repo.id(),
+                repo.name.clone(),
+                lifecycle_action,
+                lifecycle_summary,
+                Some(plan.version.clone()),
+                Some(plan.asset_name.clone()),
+                Some(install_path.clone()),
+                Some(InstallPathKind::SystemInstaller),
+            );
+            persist(&manifest_with_app_and_event(manifest, app.clone(), event))?;
+            Ok((app, install_path, InstallPathKind::SystemInstaller, true))
         }
         InstallType::Unknown => anyhow::bail!(
             "installing {:?} assets is not implemented yet; use the preview path instead",
             plan.install_type
         ),
         _ => anyhow::bail!("install type {:?} is not external", plan.install_type),
-    };
-
-    let mut app = InstalledApp::with_install_metadata(
-        repo.id(),
-        repo.name.clone(),
-        plan.version.clone(),
-        plan.asset_name.clone(),
-        install_path.clone(),
-        plan.install_type,
-        InstallPathKind::SystemInstaller,
-        uninstall_supported,
-    );
-    app.artifact_sha256 = Some(artifact_sha256);
-    app.integrity_status = Some(integrity_status);
-    app.checksum_asset_name = plan
-        .integrity
-        .expected_sha256
-        .as_ref()
-        .and(plan.integrity.checksum_asset_name.clone());
-    if let Some(previous_app) = previous_app {
-        app.release_policy = previous_app.release_policy.clone();
-    } else if let Some(target_policy) = plan.target_policy.as_ref() {
-        app.release_policy = target_policy.clone();
     }
-    if let Some(metadata) = package_metadata {
-        app.system_package_name = Some(metadata.package_name);
-        app.system_package_manager = Some(metadata.manager);
-    }
-
-    let event = LifecycleEvent::succeeded(
-        repo.id(),
-        repo.name.clone(),
-        lifecycle_action,
-        lifecycle_summary,
-        Some(plan.version.clone()),
-        Some(plan.asset_name.clone()),
-        Some(install_path.clone()),
-        Some(InstallPathKind::SystemInstaller),
-    );
-    persist(&manifest_with_app_and_event(manifest, app.clone(), event))?;
-    Ok((
-        app,
-        install_path,
-        InstallPathKind::SystemInstaller,
-        uninstall_supported,
-    ))
 }
 
 fn install_lifecycle_action(

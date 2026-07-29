@@ -1,6 +1,6 @@
 [package]
 name = "releasedock-core"
-version = "0.2.5"
+version = "0.2.6"
 edition.workspace = true
 
 [dependencies]
@@ -18,6 +18,9 @@ thiserror.workspace = true
 xz2.workspace = true
 zip.workspace = true
 url.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
 
 [dev-dependencies]
 tempfile.workspace = true

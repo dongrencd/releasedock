@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.6] - 2026-07-29
+
+### Added
+- Bilingual GitHub README landing pages with top-of-file language switching
+- A new dock-and-download desktop icon asset with matching PNG and ICO outputs
+
+### Changed
+- README content rewritten to describe the current GitHub Release manager behavior instead of only the initial launch scope
+- Download handling now resumes interrupted assets with `.part` files and retries temporary network failures
+- Windows system-installer adoption now reports the business error before platform gating for non-system records
+
+### Fixed
+- Release artifact and packaging version markers updated to `0.2.6`
+
 ## [0.2.0] - 2026-07-24
 
 ### Added

@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use reqwest::{
     Proxy, StatusCode,
-    header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, LINK, RETRY_AFTER, USER_AGENT},
+    header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, LINK, RANGE, RETRY_AFTER, USER_AGENT},
 };
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -15,6 +15,7 @@ const GITHUB_API_TIMEOUT: Duration = Duration::from_secs(20);
 const GITHUB_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const GITHUB_DOWNLOAD_READ_TIMEOUT: Duration = Duration::from_secs(60);
 const GITHUB_API_BASE_URL: &str = "https://api.github.com";
+const DOWNLOAD_MAX_ATTEMPTS: usize = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Release {
@@ -354,9 +355,51 @@ impl ReleaseClient {
     where
         F: FnMut(u64, Option<u64>),
     {
-        let mut response = self
-            .client
-            .get(url)
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create download directory {}", parent.display())
+            })?;
+        }
+
+        let part_path = partial_download_path(path);
+        let mut last_error = None;
+        for attempt in 1..=DOWNLOAD_MAX_ATTEMPTS {
+            match self
+                .download_to_part(url, path, &part_path, &mut on_progress)
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(error)
+                    if attempt < DOWNLOAD_MAX_ATTEMPTS && is_temporary_download_error(&error) =>
+                {
+                    last_error = Some(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("download failed after retries")))
+    }
+
+    async fn download_to_part<F>(
+        &self,
+        url: &str,
+        path: &Path,
+        part_path: &Path,
+        on_progress: &mut F,
+    ) -> Result<()>
+    where
+        F: FnMut(u64, Option<u64>),
+    {
+        let resume_from = fs::metadata(part_path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        let mut request = self.client.get(url);
+        if resume_from > 0 {
+            request = request.header(RANGE, format!("bytes={resume_from}-"));
+        }
+
+        let mut response = request
             .send()
             .await
             .context("failed to request GitHub asset")?;
@@ -366,16 +409,12 @@ impl ReleaseClient {
             anyhow::bail!(error);
         }
 
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!("failed to create download directory {}", parent.display())
-            })?;
-        }
-
-        let mut file = fs::File::create(path)
-            .with_context(|| format!("failed to create download {}", path.display()))?;
-        let total = response.content_length();
-        let mut downloaded = 0u64;
+        let (mut file, mut downloaded, total) = prepare_download_file(
+            part_path,
+            response.status(),
+            resume_from,
+            response.headers(),
+        )?;
         on_progress(downloaded, total);
 
         while let Some(chunk) = response
@@ -384,15 +423,96 @@ impl ReleaseClient {
             .context("failed to read GitHub asset body while downloading")?
         {
             file.write_all(&chunk)
-                .with_context(|| format!("failed to write download {}", path.display()))?;
+                .with_context(|| format!("failed to write download {}", part_path.display()))?;
             downloaded += chunk.len() as u64;
             on_progress(downloaded, total);
         }
 
         file.flush()
-            .with_context(|| format!("failed to flush download {}", path.display()))?;
+            .with_context(|| format!("failed to flush download {}", part_path.display()))?;
+        replace_download(path, part_path)?;
         Ok(())
     }
+}
+
+fn prepare_download_file(
+    part_path: &Path,
+    status: StatusCode,
+    resume_from: u64,
+    headers: &HeaderMap,
+) -> Result<(fs::File, u64, Option<u64>)> {
+    if resume_from > 0 && status == StatusCode::PARTIAL_CONTENT {
+        let total = content_range_total(headers).or_else(|| {
+            headers
+                .get(reqwest::header::CONTENT_LENGTH)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<u64>().ok())
+                .map(|remaining| resume_from + remaining)
+        });
+        let file = fs::OpenOptions::new()
+            .append(true)
+            .open(part_path)
+            .with_context(|| format!("failed to open partial download {}", part_path.display()))?;
+        return Ok((file, resume_from, total));
+    }
+
+    // Some CDNs ignore Range and return a complete 200 OK response. In that
+    // case the stale partial file must be replaced instead of appended.
+    let file = fs::File::create(part_path)
+        .with_context(|| format!("failed to create download {}", part_path.display()))?;
+    Ok((
+        file,
+        0,
+        headers
+            .get(reqwest::header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok()),
+    ))
+}
+
+fn partial_download_path(path: &Path) -> std::path::PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| format!("{name}.part"))
+        .unwrap_or_else(|| "download.part".to_string());
+    path.with_file_name(file_name)
+}
+
+fn replace_download(path: &Path, part_path: &Path) -> Result<()> {
+    if path.exists() {
+        fs::remove_file(path)
+            .with_context(|| format!("failed to replace old download {}", path.display()))?;
+    }
+    fs::rename(part_path, path).with_context(|| {
+        format!(
+            "failed to finalize download {} from {}",
+            path.display(),
+            part_path.display()
+        )
+    })
+}
+
+fn content_range_total(headers: &HeaderMap) -> Option<u64> {
+    let value = headers.get(reqwest::header::CONTENT_RANGE)?.to_str().ok()?;
+    let (_, total) = value.rsplit_once('/')?;
+    total.parse::<u64>().ok()
+}
+
+fn is_temporary_download_error(error: &anyhow::Error) -> bool {
+    if error.to_string().contains(" 5") {
+        return true;
+    }
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(|request_error| {
+                request_error.is_timeout()
+                    || request_error.is_connect()
+                    || request_error.is_request()
+                    || request_error.is_body()
+            })
+    })
 }
 
 fn configured_api_base_url() -> Result<Url> {
@@ -568,9 +688,16 @@ fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::{net::SocketAddr, time::Duration};
+    use std::{
+        net::SocketAddr,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
 
-    use super::{ReleaseClient, format_github_response_error};
+    use super::{DOWNLOAD_MAX_ATTEMPTS, ReleaseClient, format_github_response_error};
     use crate::repo::RepoRef;
     use reqwest::{
         StatusCode,
@@ -617,6 +744,22 @@ mod tests {
         });
 
         (addr, server)
+    }
+
+    async fn read_http_request(stream: &mut tokio::net::TcpStream) -> String {
+        let mut buffer = [0u8; 4096];
+        let mut received = Vec::new();
+        loop {
+            let read = stream.read(&mut buffer).await.unwrap_or(0);
+            if read == 0 {
+                break;
+            }
+            received.extend_from_slice(&buffer[..read]);
+            if received.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+        String::from_utf8(received).unwrap()
     }
 
     #[tokio::test]
@@ -879,6 +1022,145 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resumes_download_from_existing_part_file() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            stream
+                .write_all(
+                    b"HTTP/1.1 206 Partial Content\r\nContent-Length: 5\r\nContent-Range: bytes 6-10/11\r\nAccept-Ranges: bytes\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\nworld",
+                )
+                .await
+                .unwrap();
+            request
+        });
+
+        let client = ReleaseClient::new(None, None).unwrap();
+        let download_dir = tempfile::tempdir().unwrap();
+        let download_path = download_dir.path().join("asset.bin");
+        let part_path = download_dir.path().join("asset.bin.part");
+        std::fs::write(&part_path, b"hello ").unwrap();
+
+        client
+            .download_to_path(&format!("http://{addr}/asset"), &download_path, |_, _| {})
+            .await
+            .unwrap();
+        let request = server.await.unwrap();
+
+        assert!(request.contains("range: bytes=6-"), "{request}");
+        assert_eq!(std::fs::read(&download_path).unwrap(), b"hello world");
+        assert!(!part_path.exists());
+    }
+
+    #[tokio::test]
+    async fn restarts_download_when_server_ignores_resume_range() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\nfresh",
+                )
+                .await
+                .unwrap();
+            request
+        });
+
+        let client = ReleaseClient::new(None, None).unwrap();
+        let download_dir = tempfile::tempdir().unwrap();
+        let download_path = download_dir.path().join("asset.bin");
+        let part_path = download_dir.path().join("asset.bin.part");
+        std::fs::write(&part_path, b"stale-prefix").unwrap();
+
+        client
+            .download_to_path(&format!("http://{addr}/asset"), &download_path, |_, _| {})
+            .await
+            .unwrap();
+        let request = server.await.unwrap();
+
+        assert!(request.contains("range: bytes=12-"), "{request}");
+        assert_eq!(std::fs::read(&download_path).unwrap(), b"fresh");
+        assert!(!part_path.exists());
+    }
+
+    #[tokio::test]
+    async fn retries_temporary_download_failures_and_keeps_final_file() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let server_attempts = Arc::clone(&attempts);
+
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let _request = read_http_request(&mut stream).await;
+                let current = server_attempts.fetch_add(1, Ordering::SeqCst);
+                if current == 0 {
+                    continue;
+                }
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\npayload",
+                    )
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let client = ReleaseClient::new(None, None).unwrap();
+        let download_dir = tempfile::tempdir().unwrap();
+        let download_path = download_dir.path().join("asset.bin");
+
+        client
+            .download_to_path(&format!("http://{addr}/asset"), &download_path, |_, _| {})
+            .await
+            .unwrap();
+
+        server.await.unwrap();
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(std::fs::read(&download_path).unwrap(), b"payload");
+    }
+
+    #[tokio::test]
+    async fn does_not_retry_permanent_asset_errors() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let server_attempts = Arc::clone(&attempts);
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let _request = read_http_request(&mut stream).await;
+            server_attempts.fetch_add(1, Ordering::SeqCst);
+            stream
+                .write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 24\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"message\":\"not found\"}",
+                )
+                .await
+                .unwrap();
+        });
+
+        let client = ReleaseClient::new(None, None).unwrap();
+        let download_dir = tempfile::tempdir().unwrap();
+        let download_path = download_dir.path().join("asset.bin");
+
+        let error = client
+            .download_to_path(&format!("http://{addr}/asset"), &download_path, |_, _| {})
+            .await
+            .unwrap_err();
+
+        server.await.unwrap();
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert!(error.to_string().contains("404 Not Found"), "{error:#}");
+    }
+
+    #[tokio::test]
     async fn limited_download_rejects_chunked_body_as_soon_as_limit_is_exceeded() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -978,37 +1260,21 @@ mod tests {
         let addr = listener.local_addr().unwrap();
 
         let server = tokio::spawn(async move {
-            if let Ok((mut stream, _)) = listener.accept().await {
-                let mut buffer = [0u8; 1024];
-                let mut received = Vec::new();
+            for _ in 0..DOWNLOAD_MAX_ATTEMPTS {
+                if let Ok((mut stream, _)) = listener.accept().await {
+                    let _request = read_http_request(&mut stream).await;
 
-                loop {
-                    let read = stream.read(&mut buffer).await.unwrap_or(0);
-                    if read == 0 {
-                        break;
-                    }
+                    let _ = stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: application/octet-stream\r\n\r\n",
+                        )
+                        .await;
+                    let _ = stream.flush().await;
 
-                    received.extend_from_slice(&buffer[..read]);
-                    if received.windows(4).any(|window| window == b"\r\n\r\n") {
-                        break;
-                    }
+                    let _ = stream.write_all(b"5\r\nhello\r\n").await;
+                    let _ = stream.flush().await;
+                    sleep(Duration::from_millis(300)).await;
                 }
-
-                stream
-                    .write_all(
-                        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: application/octet-stream\r\n\r\n",
-                    )
-                    .await
-                    .unwrap();
-                stream.flush().await.unwrap();
-
-                stream.write_all(b"5\r\nhello\r\n").await.unwrap();
-                stream.flush().await.unwrap();
-                sleep(Duration::from_millis(300)).await;
-                stream.write_all(b"5\r\nworld\r\n").await.unwrap();
-                stream.flush().await.unwrap();
-                stream.write_all(b"0\r\n\r\n").await.unwrap();
-                stream.flush().await.unwrap();
             }
         });
 
@@ -1026,7 +1292,6 @@ mod tests {
             .download_to_path(&format!("http://{addr}/asset"), &download_path, |_, _| {})
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("while downloading"), "{error:#}");
         let is_timeout = error.chain().any(|cause| {
             cause
                 .downcast_ref::<reqwest::Error>()

@@ -94,6 +94,18 @@ describe("workspace layout CSS", () => {
     expect(appSource).toContain('className={versionsLoading ? "selectControl loading" : "selectControl"}');
   });
 
+  it("renders settings language and theme rows without label click traps", () => {
+    expect(appSource).toContain('<div className="fieldRow">\n                    <span>{ui.language}</span>');
+    expect(appSource).toContain('themeModeOptions(language).map');
+    expect(appSource).toContain('<div className="fieldRow">\n                    <span>{ui.theme}</span>');
+    expect(appSource).not.toContain('<label className="fieldRow">\n                    <span>{ui.language}</span>');
+    expect(appSource).toContain('className="segmentedControl"');
+    expect(appSource).toContain('className={configDraft.language === option.value ? "segmentedPill active" : "segmentedPill"}');
+    expect(appSource).toContain('className={themeMode === option.value ? "segmentedPill active" : "segmentedPill"}');
+    expect(appSource).not.toContain("languageSwitch");
+    expect(appSource).not.toContain("languagePill");
+  });
+
   it("keeps the install preview focused on install-critical details", () => {
     const pendingInstallStart = appSource.indexOf("{pendingInstall ? (");
     const pendingInstallEnd = appSource.indexOf("className=\"installPreview pendingRollback\"", pendingInstallStart);
@@ -125,6 +137,38 @@ describe("workspace layout CSS", () => {
     expect(ruleBody(".previewBadge")).toContain("color: #0f766e");
     expect(ruleBody(".previewBadge")).toContain("background: #ecfdf5");
     expect(ruleBody(".previewSafetyNote")).toContain("background: #fffbeb");
+  });
+
+  it("defines a dark theme override for the main app surfaces", () => {
+    expect(styles).toContain('html[data-theme="dark"]');
+    expect(styles).toContain('html[data-theme="dark"] .sidebar');
+    expect(styles).toContain('html[data-theme="dark"] .settingsForm');
+    expect(styles).toContain('html[data-theme="dark"] .previewBadge');
+    expect(styles).toContain('html[data-theme="dark"] .segmentedPill');
+  });
+
+  it("keeps install preview controls dark in dark theme", () => {
+    expect(styles).toContain('html[data-theme="dark"] .installPreview.pendingInstall');
+    expect(styles).toContain('html[data-theme="dark"] .installPreview.pendingInstall .previewMetaLabel');
+    expect(styles).toContain('html[data-theme="dark"] .installPreview.pendingInstall .previewMetaValue');
+    expect(styles).toContain('html[data-theme="dark"] .installPreview.pendingInstall .copyableValue');
+    expect(styles).toContain('html[data-theme="dark"] .installPreview.pendingInstall .copyValueButton');
+  });
+
+  it("keeps inspector decision and history surfaces dark in dark theme", () => {
+    expect(styles).toContain('html[data-theme="dark"] .decisionBlock.installedDecision');
+    expect(styles).toContain('html[data-theme="dark"] .decisionBlock.installedDecision .lifecycleBlock');
+    expect(styles).toContain('html[data-theme="dark"] .decisionBlock.installedDecision .dangerActionGroup');
+    expect(styles).toContain('html[data-theme="dark"] .inspectorSecondaryAction');
+    expect(styles).toContain('html[data-theme="dark"] .inspectorDangerAction');
+    expect(styles).toContain('html[data-theme="dark"] .historyItem');
+    expect(styles).toContain('html[data-theme="dark"] .historyItem.failed');
+  });
+
+  it("keeps release note nested content dark in dark theme", () => {
+    expect(styles).toContain('html[data-theme="dark"] .releaseNotePreview .noteImage');
+    expect(styles).toContain('html[data-theme="dark"] .releaseNotePreview .noteTableScroller');
+    expect(styles).toContain('html[data-theme="dark"] .releaseNotePreview .noteCode');
   });
 
   it("renders the inspector summary as a compact two-line state block", () => {

@@ -24,6 +24,8 @@ pub struct Config {
     pub install_root: Option<PathBuf>,
     #[serde(default)]
     pub language: Option<String>,
+    #[serde(default)]
+    pub theme_mode: Option<String>,
     /// 后台定时检查 GitHub Release 更新，默认开启
     #[serde(default)]
     pub background_check_enabled: Option<bool>,
@@ -184,5 +186,25 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(check_interval_minutes(Some(&config)), 1);
+    }
+
+    #[test]
+    fn theme_mode_round_trips_through_json() {
+        let config = Config {
+            theme_mode: Some("dark".to_string()),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        let decoded: Config = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(decoded.theme_mode.as_deref(), Some("dark"));
+    }
+
+    #[test]
+    fn theme_mode_defaults_to_missing_when_unset() {
+        let decoded: Config = serde_json::from_str("{}").unwrap();
+
+        assert_eq!(decoded.theme_mode, None);
     }
 }

@@ -12,7 +12,10 @@ use releasedock_core::{
     asset_matcher::{Architecture, AssetMatcher, OperatingSystem},
     config::{Config, ConfigStore, Language},
     install_plan::{InstallManagementKind, InstallPlan, InstallSelectionGuard},
-    installer::{RollbackGuard, install_from_plan, rollback_repo_guarded, uninstall_repo},
+    installer::{
+        RollbackGuard, adopt_system_installer_app, install_from_plan, rollback_repo_guarded,
+        uninstall_repo,
+    },
     integrity::{IntegrityStatus, IntegrityVerifier},
     manifest::{InstalledApp, ManifestStore, SystemPackageManager},
     release::{Release, ReleaseClient},
@@ -35,6 +38,7 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Commands {
     Install(InstallArgs),
+    Adopt(AdoptArgs),
     Releases(ReleasesArgs),
     List(ManifestArgs),
     Check(ManifestArgs),
@@ -85,6 +89,13 @@ struct ReleasesArgs {
     json: bool,
     #[arg(long, hide = true)]
     release_fixture: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct AdoptArgs {
+    repo: String,
+    #[arg(long)]
+    manifest: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -261,6 +272,7 @@ where
 async fn dispatch(cli: Cli) -> Result<()> {
     match cli.command {
         Commands::Install(args) => install(args).await,
+        Commands::Adopt(args) => adopt(args),
         Commands::Releases(args) => releases(args).await,
         Commands::List(args) => list(args),
         Commands::Check(args) => check(args).await,
@@ -343,6 +355,19 @@ async fn install(args: InstallArgs) -> Result<()> {
     );
     println!("Manifest updated at {}", store.path().display());
 
+    Ok(())
+}
+
+fn adopt(args: AdoptArgs) -> Result<()> {
+    let repo = RepoRef::parse(&args.repo)?;
+    let store = manifest_store(args.manifest)?;
+    let adopted = adopt_system_installer_app(&store, &repo)?;
+
+    println!(
+        "Adopted {} to {}",
+        repo.id(),
+        adopted.install_path.display()
+    );
     Ok(())
 }
 

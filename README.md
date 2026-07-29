@@ -1,36 +1,89 @@
 # ReleaseDock
 
-ReleaseDock helps you manage software that you installed from GitHub Releases and later need to update, uninstall, or inspect again. It targets the common workflow where you download `.exe`, `.zip`, `.AppImage`, `.tar.gz`, `.deb`, `.rpm`, or `.pkg.tar.*` files by hand and then lose track of them. It is not a replacement for `winget`, `scoop`, `apt`, `flatpak`, or Homebrew.
+**English | [简体中文](README_zh-CN.md)**
 
-## Overview
+ReleaseDock is a desktop and CLI manager for software distributed through GitHub Releases. It helps you track, inspect, update, launch, roll back, and uninstall apps that usually start as manually downloaded `.exe`, `.zip`, `.AppImage`, `.tar.gz`, `.deb`, `.rpm`, or `.pkg.tar.*` assets.
 
-The project is already usable in its first release:
+ReleaseDock is not a package manager replacement. Keep using `winget`, `scoop`, `apt`, `flatpak`, Homebrew, or your OS package manager when a project already publishes through those channels. Use ReleaseDock for release-asset workflows that otherwise become scattered across your Downloads folder.
 
-- Rust core: repository parsing, release data models, release notes, asset matching, install plans, manifests, and runtime configuration.
-- CLI: `releases` browses the bounded GitHub release catalog; `install`, policy-aware `check` / `update`, guarded `rollback`, and `uninstall` use the real lifecycle path. `--json` prints machine-readable plans or reports, `--yes` skips input without hiding previews, and `config` manages the GitHub token, proxy, and install root while redacting saved tokens from `config get`.
-- Desktop GUI: Tauri 2 + React dashboard with real manifest loading, GitHub release refresh, release note viewing, install preview and confirmation, install execution, update actions for managed apps, uninstall and tracking removal, visible install progress, open-app and open-location shortcuts, and a settings page for token, proxy, language, and install root. The details panel now also shows the management mode, system package manager, and recent lifecycle history for installed apps. The default UI language is English, and the task/status strip follows the selected UI language.
-- The sidebar footer shows the product name and subtitle; it does not act as a repository shortcut.
-- Public repositories do not require a token. Private repositories and frequent API calls should use one.
-- ReleaseDock prefers portable or directly runnable release assets first, including Linux executables without an extension when they are clearly marked for the current platform and architecture, then falls back to system installers when no managed format is available.
-- The install root stores downloaded installers in `downloads/` and managed software in `apps/`. AppImage and archive installs stay under ReleaseDock control and update through staging replacement so a failed update keeps the previous managed contents. Linux `.deb` / `.rpm` / `.pkg.tar.*` installs are tracked with their package name so updates and uninstall use the system package manager. Windows `.exe` / `.msi` installers are still tracked as system installers, so the file is kept for reference while the actual install location is owned by the installer itself.
+## What It Does
 
-## Technology
+- Tracks GitHub repositories by `owner/repo` or GitHub URL.
+- Reads release metadata, release notes, assets, publish time, and version history from GitHub.
+- Selects the best asset for the current OS and CPU architecture.
+- Shows an install preview before running installers or copying managed files.
+- Downloads release assets with progress, retry, and `.part` resume support.
+- Verifies SHA-256 checksums when upstream checksum assets are available, or records the artifact digest when they are not.
+- Manages AppImage, archive, portable executable, and Linux package installs with a local manifest.
+- Keeps Windows `.exe` / `.msi` and Linux `.deb` / `.rpm` installers behind explicit confirmation.
+- Opens managed apps, install locations, installer package folders, release pages, and system uninstall settings where appropriate.
+- Supports guarded update, downgrade, rollback, uninstall, and remove-tracking flows.
+- Runs background update checks from the system tray.
+- Provides English and Simplified Chinese UI, plus follow-system, light, and dark themes.
 
-- Core: Rust
-- CLI: Rust + `clap`
-- Desktop: Tauri 2
-- Frontend: React + TypeScript + Vite
-- Storage: JSON manifest v4
+## When To Use It
 
-## Usage
+Use ReleaseDock when:
+
+- You install tools directly from GitHub Releases.
+- You want to see which tracked projects have updates without opening every repository.
+- You want a local record of installed version, asset name, install path, package manager metadata, checksum state, and recent lifecycle activity.
+- You need safer install/update confirmation for executable installers and system packages.
+
+Do not use ReleaseDock as a blind installer for unknown binaries. It helps surface release information and guard local state, but a GitHub Release asset can still execute arbitrary code.
+
+## Desktop App
+
+The desktop app is a compact update workbench built with Tauri 2 and React.
+
+- Left side: tracked repositories, local filters, selection, bulk remove/uninstall affordances.
+- Right side: selected release, version policy, install preview, lifecycle history, release notes, and contextual actions.
+- Bottom status strip: refresh, download, install, uninstall, rollback, and failure progress.
+- Settings: GitHub token, GitHub proxy, install root, language, theme, background checks, and check interval.
+- System tray: close-to-tray behavior, manual check, restore window, quit, and update-count tooltip.
+
+Public repositories work without a token. Private repositories and frequent refreshes should use a GitHub token. The proxy setting applies to GitHub API queries and Release asset downloads.
+
+## CLI
+
+The CLI uses the same Rust core as the desktop app.
+
+```bash
+cargo run -p releasedock-cli -- --help
+cargo run -p releasedock-cli -- releases zyedidia/micro
+cargo run -p releasedock-cli -- check
+cargo run -p releasedock-cli -- install zyedidia/micro --json
+cargo run -p releasedock-cli -- update zyedidia/micro --yes
+cargo run -p releasedock-cli -- rollback zyedidia/micro
+cargo run -p releasedock-cli -- uninstall zyedidia/micro
+cargo run -p releasedock-cli -- config get
+```
+
+Use `--json` when you need machine-readable plans or reports. Use `--yes` only after reviewing what will run.
+
+## Install Model
+
+ReleaseDock distinguishes how an asset is managed:
+
+- **Managed local**: AppImage, archives, portable executables, and directly runnable files copied under the ReleaseDock install root.
+- **System package**: Linux `.deb`, `.rpm`, and `.pkg.tar.*` packages installed and removed through the system package manager.
+- **External installer**: Windows `.exe` / `.msi` installers that may install software outside ReleaseDock's managed root.
+
+Managed-local updates use staging and rollback snapshots so a failed replacement can keep or restore the previous install. System installers stay traceable: ReleaseDock records the installer package path, and on Windows can re-detect a real installed app location from the system uninstall registry when available.
+
+## Download Reliability
+
+Release asset downloads write to a sibling `.part` file first. If a transfer is interrupted, the next attempt resumes with HTTP Range when the server supports it. Temporary network failures, read timeouts, connection resets, and 5xx responses are retried before the cache file is finalized.
+
+Checksum verification still happens after the full artifact is present. A partial file is never treated as an installed artifact.
+
+## Build From Source
+
+### Workspace
 
 ```bash
 cargo test
 cargo run -p releasedock-cli -- --help
-cargo run -p releasedock-cli -- list
-cargo run -p releasedock-cli -- check
-cargo run -p releasedock-cli -- install zyedidia/micro --json
-cargo run -p releasedock-cli -- config get
 ```
 
 ### Desktop
@@ -44,36 +97,28 @@ cargo check --manifest-path src-tauri/Cargo.toml
 npm run tauri dev
 ```
 
-### Linux local builds
+### Linux Local Builds
 
 ```bash
 bash scripts/linux/build-cli.sh
 bash scripts/linux/build-desktop.sh
 ```
 
-`build-desktop.sh` removes stale desktop outputs before building and then writes the desktop executable to `apps/desktop/src-tauri/target/release/releasedock` by default. Pass `--bundles` only when you want to try packaging.
+`build-desktop.sh` removes stale desktop outputs before building and then writes the desktop executable to `apps/desktop/src-tauri/target/release/releasedock` by default. Pass `--bundles` only when you want to try Debian/RPM packaging.
 
-### GitHub Actions artifacts
+## Release Artifacts
 
-Pushes to `main` and manual `CI Release Artifacts` runs publish download artifacts in GitHub Actions:
+Pushes to `main` and manual `CI Release Artifacts` workflow runs publish GitHub Actions artifacts:
 
 - `releasedock-linux-x64`: Linux CLI.
 - `releasedock-linux-x64-desktop`: Linux desktop build, including the executable plus Debian and RPM bundles when available.
 - `releasedock-windows-x64-desktop`: Windows desktop build, including the executable plus NSIS and MSI installers when available.
 
-After downloading the CLI artifact, verify it with:
+Tags that match `v*.*.*` create a GitHub Release with the same version and upload available Linux and Windows artifacts.
 
 ```bash
-./releasedock-linux-x64 --help
-```
-
-### GitHub Releases
-
-Tags that match `v*.*.*` create a GitHub Release with the same version and upload the Linux CLI, Linux desktop executable, Linux Debian package, Linux RPM package, Windows desktop executable, NSIS installer, and MSI.
-
-```bash
-git tag v0.2.5
-git push origin v0.2.5
+git tag v0.2.6
+git push origin v0.2.6
 ```
 
 ## Documentation
@@ -87,8 +132,9 @@ git push origin v0.2.5
 - [Security notes](docs/security.md)
 - [Linux build scripts](scripts/linux/README.md)
 
-## Security
+## Security Notes
 
 - Windows `.exe` / `.msi` and Linux `.deb` / `.rpm` installers require explicit confirmation.
-- `GITHUB_TOKEN` is only used for GitHub API requests and should never be written to logs.
-- This first release only manages software installed by the tool itself or explicitly tracked by the user. It does not take over system-installed software.
+- `GITHUB_TOKEN` is only used for GitHub API requests and must not be written to logs.
+- ReleaseDock manages files it installed under its own install root. It does not automatically take over arbitrary system-installed software.
+- Windows system install detection reads uninstall-registry metadata only; it does not run uninstall commands during adoption.

@@ -82,6 +82,36 @@ fn install_outputs_json_plan_from_linux_executable_fixture() {
 }
 
 #[test]
+fn adopt_rejects_non_system_installer_entries() {
+    let temp = tempfile::tempdir().unwrap();
+    let manifest = temp.path().join("apps.json");
+    ManifestStore::at_path(manifest.clone())
+        .save_apps(&[InstalledApp::with_install_metadata(
+            "owner/project",
+            "project",
+            "v1.0.0",
+            "project-linux-x86_64.tar.gz",
+            temp.path().join("project"),
+            releasedock_core::asset_matcher::InstallType::Archive,
+            InstallPathKind::ManagedPath,
+            true,
+        )])
+        .unwrap();
+
+    Command::cargo_bin("releasedock")
+        .unwrap()
+        .args([
+            "adopt",
+            "owner/project",
+            "--manifest",
+            manifest.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(contains("only system installer entries can be adopted"));
+}
+
+#[test]
 fn install_requires_yes_in_non_interactive_mode() {
     let fixture = concat!(
         env!("CARGO_MANIFEST_DIR"),
