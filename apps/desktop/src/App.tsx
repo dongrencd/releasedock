@@ -27,6 +27,8 @@ import {
   type DashboardProgressEvent,
   bulkRemoveTrackedRepos,
   installRepo,
+  isBackgroundStart,
+  isMainWindowVisible,
   listReleaseVersions,
   loadConfig,
   loadDashboard,
@@ -52,12 +54,14 @@ import {
 } from "./backend";
 import {
   buildConfigConnectivityWarning,
+  buildBackgroundCheckPresentation,
   buildConnectivityTestStatus,
   buildConnectivityTestViewState,
   buildNetworkConfigHealth,
   resolveBackgroundUpdateCountAfterDashboardRefresh,
   getNetworkConfigKey,
   shouldRunAutoConnectivityCheck,
+  shouldInitializeWorkspace,
   shouldLoadRemoteDashboard,
   shouldLoadReleaseVersions,
   buildStatusDockPresentation,
@@ -204,6 +208,7 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   // 后台检查发现的更新数（来自托盘后台检查）
   const [backgroundUpdateCount, setBackgroundUpdateCount] = useState(0);
+  const [backgroundCheckEvent, setBackgroundCheckEvent] = useState<BackgroundCheckEvent | null>(null);
   const activeTaskProgress = useRef<TaskProgressContext>(null);
   const dashboardRefreshId = useRef(0);
   const dashboardOrder = useRef<Map<string, number>>(new Map());
@@ -211,6 +216,9 @@ export function App() {
   const selectedRepoIdRef = useRef<string | null>(selectedId);
   const githubTokenInput = useRef<HTMLInputElement>(null);
   const proxyUrlInput = useRef<HTMLInputElement>(null);
+  const backgroundStartRef = useRef<boolean | null>(null);
+  const restoreRequestedRef = useRef(false);
+  const workspaceInitializedRef = useRef(false);
 
   const language = normalizeLanguage(configDraft.language);
   const languageRef = useRef(language);
@@ -225,6 +233,9 @@ export function App() {
   const hasGithubToken = configDraft.githubToken.trim().length > 0;
   const configConnectivityWarning = buildConfigConnectivityWarning(configDraft, language, connectivityTest);
   const networkConfigHealth = buildNetworkConfigHealth(configDraft, language, connectivityTest);
+  const backgroundCheckPresentation = backgroundCheckEvent
+    ? buildBackgroundCheckPresentation(backgroundCheckEvent, language)
+    : null;
   const connectivityTestStatus = buildConnectivityTestStatus(connectivityTest, language, configDraft);
   const installRoot = configDraft.installRoot.trim();
   const effectiveInstallRoot = configDraft.effectiveInstallRoot.trim();
@@ -284,13 +295,39 @@ export function App() {
     setSelectedVersion(nextSelection.selectedVersion);
   }
 
+  function initializeWorkspace() {
+    if (workspaceInitializedRef.current) {
+      return;
+    }
+    workspaceInitializedRef.current = true;
+    void refreshWorkspace();
+  }
+
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void refreshWorkspace();
-    }, 0);
+    let cancelled = false;
+    void isBackgroundStart()
+      .then(async (isHiddenStart) => {
+        if (cancelled) {
+          return;
+        }
+        backgroundStartRef.current = isHiddenStart;
+        // The visibility query closes the small gap where a second launch restored the
+        // window before the frontend finished registering the restore event listener.
+        const restoredBeforeListener = isHiddenStart ? await isMainWindowVisible().catch(() => true) : false;
+        if (shouldInitializeWorkspace(isHiddenStart) || restoreRequestedRef.current || restoredBeforeListener) {
+          initializeWorkspace();
+        }
+      })
+      .catch(() => {
+        // If the mode query fails, prefer the visible startup path so the app remains usable.
+        if (!cancelled) {
+          backgroundStartRef.current = false;
+          initializeWorkspace();
+        }
+      });
 
     return () => {
-      window.clearTimeout(timer);
+      cancelled = true;
     };
   }, []);
 
@@ -408,11 +445,16 @@ export function App() {
     let unlistenProgress: (() => void) | undefined;
     let unlistenBackground: (() => void) | undefined;
     let unlistenTrayCheck: (() => void) | undefined;
+    let unlistenRestore: (() => void) | undefined;
 
     // 后台检查完成事件 — 更新 badge 计数
     void listen<BackgroundCheckEvent>("background-check-complete", (event) => {
       if (event.payload.status === "success") {
         setBackgroundUpdateCount(event.payload.updateCount);
+        setBackgroundCheckEvent(null);
+      } else {
+        // 不完整的后台结果不能覆盖上一次成功 badge，只展示诊断状态。
+        setBackgroundCheckEvent(event.payload);
       }
     }).then((dispose) => {
       unlistenBackground = dispose;
@@ -423,6 +465,15 @@ export function App() {
       void refreshDashboard();
     }).then((dispose) => {
       unlistenTrayCheck = dispose;
+    });
+
+    void listen<void>("restore-main-window", () => {
+      restoreRequestedRef.current = true;
+      if (backgroundStartRef.current === true) {
+        initializeWorkspace();
+      }
+    }).then((dispose) => {
+      unlistenRestore = dispose;
     });
 
     void listen<DashboardItemEvent>("dashboard-item-updated", (event) => {
@@ -458,6 +509,7 @@ export function App() {
       unlistenProgress?.();
       unlistenBackground?.();
       unlistenTrayCheck?.();
+      unlistenRestore?.();
     };
   }, []);
 
@@ -564,6 +616,7 @@ export function App() {
       setApps(data);
       setRemoteDashboardReady(true);
       setBackgroundUpdateCount(resolveBackgroundUpdateCountAfterDashboardRefresh);
+      setBackgroundCheckEvent(null);
       setSelectedId((current) => (current && data.some((item) => item.id === current) ? current : data[0]?.id ?? null));
       setTaskStatus(data.length > 0 ? statusText.loadedApps(data.length) : statusText.noApps);
     } catch (caught) {
@@ -1455,6 +1508,17 @@ export function App() {
                     <span className="statePill subtle" title={ui.trayBadge(backgroundUpdateCount)}>
                       {ui.trayBadge(backgroundUpdateCount)}
                     </span>
+                  ) : null}
+                  {backgroundCheckPresentation ? (
+                    <button
+                      className={`statePill ${backgroundCheckPresentation.tone} statePillButton`}
+                      type="button"
+                      onClick={handleFocusNetworkConfig}
+                      title={backgroundCheckPresentation.detail}
+                      aria-label={backgroundCheckPresentation.label}
+                    >
+                      {backgroundCheckPresentation.label}
+                    </button>
                   ) : null}
                 </div>
                 <TooltipButton label={ui.checkUpdates} onClick={() => void refreshDashboard()} disabled={busy || loading || connectivityTesting} className="ghostButton topbarButton">

@@ -5,7 +5,9 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    env, fs,
+    env,
+    ffi::OsStr,
+    fs,
     future::Future,
     path::{Path, PathBuf},
     sync::{Arc, LazyLock},
@@ -277,6 +279,8 @@ async fn main() -> Result<()> {
             notification_permission_state,
             request_notification_permission,
             test_github_connectivity,
+            is_background_start,
+            is_main_window_visible,
             add_repo,
             list_release_versions,
             preview_install,
@@ -369,6 +373,7 @@ pub(crate) fn restore_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) 
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
+        let _ = app.emit("restore-main-window", ());
     }
 }
 
@@ -387,11 +392,28 @@ fn should_run_cli() -> bool {
 }
 
 fn should_start_hidden() -> bool {
-    env::args_os().any(|arg| {
-        arg.to_str()
-            .map(|value| value == "--background")
-            .unwrap_or(false)
-    })
+    background_start_from_args(env::args_os())
+}
+
+fn background_start_from_args<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    args.into_iter()
+        .any(|arg| arg.as_ref() == OsStr::new("--background"))
+}
+
+#[tauri::command]
+fn is_background_start() -> bool {
+    should_start_hidden()
+}
+
+#[tauri::command]
+fn is_main_window_visible(app: tauri::AppHandle) -> bool {
+    app.get_webview_window("main")
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(true)
 }
 
 fn sync_autostart_setting<R: tauri::Runtime>(
@@ -2218,11 +2240,11 @@ mod tests {
     };
 
     use super::{
-        InstallPlanView, RollbackPreview, build_dashboard_work_items, build_local_dashboard_views,
-        build_plan_from_releases, classify_connectivity_problem, ensure_install_preview_matches,
-        load_release_catalog_with, management_kind_for_app, preview_install,
-        release_catalog_complete_for_selection, release_versions_from_catalog, render_app,
-        resolve_installer_folder_target, resolve_open_install_location_target,
+        InstallPlanView, RollbackPreview, background_start_from_args, build_dashboard_work_items,
+        build_local_dashboard_views, build_plan_from_releases, classify_connectivity_problem,
+        ensure_install_preview_matches, load_release_catalog_with, management_kind_for_app,
+        preview_install, release_catalog_complete_for_selection, release_versions_from_catalog,
+        render_app, resolve_installer_folder_target, resolve_open_install_location_target,
         rollback_guard_from_preview, sanitize_connectivity_message, select_tracked_release,
         validate_github_url,
     };
@@ -2244,6 +2266,15 @@ mod tests {
     }
 
     #[test]
+    fn background_start_is_detected_from_autostart_arguments() {
+        assert!(background_start_from_args([
+            "releasedock.exe",
+            "--background",
+        ]));
+        assert!(!background_start_from_args(["releasedock.exe", "--gui"]));
+    }
+
+    #[test]
     fn desktop_startup_registers_basic_windows_lifecycle_plugins() {
         let source = include_str!("main.rs");
         let builder_start = source
@@ -2260,6 +2291,11 @@ mod tests {
         assert!(
             builder_source.contains("tauri_plugin_autostart::init"),
             "desktop startup should register the optional autostart plugin"
+        );
+        assert!(
+            builder_source.contains("is_background_start")
+                && builder_source.contains("is_main_window_visible"),
+            "desktop startup should expose hidden-start and restore-race queries"
         );
         assert!(
             builder_source.contains("MacosLauncher::LaunchAgent"),
@@ -2281,8 +2317,9 @@ mod tests {
         assert!(
             restore_function.contains(".show()")
                 && restore_function.contains(".unminimize()")
-                && restore_function.contains(".set_focus()"),
-            "restoring the main window should show, unminimize, and focus it"
+                && restore_function.contains(".set_focus()")
+                && restore_function.contains("restore-main-window"),
+            "restoring the main window should show, unminimize, focus it, and notify the frontend"
         );
     }
 

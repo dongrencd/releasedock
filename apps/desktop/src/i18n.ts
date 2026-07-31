@@ -178,6 +178,10 @@ type Copy = {
   backgroundCheckEnabled: string;
   backgroundCheckDisabled: string;
   backgroundCheckHelp: string;
+  backgroundCheckPartial: string;
+  backgroundCheckPartialDetail: (count: number) => string;
+  backgroundCheckFailed: string;
+  backgroundCheckFailedDetail: (count: number) => string;
   checkInterval: string;
   checkIntervalUnit: string;
   checkIntervalHelp: string;
@@ -458,6 +462,13 @@ const copy: Record<Language, Copy> = {
     backgroundCheckEnabled: "Enabled",
     backgroundCheckDisabled: "Disabled",
     backgroundCheckHelp: "Periodically check GitHub for new releases while the app runs in the tray.",
+    backgroundCheckPartial: "Background check partially failed",
+    backgroundCheckPartialDetail: (count) => `${count} repository checks failed. The last successful result is still shown.`,
+    backgroundCheckFailed: "Background check failed",
+    backgroundCheckFailedDetail: (count) =>
+      count > 0
+        ? `All ${count} repository checks failed. Review GitHub network or token settings.`
+        : "The background check could not start. Review GitHub network or token settings.",
     checkInterval: "Check interval",
     checkIntervalUnit: "minutes",
     checkIntervalHelp: "Time between background update checks. Default is 30 minutes.",
@@ -738,6 +749,11 @@ const copy: Record<Language, Copy> = {
     backgroundCheckEnabled: "已启用",
     backgroundCheckDisabled: "已关闭",
     backgroundCheckHelp: "应用驻留托盘时定时检查 GitHub 是否有新 release。",
+    backgroundCheckPartial: "后台检查部分失败",
+    backgroundCheckPartialDetail: (count) => `${count} 个仓库检查失败，已保留上次成功结果。`,
+    backgroundCheckFailed: "后台检查失败",
+    backgroundCheckFailedDetail: (count) =>
+      count > 0 ? `${count} 个仓库检查全部失败，请检查 GitHub 网络或 Token 设置。` : "后台检查无法启动，请检查 GitHub 网络或 Token 设置。",
     checkInterval: "检查间隔",
     checkIntervalUnit: "分钟",
     checkIntervalHelp: "后台检查更新的时间间隔，默认 30 分钟。",

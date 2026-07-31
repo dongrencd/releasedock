@@ -4,6 +4,7 @@ import {
   buildConfigConnectivityWarning,
   buildConnectivityTestStatus,
   buildConnectivityTestViewState,
+  buildBackgroundCheckPresentation,
   buildNetworkConfigHealth,
   resolveBackgroundUpdateCountAfterDashboardRefresh,
   getNetworkConfigKey,
@@ -36,6 +37,7 @@ import {
   isPreviewResponseCurrent,
   releaseChannelForVersion,
   releaseDirectionLabel,
+  shouldInitializeWorkspace,
   resolveLifecycleSelection,
   resolveUninstallExecutionKind,
   getDetailPathLabel,
@@ -67,6 +69,11 @@ import {
 const language: Language = "en";
 
 describe("startup release loading", () => {
+  it("skips workspace initialization for a hidden background start", () => {
+    expect(shouldInitializeWorkspace(true)).toBe(false);
+    expect(shouldInitializeWorkspace(false)).toBe(true);
+  });
+
   it("only loads the remote dashboard after a successful connectivity check", () => {
     expect(shouldLoadRemoteDashboard({ ok: true, message: "ok", problem: "none" })).toBe(true);
     expect(shouldLoadRemoteDashboard({ ok: false, message: "offline", problem: "network" })).toBe(false);
@@ -77,6 +84,29 @@ describe("startup release loading", () => {
     expect(shouldLoadReleaseVersions(true, "current")).toBe(true);
     expect(shouldLoadReleaseVersions(false, "current")).toBe(false);
     expect(shouldLoadReleaseVersions(true, "failed")).toBe(false);
+  });
+
+  it("explains partial and failed background checks without clearing the prior badge", () => {
+    expect(
+      buildBackgroundCheckPresentation(
+        { status: "partial", updateCount: 2, totalChecked: 4, failedCount: 1 },
+        "zh-CN"
+      )
+    ).toEqual({
+      label: "后台检查部分失败",
+      detail: "1 个仓库检查失败，已保留上次成功结果。",
+      tone: "warning"
+    });
+    expect(
+      buildBackgroundCheckPresentation(
+        { status: "failed", updateCount: 0, totalChecked: 4, failedCount: 4 },
+        "en"
+      )
+    ).toEqual({
+      label: "Background check failed",
+      detail: "All 4 repository checks failed. Review GitHub network or token settings.",
+      tone: "danger"
+    });
   });
 });
 

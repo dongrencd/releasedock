@@ -220,6 +220,47 @@ export type ConnectivityTestStatus = {
   tone: "neutral" | "busy" | "success" | "danger" | "warning";
 };
 
+export type BackgroundCheckEventLike = {
+  status: "success" | "partial" | "failed";
+  updateCount: number;
+  totalChecked: number;
+  failedCount: number;
+};
+
+export type BackgroundCheckPresentation = {
+  label: string;
+  detail: string;
+  tone: "warning" | "danger";
+};
+
+export function shouldInitializeWorkspace(isBackgroundStart: boolean): boolean {
+  return !isBackgroundStart;
+}
+
+export function buildBackgroundCheckPresentation(
+  event: BackgroundCheckEventLike,
+  language: Language
+): BackgroundCheckPresentation | null {
+  if (event.status === "success") {
+    return null;
+  }
+
+  const ui = createUiText(language);
+  if (event.status === "partial") {
+    return {
+      label: ui.backgroundCheckPartial,
+      detail: ui.backgroundCheckPartialDetail(event.failedCount),
+      tone: "warning"
+    };
+  }
+
+  return {
+    label: ui.backgroundCheckFailed,
+    detail: ui.backgroundCheckFailedDetail(event.totalChecked),
+    tone: "danger"
+  };
+}
+
 export function isFailedInstallProgress(taskProgress: TaskProgressLike | null, repoId: string | null): boolean {
   return Boolean(
     taskProgress &&

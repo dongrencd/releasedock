@@ -141,8 +141,8 @@ bash scripts/linux/build-desktop.sh
 带 tag 的 Windows Release 在仓库配置代码签名 secrets 时，会发布 Authenticode 签名后的可执行文件、NSIS 和 MSI 资产。没有可信证书的构建仍可能触发 Windows SmartScreen 提示。
 
 ```bash
-git tag v0.2.12
-git push origin v0.2.12
+git tag v0.2.13
+git push origin v0.2.13
 ```
 
 ## 文档

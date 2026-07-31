@@ -41,7 +41,7 @@ The desktop app is a compact update workbench built with Tauri 2 and React.
 - Right side: selected release, version policy, install preview, lifecycle history, release notes, and contextual actions.
 - Bottom status strip: refresh, download, install, uninstall, rollback, and failure progress.
 - Settings: GitHub token, GitHub proxy, install root, language, theme, background checks, start-with-Windows, notification permission actions, check interval, and download acceleration.
-- System tray: close-to-tray behavior, consistent unminimize/focus restore, single-instance restore, manual check, restore window, quit, and update-count tooltip.
+- System tray: close-to-tray behavior, consistent unminimize/focus restore, single-instance restore, manual check, restore window, quit, and update-count tooltip. Start-with-Windows launches in a lightweight hidden mode and defers dashboard/network loading until the window is restored. Background network or Token failures are surfaced as partial/failed diagnostics instead of being reported as zero updates.
 
 Public repositories work without a token. Private repositories and frequent refreshes should use a GitHub token. The proxy setting applies to GitHub API queries and Release asset downloads.
 
@@ -141,8 +141,8 @@ Tags that match `v*.*.*` create a GitHub Release with the same version and uploa
 Tagged Windows releases publish Authenticode-signed executable, NSIS, and MSI assets when the repository's code-signing secrets are configured. Builds without a trusted certificate may still show Windows SmartScreen warnings.
 
 ```bash
-git tag v0.2.12
-git push origin v0.2.12
+git tag v0.2.13
+git push origin v0.2.13
 ```
 
 ## Documentation

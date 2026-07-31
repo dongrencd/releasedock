@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.13] - 2026-07-31
+
+### Changed
+- Windows start-with-Windows launches in a lightweight hidden mode and defers dashboard and GitHub loading until the window is restored
+- Background update checks expose complete, partial, and failed results instead of treating network or Token errors as no updates
+
+### Fixed
+- Windows duplicate launches and tray restores now reliably initialize the workspace, including when the restore event races frontend startup
+- Failed background checks preserve the previous successful update badge and show actionable network or Token diagnostics
+
 ## [0.2.12] - 2026-07-29
 
 ### Changed

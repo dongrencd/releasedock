@@ -34,6 +34,7 @@ const BACKGROUND_CHECK_CONCURRENCY: usize = 6;
 #[serde(rename_all = "camelCase")]
 pub enum BackgroundCheckStatus {
     Success,
+    Partial,
     Failed,
 }
 
@@ -45,29 +46,62 @@ pub struct BackgroundCheckResult {
     pub total_checked: usize,
     pub checked_at: String,
     pub status: BackgroundCheckStatus,
+    pub failed_count: usize,
     pub error: Option<String>,
 }
 
 impl BackgroundCheckResult {
-    fn success(update_count: usize, total_checked: usize) -> Self {
-        Self {
-            update_count,
-            total_checked,
-            checked_at: checked_at_now(),
-            status: BackgroundCheckStatus::Success,
-            error: None,
-        }
-    }
-
     fn failed(error: impl Into<String>) -> Self {
         Self {
             update_count: 0,
             total_checked: 0,
             checked_at: checked_at_now(),
             status: BackgroundCheckStatus::Failed,
+            failed_count: 0,
             error: Some(error.into()),
         }
     }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct RepoCheckSummary {
+    update_count: usize,
+    total_checked: usize,
+    failed_count: usize,
+    first_error: Option<String>,
+}
+
+impl RepoCheckSummary {
+    fn status(&self) -> BackgroundCheckStatus {
+        if self.failed_count == 0 {
+            BackgroundCheckStatus::Success
+        } else if self.failed_count == self.total_checked {
+            BackgroundCheckStatus::Failed
+        } else {
+            BackgroundCheckStatus::Partial
+        }
+    }
+}
+
+fn summarize_repo_checks<I>(results: I) -> RepoCheckSummary
+where
+    I: IntoIterator<Item = std::result::Result<bool, anyhow::Error>>,
+{
+    let mut summary = RepoCheckSummary::default();
+    for result in results {
+        summary.total_checked += 1;
+        match result {
+            Ok(true) => summary.update_count += 1,
+            Ok(false) => {}
+            Err(error) => {
+                summary.failed_count += 1;
+                if summary.first_error.is_none() {
+                    summary.first_error = Some(error.to_string());
+                }
+            }
+        }
+    }
+    summary
 }
 
 /// 版本比对纯函数
@@ -99,14 +133,18 @@ pub fn spawn_background_checker(app: AppHandle, interval_minutes: u64) -> JoinHa
                             _ => Language::En,
                         })
                         .unwrap_or(Language::En);
-                    if should_notify_updates(last_notified_update_count, result.update_count) {
-                        notify_updates(&app, result.update_count, lang);
+                    if result.status == BackgroundCheckStatus::Success {
+                        if should_notify_updates(last_notified_update_count, result.update_count) {
+                            notify_updates(&app, result.update_count, lang);
+                        }
+                        last_notified_update_count = Some(result.update_count);
+                        crate::tray::update_tray_tooltip(&app, result.update_count, lang);
                     }
-                    last_notified_update_count = Some(result.update_count);
-                    crate::tray::update_tray_tooltip(&app, result.update_count, lang);
                 }
                 Err(error) => {
-                    let result = BackgroundCheckResult::failed(error.to_string());
+                    let result = BackgroundCheckResult::failed(sanitize_background_error(
+                        &error.to_string(),
+                    ));
                     let _ = app.emit(BACKGROUND_CHECK_EVENT, &result);
                 }
             }
@@ -153,7 +191,7 @@ async fn run_background_check() -> Result<BackgroundCheckResult> {
 
     // 并发检查，限制并发数
     let total_checked = repos_to_check.len();
-    let mut update_count = 0usize;
+    let mut check_results = Vec::with_capacity(total_checked);
     let mut tasks = JoinSet::new();
     let mut pending = repos_to_check.into_iter();
     for _ in 0..BACKGROUND_CHECK_CONCURRENCY {
@@ -162,15 +200,28 @@ async fn run_background_check() -> Result<BackgroundCheckResult> {
         }
     }
     while let Some(join_result) = tasks.join_next().await {
-        if let Ok(Ok(true)) = join_result {
-            update_count += 1;
-        }
+        check_results.push(match join_result {
+            Ok(result) => result,
+            Err(error) => Err(anyhow::anyhow!("background release task failed: {error}")),
+        });
         if let Some((repo, installed)) = pending.next() {
             spawn_check_task(&mut tasks, &client, repo, installed);
         }
     }
 
-    Ok(BackgroundCheckResult::success(update_count, total_checked))
+    let summary = summarize_repo_checks(check_results);
+    let error = summary
+        .first_error
+        .as_deref()
+        .map(sanitize_background_error);
+    Ok(BackgroundCheckResult {
+        update_count: summary.update_count,
+        total_checked: summary.total_checked,
+        checked_at: checked_at_now(),
+        status: summary.status(),
+        failed_count: summary.failed_count,
+        error,
+    })
 }
 
 fn spawn_check_task(
@@ -187,9 +238,24 @@ fn spawn_check_task(
                 Ok(has_update(installed_version.as_deref(), &release.tag_name))
             }
             Ok(None) => Ok(false),
-            Err(_) => Ok(false),
+            Err(error) => Err(error),
         }
     });
+}
+
+fn sanitize_background_error(message: &str) -> String {
+    let config = crate::runtime_config().ok();
+    let token = config
+        .as_ref()
+        .and_then(|value| value.github_token.as_deref())
+        .map(str::to_string)
+        .or_else(|| std::env::var("GITHUB_TOKEN").ok());
+    let proxy = config
+        .as_ref()
+        .and_then(|value| value.proxy_url.as_deref())
+        .map(str::to_string)
+        .or_else(|| std::env::var("HTTPS_PROXY").ok());
+    crate::sanitize_connectivity_message(message, token.as_deref(), proxy.as_deref())
 }
 
 fn should_notify_updates(previous_count: Option<usize>, current_count: usize) -> bool {
@@ -290,11 +356,19 @@ mod tests {
 
     #[test]
     fn successful_background_result_records_status_and_check_time() {
-        let result = BackgroundCheckResult::success(2, 7);
+        let result = BackgroundCheckResult {
+            update_count: 2,
+            total_checked: 7,
+            checked_at: checked_at_now(),
+            status: BackgroundCheckStatus::Success,
+            failed_count: 0,
+            error: None,
+        };
 
         assert_eq!(result.update_count, 2);
         assert_eq!(result.total_checked, 7);
         assert_eq!(result.status, BackgroundCheckStatus::Success);
+        assert_eq!(result.failed_count, 0);
         assert!(result.error.is_none());
         assert!(!result.checked_at.is_empty());
     }
@@ -308,5 +382,32 @@ mod tests {
         assert_eq!(result.status, BackgroundCheckStatus::Failed);
         assert_eq!(result.error.as_deref(), Some("config load failed"));
         assert!(!result.checked_at.is_empty());
+    }
+
+    #[test]
+    fn repo_check_summary_tracks_partial_failures_without_counting_them_as_current() {
+        let summary = summarize_repo_checks([
+            Ok(true),
+            Ok(false),
+            Err(anyhow::anyhow!("network unavailable")),
+        ]);
+
+        assert_eq!(summary.update_count, 1);
+        assert_eq!(summary.total_checked, 3);
+        assert_eq!(summary.failed_count, 1);
+        assert_eq!(summary.status(), BackgroundCheckStatus::Partial);
+    }
+
+    #[test]
+    fn repo_check_summary_marks_all_failed_requests_as_failed() {
+        let summary = summarize_repo_checks([
+            Err(anyhow::anyhow!("token rejected")),
+            Err(anyhow::anyhow!("network unavailable")),
+        ]);
+
+        assert_eq!(summary.update_count, 0);
+        assert_eq!(summary.total_checked, 2);
+        assert_eq!(summary.failed_count, 2);
+        assert_eq!(summary.status(), BackgroundCheckStatus::Failed);
     }
 }

@@ -87,8 +87,9 @@ export type GithubConnectivityTestResult = {
 export type BackgroundCheckEvent = {
   updateCount: number;
   totalChecked: number;
+  failedCount: number;
   checkedAt: string;
-  status: "success" | "failed";
+  status: "success" | "partial" | "failed";
   error?: string | null;
 };
 
@@ -139,6 +140,14 @@ export async function loadLocalDashboard(): Promise<ManagedApp[]> {
 
 export async function loadConfig(): Promise<DesktopConfig> {
   return invoke<DesktopConfig>("load_config");
+}
+
+export async function isBackgroundStart(): Promise<boolean> {
+  return invoke<boolean>("is_background_start");
+}
+
+export async function isMainWindowVisible(): Promise<boolean> {
+  return invoke<boolean>("is_main_window_visible");
 }
 
 export async function saveConfig(config: DesktopConfig): Promise<DesktopConfig> {
