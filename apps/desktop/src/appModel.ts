@@ -480,6 +480,25 @@ export function shouldShowInstallerFolderSecondary(item: ManagedApp | null): boo
     && Boolean(resolveInstallerPackagePath(item));
 }
 
+export function shouldShowSystemInstallDetectionAction(item: ManagedApp | null): boolean {
+  if (!item) {
+    return false;
+  }
+
+  return item.status !== "needsChoice"
+    && isSystemInstallerKind(item.installPathKind)
+    && !isAdoptedSystemInstaller(item);
+}
+
+export function shouldShowNotificationPermissionRequest(permission: string): boolean {
+  const normalized = permission.toLowerCase();
+  return normalized === "prompt" || normalized === "default" || normalized === "unknown";
+}
+
+export function shouldShowNotificationSettingsAction(permission: string): boolean {
+  return permission.toLowerCase() === "denied";
+}
+
 export function isSystemUninstallOnly(item: ManagedApp | null): boolean {
   if (!item) {
     return false;
@@ -1148,6 +1167,7 @@ export function hasSecondaryInspectorActions(item: InboxItem | null, language: L
   return shouldShowOpenAppSecondary(item)
     || shouldShowOpenReleaseSecondary(item, language)
     || shouldShowInstallerFolderSecondary(item)
+    || shouldShowSystemInstallDetectionAction(item)
     || shouldShowInstallLocationSecondary(item);
 }
 

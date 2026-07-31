@@ -108,6 +108,7 @@ type Copy = {
   openInstallLocation: string;
   openInstallerFile: string;
   openInstallerFolder: string;
+  refreshSystemInstallDetection: string;
   removeTracked: string;
   noSelection: string;
   settingsTitleSmall: string;
@@ -161,6 +162,18 @@ type Copy = {
   showToken: string;
   hideToken: string;
   saveSettings: string;
+  autostart: string;
+  autostartEnabled: string;
+  autostartDisabled: string;
+  autostartHelp: string;
+  notificationPermission: string;
+  notificationPermissionGranted: string;
+  notificationPermissionDenied: string;
+  notificationPermissionPrompt: string;
+  requestNotificationPermission: string;
+  openNotificationSettings: string;
+  notificationPermissionHelp: string;
+  autostartSaveFailed: string;
   backgroundCheck: string;
   backgroundCheckEnabled: string;
   backgroundCheckDisabled: string;
@@ -374,9 +387,10 @@ const copy: Record<Language, Copy> = {
     openInstallLocation: "Open install location",
     openInstallerFile: "Run installer",
     openInstallerFolder: "Open installer folder",
+    refreshSystemInstallDetection: "Re-detect install",
     removeTracked: "Remove tracking",
     noSelection: "No app selected",
-    settingsTitleSmall: "6 local settings",
+    settingsTitleSmall: "8 local settings",
     installRoot: "Install root",
     installRootHelp: "Downloaded installers and managed apps live under this root.",
     usingDefaultInstallRoot: "Using default install root",
@@ -427,6 +441,18 @@ const copy: Record<Language, Copy> = {
     showToken: "Show token",
     hideToken: "Hide token",
     saveSettings: "Save settings",
+    autostart: "Start with Windows",
+    autostartEnabled: "Enabled",
+    autostartDisabled: "Disabled",
+    autostartHelp: "Start ReleaseDock in the background after sign-in. It only runs update checks; it never installs updates automatically.",
+    notificationPermission: "Notifications",
+    notificationPermissionGranted: "Allowed",
+    notificationPermissionDenied: "Blocked",
+    notificationPermissionPrompt: "Not requested",
+    requestNotificationPermission: "Allow notifications",
+    openNotificationSettings: "Open notification settings",
+    notificationPermissionHelp: "Background update notifications need OS notification permission. The top-bar badge still works when notifications are blocked.",
+    autostartSaveFailed: "Start-with-Windows setting failed",
     backgroundCheck: "Background check",
     backgroundCheckEnabled: "Enabled",
     backgroundCheckDisabled: "Disabled",
@@ -640,9 +666,10 @@ const copy: Record<Language, Copy> = {
     openInstallLocation: "打开安装目录",
     openInstallerFile: "执行安装包",
     openInstallerFolder: "打开安装包目录",
+    refreshSystemInstallDetection: "重新检测安装状态",
     removeTracked: "移除跟踪",
     noSelection: "暂无可展示的软件",
-    settingsTitleSmall: "6 个本地配置项",
+    settingsTitleSmall: "8 个本地配置项",
     installRoot: "软件安装位置",
     installRootHelp: "下载缓存和自动管理的软件会放在这个位置下的 `apps` 目录中。",
     usingDefaultInstallRoot: "使用默认安装目录",
@@ -693,6 +720,18 @@ const copy: Record<Language, Copy> = {
     showToken: "显示 token",
     hideToken: "隐藏 token",
     saveSettings: "保存设置",
+    autostart: "开机后后台启动",
+    autostartEnabled: "已启用",
+    autostartDisabled: "已关闭",
+    autostartHelp: "登录系统后在后台启动 ReleaseDock，只做更新检查，不会自动安装更新。",
+    notificationPermission: "系统通知",
+    notificationPermissionGranted: "已允许",
+    notificationPermissionDenied: "已阻止",
+    notificationPermissionPrompt: "未请求",
+    requestNotificationPermission: "允许通知",
+    openNotificationSettings: "打开系统通知设置",
+    notificationPermissionHelp: "后台更新提醒需要系统通知权限。通知被阻止时，顶部更新数量仍会显示。",
+    autostartSaveFailed: "开机启动设置失败",
     backgroundCheck: "后台检查",
     backgroundCheckEnabled: "已启用",
     backgroundCheckDisabled: "已关闭",
@@ -857,6 +896,12 @@ export function createTaskStatusText(language: Language) {
     savingSettings: localizedText(language, "Saving settings", "正在保存设置"),
     settingsSaved: ui.saveSettingsSuccess,
     failedToSaveSettings: ui.saveSettingsFailed,
+    autostartSaveFailed: ui.autostartSaveFailed,
+    requestingNotificationPermission: localizedText(language, "Requesting notification permission", "正在请求通知权限"),
+    notificationPermissionUpdated: localizedText(language, "Notification permission updated", "通知权限已更新"),
+    notificationPermissionFailed: localizedText(language, "Notification permission request failed", "通知权限请求失败"),
+    openedNotificationSettings: localizedText(language, "Opened notification settings", "已打开系统通知设置"),
+    openNotificationSettingsFailed: localizedText(language, "Failed to open notification settings", "打开系统通知设置失败"),
     testingGithubConnectivity: localizedText(language, "Testing GitHub connection", "正在测试 GitHub 连接"),
     githubConnectivitySucceeded: localizedText(language, "GitHub connection test passed", "GitHub 连接测试通过"),
     githubConnectivityFailed: localizedText(language, "GitHub connection test failed", "GitHub 连接测试失败"),
@@ -913,6 +958,11 @@ export function createTaskStatusText(language: Language) {
     openedInstallerFile: (name: string) => localizedTemplate(language, `Opened ${name} installer`, `已打开 ${name} 的安装包`),
     openedInstallerFolder: (name: string) => localizedTemplate(language, `Opened ${name} installer folder`, `已打开 ${name} 的安装包目录`),
     openedInstallLocation: (name: string) => localizedTemplate(language, `Opened ${name} install location`, `已打开 ${name} 的安装目录`),
+    detectingSystemInstall: (name: string) =>
+      localizedTemplate(language, `Re-detecting ${name} system install`, `正在重新检测 ${name} 的系统安装状态`),
+    detectedSystemInstall: (name: string) =>
+      localizedTemplate(language, `Refreshed ${name} install detection`, `已刷新 ${name} 的安装检测结果`),
+    systemInstallDetectionFailed: localizedText(language, "Install detection failed", "安装检测失败"),
     openedSystemUninstall: (name: string) =>
       localizedTemplate(
         language,

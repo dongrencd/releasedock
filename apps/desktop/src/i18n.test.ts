@@ -120,14 +120,20 @@ describe("createTaskStatusText", () => {
     expect(resolveEffectiveThemeMode("light", true)).toBe("light");
   });
 
-  it("counts the local settings summary after adding download controls", () => {
+  it("counts the local settings summary after adding Windows lifecycle controls", () => {
     const zh = createUiText("zh-CN");
     const en = createUiText("en");
 
-    expect(zh.settingsTitleSmall).toBe("6 个本地配置项");
-    expect(en.settingsTitleSmall).toBe("6 local settings");
+    expect(zh.settingsTitleSmall).toBe("8 个本地配置项");
+    expect(en.settingsTitleSmall).toBe("8 local settings");
     expect(zh.downloadAcceleration).toBe("下载加速");
     expect(en.downloadMaxConnections).toBe("Max connections");
+    expect(en.requestNotificationPermission).toBe("Allow notifications");
+    expect(zh.requestNotificationPermission).toBe("允许通知");
+    expect(en.openNotificationSettings).toBe("Open notification settings");
+    expect(zh.openNotificationSettings).toBe("打开系统通知设置");
+    expect(en.autostartSaveFailed).toBe("Start-with-Windows setting failed");
+    expect(zh.autostartSaveFailed).toBe("开机启动设置失败");
   });
 
   it("provides task labels for verification and rollback progress", () => {

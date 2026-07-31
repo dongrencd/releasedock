@@ -42,6 +42,7 @@ use releasedock_core::{
 };
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt as AutostartManagerExt};
 use tauri_plugin_notification::NotificationExt;
 use tokio::sync::Mutex;
 use tokio::task::{JoinHandle, JoinSet};
@@ -257,11 +258,23 @@ async fn main() -> Result<()> {
     }
 
     tauri::Builder::default()
+        // 单实例插件必须先注册，确保重复双击 exe 时新实例会立即退出，
+        // 并把已有的托盘窗口拉回前台。
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            restore_main_window(app);
+        }))
+        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            Some(vec!["--background"]),
+        ))
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             load_dashboard,
             load_config,
             save_config,
+            notification_permission_state,
+            request_notification_permission,
             test_github_connectivity,
             add_repo,
             list_release_versions,
@@ -281,6 +294,7 @@ async fn main() -> Result<()> {
             open_path,
             open_install_location,
             open_installer_folder,
+            open_notification_settings,
             open_system_uninstall_settings
         ])
         // 系统托盘：创建图标、菜单
@@ -295,12 +309,21 @@ async fn main() -> Result<()> {
                 })
                 .unwrap_or(Language::En);
             tray::build_tray(app.handle(), lang)?;
+            if let Ok(config) = runtime_config() {
+                let _ = sync_autostart_setting(app.handle(), config.autostart_enabled);
+            }
 
             // 启动后台定时检查（走 restart 路径以确保统一管理句柄）
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 restart_background_checker(app_handle).await;
             });
+
+            if should_start_hidden() {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+            }
 
             Ok(())
         })
@@ -340,6 +363,14 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn restore_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
 fn should_run_cli() -> bool {
     if cfg!(target_os = "windows") {
         return false;
@@ -349,8 +380,34 @@ fn should_run_cli() -> bool {
     match args.get(1).and_then(|arg| arg.to_str()) {
         None => false,
         Some("--gui") => false,
+        Some("--background") => false,
         Some(_) => true,
     }
+}
+
+fn should_start_hidden() -> bool {
+    env::args_os().any(|arg| {
+        arg.to_str()
+            .map(|value| value == "--background")
+            .unwrap_or(false)
+    })
+}
+
+fn sync_autostart_setting<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    enabled: Option<bool>,
+) -> Result<()> {
+    let Some(enabled) = enabled else {
+        return Ok(());
+    };
+
+    let autostart = app.autolaunch();
+    if enabled {
+        autostart.enable().context("failed to enable autostart")?;
+    } else {
+        autostart.disable().context("failed to disable autostart")?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -377,12 +434,29 @@ async fn save_config(
 ) -> Result<DesktopConfig, String> {
     let store = config_store().map_err(format_error)?;
     let runtime_config = Config::from(config.clone());
+    sync_autostart_setting(&app, runtime_config.autostart_enabled).map_err(format_error)?;
     store.save(&runtime_config).map_err(format_error)?;
 
     // 保存后热重启后台检查任务
     restart_background_checker(app).await;
 
     Ok(desktop_config_from_runtime(runtime_config))
+}
+
+#[tauri::command]
+async fn notification_permission_state(app: tauri::AppHandle) -> Result<String, String> {
+    app.notification()
+        .permission_state()
+        .map(|state| state.to_string())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn request_notification_permission(app: tauri::AppHandle) -> Result<String, String> {
+    app.notification()
+        .request_permission()
+        .map(|state| state.to_string())
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -598,6 +672,11 @@ async fn open_install_location(
 #[tauri::command]
 async fn open_installer_folder(path: String) -> Result<(), String> {
     open_installer_folder_in_system(&path).map_err(format_error)
+}
+
+#[tauri::command]
+async fn open_notification_settings() -> Result<(), String> {
+    open_notification_settings_in_system().map_err(format_error)
 }
 
 #[tauri::command]
@@ -1407,6 +1486,19 @@ fn open_system_uninstall_settings_in_system() -> Result<()> {
     }
 }
 
+fn open_notification_settings_in_system() -> Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        open_with_windows_shell("ms-settings:notifications")?;
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        anyhow::bail!("notification settings are only available on Windows");
+    }
+}
+
 const MAX_RELEASE_PAGES: u32 = 20;
 const MAX_RELEASES: usize = 2_000;
 
@@ -1793,6 +1885,7 @@ struct DesktopConfig {
     tray_hint_shown: Option<bool>,
     download_acceleration_enabled: Option<bool>,
     download_max_connections: Option<u8>,
+    autostart_enabled: Option<bool>,
 }
 
 impl From<DesktopConfig> for Config {
@@ -1808,6 +1901,7 @@ impl From<DesktopConfig> for Config {
             tray_hint_shown: value.tray_hint_shown,
             download_acceleration_enabled: value.download_acceleration_enabled,
             download_max_connections: value.download_max_connections,
+            autostart_enabled: value.autostart_enabled,
         }
     }
 }
@@ -1828,6 +1922,7 @@ fn desktop_config_from_runtime(value: Config) -> DesktopConfig {
         tray_hint_shown: value.tray_hint_shown,
         download_acceleration_enabled: Some(download_acceleration_enabled),
         download_max_connections: Some(download_max_connections),
+        autostart_enabled: value.autostart_enabled,
     }
 }
 
@@ -2068,6 +2163,101 @@ mod tests {
         rollback_guard_from_preview, sanitize_connectivity_message, select_tracked_release,
         validate_github_url,
     };
+
+    #[test]
+    fn single_instance_plugin_is_registered_before_other_plugins() {
+        let source = include_str!("main.rs");
+        let single_instance_index = source
+            .find(".plugin(tauri_plugin_single_instance::init")
+            .expect("desktop startup should register the single-instance plugin");
+        let notification_index = source
+            .find(".plugin(tauri_plugin_notification::init")
+            .expect("desktop startup should keep the notification plugin");
+
+        assert!(
+            single_instance_index < notification_index,
+            "single-instance must be registered before other plugins so duplicate launches are intercepted"
+        );
+    }
+
+    #[test]
+    fn desktop_startup_registers_basic_windows_lifecycle_plugins() {
+        let source = include_str!("main.rs");
+        let builder_start = source
+            .find("tauri::Builder::default()")
+            .expect("desktop startup should create a Tauri builder");
+        let builder_end = source
+            .find(".run(tauri::generate_context!())")
+            .expect("desktop startup should run the Tauri builder");
+        let builder_source = &source[builder_start..builder_end];
+        assert!(
+            builder_source.contains("tauri_plugin_window_state::Builder::default().build()"),
+            "desktop startup should persist and restore the main window size and position"
+        );
+        assert!(
+            builder_source.contains("tauri_plugin_autostart::init"),
+            "desktop startup should register the optional autostart plugin"
+        );
+        assert!(
+            builder_source.contains("MacosLauncher::LaunchAgent"),
+            "autostart should use the explicit LaunchAgent strategy on macOS"
+        );
+    }
+
+    #[test]
+    fn restoring_main_window_also_unminimizes_it() {
+        let source = include_str!("main.rs");
+        let restore_function_index = source
+            .find("fn restore_main_window")
+            .expect("desktop startup should centralize main window restoration");
+        let restore_function_end = source[restore_function_index..]
+            .find("fn should_run_cli")
+            .map(|offset| restore_function_index + offset)
+            .expect("restore_main_window should stay before should_run_cli");
+        let restore_function = &source[restore_function_index..restore_function_end];
+        assert!(
+            restore_function.contains(".show()")
+                && restore_function.contains(".unminimize()")
+                && restore_function.contains(".set_focus()"),
+            "restoring the main window should show, unminimize, and focus it"
+        );
+    }
+
+    #[test]
+    fn tray_restore_uses_shared_main_window_restore_helper() {
+        let tray_source = include_str!("tray.rs");
+        assert!(
+            tray_source.contains("crate::restore_main_window(app)")
+                && tray_source.contains("crate::restore_main_window(tray.app_handle())"),
+            "tray menu and left-click restore should use the same unminimize-aware helper as duplicate launches"
+        );
+        assert!(
+            !tray_source.contains("fn show_window"),
+            "tray should not keep a second restore implementation that can drift from duplicate-launch behavior"
+        );
+    }
+
+    #[test]
+    fn notification_permission_commands_are_registered_and_open_windows_settings() {
+        let source = include_str!("main.rs");
+        let handler_start = source
+            .find("tauri::generate_handler![")
+            .expect("desktop startup should register invoke handlers");
+        let handler_end = source[handler_start..]
+            .find("])")
+            .map(|offset| handler_start + offset)
+            .expect("invoke handler list should close");
+        let handlers = &source[handler_start..handler_end];
+        assert!(
+            handlers.contains("request_notification_permission")
+                && handlers.contains("open_notification_settings"),
+            "notification permission request and settings commands should be exposed to the frontend"
+        );
+        assert!(
+            source.contains("ms-settings:notifications"),
+            "Windows notification settings should open the OS notification settings page"
+        );
+    }
 
     #[test]
     fn explicit_version_plan_carries_core_direction_integrity_and_selection_guard() {

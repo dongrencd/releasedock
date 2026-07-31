@@ -9,7 +9,7 @@
 use releasedock_core::config::Language;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
-use tauri::{Emitter, Manager, Runtime};
+use tauri::{Emitter, Runtime};
 
 /// 创建系统托盘图标和菜单
 pub fn build_tray<R: Runtime>(app: &tauri::AppHandle<R>, language: Language) -> tauri::Result<()> {
@@ -54,7 +54,7 @@ pub fn build_tray<R: Runtime>(app: &tauri::AppHandle<R>, language: Language) -> 
                     let _ = app.emit("tray-check-updates", ());
                 }
                 "tray_show" => {
-                    show_window(app);
+                    crate::restore_main_window(app);
                 }
                 "tray_quit" => {
                     app.exit(0);
@@ -68,20 +68,12 @@ pub fn build_tray<R: Runtime>(app: &tauri::AppHandle<R>, language: Language) -> 
                 ..
             } = event
             {
-                show_window(tray.app_handle());
+                crate::restore_main_window(tray.app_handle());
             }
         })
         .build(app)?;
 
     Ok(())
-}
-
-/// 显示主窗口并获取焦点
-fn show_window<R: Runtime>(app: &tauri::AppHandle<R>) {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.set_focus();
-    }
 }
 
 /// 更新托盘 tooltip 显示更新计数

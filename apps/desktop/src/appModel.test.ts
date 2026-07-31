@@ -47,6 +47,9 @@ import {
   shouldShowInstallerFolderSecondary,
   shouldShowInstallLocationAction,
   shouldShowInstallLocationSecondary,
+  shouldShowNotificationPermissionRequest,
+  shouldShowNotificationSettingsAction,
+  shouldShowSystemInstallDetectionAction,
   systemPackageManagerLabel,
   taskActionLabel,
   taskStageLabel,
@@ -173,6 +176,22 @@ describe("release lifecycle inspector state", () => {
     }, "en")).toBe("Pending SHA-256 verification");
     expect(installPreviewIntegrityLabel({ status: "recordedOnly" }, "en"))
       .toBe("Unverified; digest recorded only");
+  });
+});
+
+describe("Windows notification settings actions", () => {
+  it("offers permission request before the OS blocks notifications", () => {
+    expect(shouldShowNotificationPermissionRequest("prompt")).toBe(true);
+    expect(shouldShowNotificationPermissionRequest("default")).toBe(true);
+    expect(shouldShowNotificationPermissionRequest("unknown")).toBe(true);
+    expect(shouldShowNotificationPermissionRequest("denied")).toBe(false);
+    expect(shouldShowNotificationPermissionRequest("granted")).toBe(false);
+  });
+
+  it("offers the OS notification settings shortcut only after notifications are blocked", () => {
+    expect(shouldShowNotificationSettingsAction("denied")).toBe(true);
+    expect(shouldShowNotificationSettingsAction("prompt")).toBe(false);
+    expect(shouldShowNotificationSettingsAction("granted")).toBe(false);
   });
 });
 
@@ -1052,6 +1071,7 @@ describe("buildUpdateInbox", () => {
     expect(shouldShowInstallerFolderSecondary(systemInstaller)).toBe(true);
     expect(shouldShowInstallLocationSecondary(systemInstaller)).toBe(false);
     expect(isSystemUninstallOnly(systemInstaller)).toBe(false);
+    expect(shouldShowSystemInstallDetectionAction(systemInstaller)).toBe(true);
   });
 
   it("opens adopted system installers like installed apps when a launch target exists", () => {
@@ -1075,6 +1095,7 @@ describe("buildUpdateInbox", () => {
     expect(getOpenAppAvailability(adoptedInstaller, false, language)).toEqual({ enabled: true });
     expect(shouldShowInstallLocationSecondary(adoptedInstaller)).toBe(true);
     expect(shouldShowInstallerFolderSecondary(adoptedInstaller)).toBe(false);
+    expect(shouldShowSystemInstallDetectionAction(adoptedInstaller)).toBe(false);
     expect(getInspectorDetailItems(adoptedInstaller, language)).toEqual([
       {
         label: "Asset file",
@@ -1095,6 +1116,49 @@ describe("buildUpdateInbox", () => {
         monospace: true
       }
     ]);
+  });
+
+  it("only offers system install detection for installed external installer records without a launch target", () => {
+    const inbox = buildUpdateInbox([
+      {
+        id: "owner/setup",
+        name: "Setup",
+        currentVersion: "v1.0.0",
+        latestVersion: "v1.0.0",
+        status: "current",
+        source: "GitHub",
+        installPath: "C:/Users/test/AppData/Local/ReleaseDock/downloads/setup.msi",
+        installerPath: "C:/Users/test/AppData/Local/ReleaseDock/downloads/setup.msi",
+        installPathKind: "systemInstaller"
+      },
+      {
+        id: "owner/app",
+        name: "App",
+        currentVersion: "v1.0.0",
+        latestVersion: "v1.0.0",
+        status: "current",
+        source: "GitHub",
+        installPath: "C:/Users/test/AppData/Local/ReleaseDock/apps/app/app.exe",
+        installPathKind: "managedPath"
+      },
+      {
+        id: "owner/pending",
+        name: "Pending",
+        currentVersion: "Not installed",
+        latestVersion: "v1.0.0",
+        status: "needsChoice",
+        source: "GitHub",
+        installPath: "C:/Users/test/AppData/Local/ReleaseDock/downloads/setup.msi",
+        installPathKind: "systemInstaller"
+      }
+    ], language);
+    const externalInstaller = inbox.find((item) => item.id === "owner/setup") ?? null;
+    const managedApp = inbox.find((item) => item.id === "owner/app") ?? null;
+    const pendingInstaller = inbox.find((item) => item.id === "owner/pending") ?? null;
+
+    expect(shouldShowSystemInstallDetectionAction(externalInstaller)).toBe(true);
+    expect(shouldShowSystemInstallDetectionAction(managedApp)).toBe(false);
+    expect(shouldShowSystemInstallDetectionAction(pendingInstaller)).toBe(false);
   });
 
   it("keeps executable installs on the managed uninstall path even when legacy support is false", () => {

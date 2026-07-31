@@ -41,6 +41,9 @@ pub struct Config {
     /// 下载分片最大连接数，默认 4，运行时限制在 1..=8
     #[serde(default)]
     pub download_max_connections: Option<u8>,
+    /// 是否随系统启动 ReleaseDock。默认关闭，避免安装后无感常驻。
+    #[serde(default)]
+    pub autostart_enabled: Option<bool>,
 }
 
 pub struct ConfigStore {
@@ -234,13 +237,16 @@ mod tests {
     fn theme_mode_round_trips_through_json() {
         let config = Config {
             theme_mode: Some("dark".to_string()),
+            autostart_enabled: Some(true),
             ..Default::default()
         };
 
         let json = serde_json::to_string(&config).unwrap();
         let decoded: Config = serde_json::from_str(&json).unwrap();
 
+        assert!(json.contains("autostartEnabled"));
         assert_eq!(decoded.theme_mode.as_deref(), Some("dark"));
+        assert_eq!(decoded.autostart_enabled, Some(true));
     }
 
     #[test]

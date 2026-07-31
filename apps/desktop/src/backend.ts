@@ -67,6 +67,7 @@ export type DesktopConfig = {
   checkIntervalMinutes: number | null;
   downloadAccelerationEnabled: boolean | null;
   downloadMaxConnections: number | null;
+  autostartEnabled: boolean | null;
 };
 
 export type BulkRemoveResult = {
@@ -144,6 +145,14 @@ export async function testGithubConnectivity(config: DesktopConfig): Promise<Git
   return invoke<GithubConnectivityTestResult>("test_github_connectivity", { config });
 }
 
+export async function notificationPermissionState(): Promise<string> {
+  return invoke<string>("notification_permission_state");
+}
+
+export async function requestNotificationPermission(): Promise<string> {
+  return invoke<string>("request_notification_permission");
+}
+
 export async function addRepo(repoInput: string): Promise<ManagedApp[]> {
   return invoke<ManagedApp[]>("add_repo", { repoInput });
 }
@@ -196,6 +205,10 @@ export async function bulkRemoveTrackedRepos(repoInputs: string[]): Promise<Bulk
   return invoke<BulkRemoveResult>("bulk_remove_tracked_repos", { repoInputs });
 }
 
+export async function adoptSystemInstall(repoInput: string): Promise<ManagedApp[]> {
+  return invoke<ManagedApp[]>("adopt_system_install", { repoInput });
+}
+
 export async function openApp(repoInput: string): Promise<void> {
   await invoke("open_app", { repoInput });
 }
@@ -214,6 +227,10 @@ export async function openInstallLocation(path: string, installPathKind?: Instal
 
 export async function openInstallerFolder(path: string): Promise<void> {
   await invoke("open_installer_folder", { path });
+}
+
+export async function openNotificationSettings(): Promise<void> {
+  await invoke("open_notification_settings");
 }
 
 export async function openSystemUninstallSettings(): Promise<void> {

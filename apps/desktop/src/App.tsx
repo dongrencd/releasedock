@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import {
   addRepo,
+  adoptSystemInstall,
   type DashboardItemEvent,
   type DashboardProgressEvent,
   bulkRemoveTrackedRepos,
@@ -29,13 +30,16 @@ import {
   listReleaseVersions,
   loadConfig,
   loadDashboard,
+  notificationPermissionState,
   openApp,
   openInstallerFolder,
   openInstallLocation,
+  openNotificationSettings,
   openUrl,
   openPath,
   previewInstall,
   previewRollback,
+  requestNotificationPermission,
   removeTrackedRepo,
   saveConfig,
   setReleaseIgnored,
@@ -93,6 +97,9 @@ import {
   shouldShowInstallerFolderSecondary,
   shouldShowOpenAppSecondary,
   shouldShowOpenReleaseSecondary,
+  shouldShowNotificationPermissionRequest,
+  shouldShowNotificationSettingsAction,
+  shouldShowSystemInstallDetectionAction,
   toggleSelection,
   type ConnectivityTestViewState,
   type InboxFilter,
@@ -132,6 +139,7 @@ type ConfigDraft = {
   checkIntervalMinutes: number;
   downloadAccelerationEnabled: boolean;
   downloadMaxConnections: string;
+  autostartEnabled: boolean;
 };
 
 type TaskProgressView = Omit<TaskProgressEvent, "stage"> & {
@@ -170,7 +178,8 @@ export function App() {
     backgroundCheckEnabled: true,
     checkIntervalMinutes: 30,
     downloadAccelerationEnabled: true,
-    downloadMaxConnections: "4"
+    downloadMaxConnections: "4",
+    autostartEnabled: false
   });
   const themeMode = normalizeThemeMode(configDraft.themeMode);
   const currentConfigKey = useRef(configDraftKey(configDraft));
@@ -184,6 +193,7 @@ export function App() {
   const [configSaving, setConfigSaving] = useState(false);
   const [connectivityTesting, setConnectivityTesting] = useState(false);
   const [connectivityTest, setConnectivityTest] = useState<ConnectivityTestViewState>({ status: "idle" });
+  const [notificationPermission, setNotificationPermission] = useState("prompt");
   const [networkFieldsAttention, setNetworkFieldsAttention] = useState(false);
   const [taskStatus, setTaskStatus] = useState(createTaskStatusText("en").loadingDashboard);
   const [error, setError] = useState<string | null>(null);
@@ -560,7 +570,8 @@ export function App() {
         backgroundCheckEnabled: data.backgroundCheckEnabled ?? true,
         checkIntervalMinutes: data.checkIntervalMinutes ?? 30,
         downloadAccelerationEnabled: data.downloadAccelerationEnabled ?? true,
-        downloadMaxConnections: String(clampDownloadMaxConnections(data.downloadMaxConnections))
+        downloadMaxConnections: String(clampDownloadMaxConnections(data.downloadMaxConnections)),
+        autostartEnabled: data.autostartEnabled ?? false
       };
       lastSavedConfigKey.current = configDraftKey(draft);
       currentConfigKey.current = configDraftKey(draft);
@@ -568,6 +579,7 @@ export function App() {
       setConfigDraft(draft);
       setConfigLoaded(true);
       languageRef.current = draft.language;
+      void refreshNotificationPermission();
       return draft;
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
@@ -638,7 +650,8 @@ export function App() {
         backgroundCheckEnabled: saved.backgroundCheckEnabled ?? true,
         checkIntervalMinutes: saved.checkIntervalMinutes ?? 30,
         downloadAccelerationEnabled: saved.downloadAccelerationEnabled ?? true,
-        downloadMaxConnections: String(clampDownloadMaxConnections(saved.downloadMaxConnections))
+        downloadMaxConnections: String(clampDownloadMaxConnections(saved.downloadMaxConnections)),
+        autostartEnabled: saved.autostartEnabled ?? false
       };
       lastSavedConfigKey.current = configDraftKey(savedDraft);
       if (currentConfigKey.current === draftKey) {
@@ -649,12 +662,48 @@ export function App() {
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
-      setTaskStatus(taskText.failedToSaveSettings);
+      setTaskStatus(message.toLowerCase().includes("autostart") ? taskText.autostartSaveFailed : taskText.failedToSaveSettings);
     } finally {
       pendingConfigSaves.current = Math.max(0, pendingConfigSaves.current - 1);
       if (pendingConfigSaves.current === 0) {
         setConfigSaving(false);
       }
+    }
+  }
+
+  async function refreshNotificationPermission() {
+    try {
+      setNotificationPermission(await notificationPermissionState());
+    } catch {
+      setNotificationPermission("prompt");
+    }
+  }
+
+  async function handleRequestNotificationPermission() {
+    clearTaskProgress();
+    setError(null);
+    setTaskStatus(taskText.requestingNotificationPermission);
+    try {
+      setNotificationPermission(await requestNotificationPermission());
+      setTaskStatus(taskText.notificationPermissionUpdated);
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setError(message);
+      setTaskStatus(taskText.notificationPermissionFailed);
+      await refreshNotificationPermission();
+    }
+  }
+
+  async function handleOpenNotificationSettings() {
+    clearTaskProgress();
+    setError(null);
+    try {
+      await openNotificationSettings();
+      setTaskStatus(taskText.openedNotificationSettings);
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setError(message);
+      setTaskStatus(taskText.openNotificationSettingsFailed);
     }
   }
 
@@ -1168,6 +1217,30 @@ export function App() {
     }
   }
 
+  async function handleRefreshSystemInstallDetection(item: InboxItem | null) {
+    if (!item || !shouldShowSystemInstallDetectionAction(item)) {
+      clearTaskProgress();
+      setTaskStatus(taskText.noInstallPathAvailable);
+      return;
+    }
+
+    clearTaskProgress();
+    setBusy(true);
+    setError(null);
+    setTaskStatus(taskText.detectingSystemInstall(item.name));
+    try {
+      const data = await adoptSystemInstall(item.id);
+      applyLifecycleDashboard(data, item.id);
+      setTaskStatus(taskText.detectedSystemInstall(item.name));
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setError(message);
+      setTaskStatus(taskText.systemInstallDetectionFailed);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleOpenInstallRoot() {
     if (!displayInstallRoot) {
       clearTaskProgress();
@@ -1495,6 +1568,9 @@ export function App() {
                   onOpenInstallerFolder={() => {
                     void handleOpenInstallerFolder(selected);
                   }}
+                  onRefreshSystemInstallDetection={() => {
+                    void handleRefreshSystemInstallDetection(selected);
+                  }}
                   onOpenApp={() => {
                     void handleOpenApp(selected);
                   }}
@@ -1685,6 +1761,49 @@ export function App() {
                       </label>
                     </div>
                     <small>{ui.backgroundCheckHelp} {ui.checkIntervalHelp}</small>
+                  </div>
+
+                  <div className="fieldRow compoundSettingRow">
+                    <div className="compoundSettingHeader">
+                      <span>{ui.autostart}</span>
+                      <label className="toggleRow">
+                        <input
+                          type="checkbox"
+                          checked={configDraft.autostartEnabled}
+                          onChange={(event) => setConfigDraft((current) => ({ ...current, autostartEnabled: event.target.checked }))}
+                        />
+                        <span>{configDraft.autostartEnabled ? ui.autostartEnabled : ui.autostartDisabled}</span>
+                      </label>
+                    </div>
+                    <small>{ui.autostartHelp}</small>
+                  </div>
+
+                  <div className="fieldRow">
+                    <span>{ui.notificationPermission}</span>
+                    <span className="statePill subtle">{notificationPermissionLabel(notificationPermission, language)}</span>
+                    <div className="fieldActions">
+                      {shouldShowNotificationPermissionRequest(notificationPermission) ? (
+                        <TooltipButton
+                          label={ui.requestNotificationPermission}
+                          onClick={() => void handleRequestNotificationPermission()}
+                          className="ghostButton fieldActionButton"
+                        >
+                          <CheckCircle2 size={16} />
+                          <span>{ui.requestNotificationPermission}</span>
+                        </TooltipButton>
+                      ) : null}
+                      {shouldShowNotificationSettingsAction(notificationPermission) ? (
+                        <TooltipButton
+                          label={ui.openNotificationSettings}
+                          onClick={() => void handleOpenNotificationSettings()}
+                          className="ghostButton fieldActionButton"
+                        >
+                          <Settings2 size={16} />
+                          <span>{ui.openNotificationSettings}</span>
+                        </TooltipButton>
+                      ) : null}
+                    </div>
+                    <small>{ui.notificationPermissionHelp}</small>
                   </div>
 
                   <div className="fieldRow compoundSettingRow">
@@ -1880,6 +1999,7 @@ function Inspector({
   onOpenApp,
   onOpenInstallPath,
   onOpenInstallerFolder,
+  onRefreshSystemInstallDetection,
   onOpenRelease,
   onCopyReleaseNote,
   onCopyValue,
@@ -1911,6 +2031,7 @@ function Inspector({
   onOpenApp: () => void;
   onOpenInstallPath: () => void;
   onOpenInstallerFolder: () => void;
+  onRefreshSystemInstallDetection: () => void;
   onOpenRelease: () => void;
   onCopyReleaseNote: (note?: string) => void;
   onCopyValue: (label: string, value: string) => void;
@@ -1984,11 +2105,13 @@ function Inspector({
   const showOpenReleaseSecondary = shouldShowOpenReleaseSecondary(item, language);
   const showInstallLocationSecondary = shouldShowInstallLocationSecondary(item);
   const showInstallerFolderSecondary = shouldShowInstallerFolderSecondary(item);
+  const showSystemInstallDetectionSecondary = shouldShowSystemInstallDetectionAction(item);
   const showSecondaryInspectorActions =
     showOpenAppSecondary
     || showOpenReleaseSecondary
     || showInstallLocationSecondary
-    || showInstallerFolderSecondary;
+    || showInstallerFolderSecondary
+    || showSystemInstallDetectionSecondary;
   const pendingInstallSafetyText = pendingInstall
     ? [
         pendingInstall.integrity.checksumAssetName ?? ui.installPreviewNoChecksumHint,
@@ -2055,6 +2178,16 @@ function Inspector({
             >
               <FolderOpen size={16} />
               <span>{ui.openInstallerFolder}</span>
+            </button>
+          ) : null}
+          {showSystemInstallDetectionSecondary ? (
+            <button
+              type="button"
+              className="ghostButton actionButton inspectorSecondaryAction"
+              onClick={onRefreshSystemInstallDetection}
+            >
+              <RefreshCw size={16} />
+              <span>{ui.refreshSystemInstallDetection}</span>
             </button>
           ) : null}
           {showOpenReleaseSecondary ? (
@@ -2663,6 +2796,22 @@ function statusLabel(status: InboxItem["status"], language: Language) {
   }
 }
 
+function notificationPermissionLabel(permission: string, language: Language) {
+  const ui = createUiText(language);
+  switch (permission.toLowerCase()) {
+    case "granted":
+      return ui.notificationPermissionGranted;
+    case "denied":
+      return ui.notificationPermissionDenied;
+    case "prompt":
+    case "default":
+    case "unknown":
+      return ui.notificationPermissionPrompt;
+    default:
+      return ui.notificationPermissionPrompt;
+  }
+}
+
 function configDraftKey(config: ConfigDraft) {
   return JSON.stringify({
     githubToken: config.githubToken.trim(),
@@ -2673,7 +2822,8 @@ function configDraftKey(config: ConfigDraft) {
     backgroundCheckEnabled: config.backgroundCheckEnabled,
     checkIntervalMinutes: config.checkIntervalMinutes,
     downloadAccelerationEnabled: config.downloadAccelerationEnabled,
-    downloadMaxConnections: clampDownloadMaxConnections(config.downloadMaxConnections)
+    downloadMaxConnections: clampDownloadMaxConnections(config.downloadMaxConnections),
+    autostartEnabled: config.autostartEnabled
   });
 }
 
@@ -2688,7 +2838,8 @@ function desktopConfigFromDraft(config: ConfigDraft): DesktopConfig {
     backgroundCheckEnabled: config.backgroundCheckEnabled,
     checkIntervalMinutes: config.checkIntervalMinutes,
     downloadAccelerationEnabled: config.downloadAccelerationEnabled,
-    downloadMaxConnections: clampDownloadMaxConnections(config.downloadMaxConnections)
+    downloadMaxConnections: clampDownloadMaxConnections(config.downloadMaxConnections),
+    autostartEnabled: config.autostartEnabled
   };
 }
 
