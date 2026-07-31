@@ -30,6 +30,7 @@ import {
   listReleaseVersions,
   loadConfig,
   loadDashboard,
+  loadLocalDashboard,
   notificationPermissionState,
   openApp,
   openInstallerFolder,
@@ -57,6 +58,8 @@ import {
   resolveBackgroundUpdateCountAfterDashboardRefresh,
   getNetworkConfigKey,
   shouldRunAutoConnectivityCheck,
+  shouldLoadRemoteDashboard,
+  shouldLoadReleaseVersions,
   buildStatusDockPresentation,
   buildUpdateInbox,
   getConfirmInstallAvailability,
@@ -102,6 +105,7 @@ import {
   shouldShowSystemInstallDetectionAction,
   toggleSelection,
   type ConnectivityTestViewState,
+  type GithubConnectivityResultLike,
   type InboxFilter,
   type InboxItem,
   type ManagedApp
@@ -192,6 +196,7 @@ export function App() {
   const [configLoaded, setConfigLoaded] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
   const [connectivityTesting, setConnectivityTesting] = useState(false);
+  const [remoteDashboardReady, setRemoteDashboardReady] = useState(false);
   const [connectivityTest, setConnectivityTest] = useState<ConnectivityTestViewState>({ status: "idle" });
   const [notificationPermission, setNotificationPermission] = useState("prompt");
   const [networkFieldsAttention, setNetworkFieldsAttention] = useState(false);
@@ -301,7 +306,7 @@ export function App() {
     setReleaseVersions([]);
     const initialSelection = resolveLifecycleSelection(selected, []);
     setSelectedVersion(initialSelection.selectedVersion);
-    if (!selected?.id) {
+    if (!selected?.id || !shouldLoadReleaseVersions(remoteDashboardReady, selected.status)) {
       return;
     }
 
@@ -333,7 +338,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [selected?.id]);
+  }, [selected?.id, selected?.status, remoteDashboardReady]);
 
   useEffect(() => {
     const nextSelection = resolveLifecycleSelection(
@@ -521,7 +526,26 @@ export function App() {
     setTaskProgress(null);
   }
 
-  async function refreshDashboard(statusLanguage: Language = languageRef.current) {
+  async function refreshLocalDashboard(statusLanguage: Language = languageRef.current) {
+    try {
+      const data = await loadLocalDashboard();
+      dashboardOrder.current = new Map(data.map((app, index) => [app.id, index]));
+      setApps(data);
+      setRemoteDashboardReady(false);
+      setSelectedId((current) => (current && data.some((item) => item.id === current) ? current : data[0]?.id ?? null));
+      setLoading(false);
+      const statusText = createTaskStatusText(statusLanguage);
+      setTaskStatus(statusText.currentStatusLocal(data.length));
+      return true;
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setError(message);
+      setTaskStatus(createTaskStatusText(statusLanguage).refreshFailed);
+      return false;
+    }
+  }
+
+  async function refreshRemoteDashboard(statusLanguage: Language = languageRef.current) {
     const statusText = createTaskStatusText(statusLanguage);
     clearTaskProgress();
     const refreshId = dashboardRefreshId.current + 1;
@@ -538,6 +562,7 @@ export function App() {
       }
       dashboardOrder.current = new Map(data.map((app, index) => [app.id, index]));
       setApps(data);
+      setRemoteDashboardReady(true);
       setBackgroundUpdateCount(resolveBackgroundUpdateCountAfterDashboardRefresh);
       setSelectedId((current) => (current && data.some((item) => item.id === current) ? current : data[0]?.id ?? null));
       setTaskStatus(data.length > 0 ? statusText.loadedApps(data.length) : statusText.noApps);
@@ -546,6 +571,7 @@ export function App() {
         return;
       }
       const message = caught instanceof Error ? caught.message : String(caught);
+      setRemoteDashboardReady(false);
       setError(message);
       setTaskStatus(statusText.refreshFailed);
     } finally {
@@ -553,6 +579,15 @@ export function App() {
         setLoading(false);
       }
     }
+  }
+
+  async function refreshDashboard(statusLanguage: Language = languageRef.current) {
+    const connectivity = await runGithubConnectivityCheck(configDraft, "manual");
+    if (!shouldLoadRemoteDashboard(connectivity)) {
+      await refreshLocalDashboard(statusLanguage);
+      return;
+    }
+    await refreshRemoteDashboard(statusLanguage);
   }
 
   async function refreshConfig() {
@@ -591,11 +626,19 @@ export function App() {
 
   async function refreshWorkspace() {
     const draft = await refreshConfig();
-    if (draft && shouldRunAutoConnectivityCheck(draft, lastAutoConnectivityKey.current)) {
-      lastAutoConnectivityKey.current = getNetworkConfigKey(draft);
-      void runGithubConnectivityCheck(draft, "auto");
+    const statusLanguage = draft?.language ?? languageRef.current;
+    await refreshLocalDashboard(statusLanguage);
+    if (!draft) {
+      return;
     }
-    await refreshDashboard(draft?.language ?? languageRef.current);
+    if (shouldRunAutoConnectivityCheck(draft, lastAutoConnectivityKey.current)) {
+      lastAutoConnectivityKey.current = getNetworkConfigKey(draft);
+      const connectivity = await runGithubConnectivityCheck(draft, "auto");
+      if (!shouldLoadRemoteDashboard(connectivity)) {
+        return;
+      }
+    }
+    await refreshRemoteDashboard(statusLanguage);
   }
 
   async function handleAddRepo() {
@@ -1296,7 +1339,10 @@ export function App() {
     }, 0);
   }
 
-  async function runGithubConnectivityCheck(draft: ConfigDraft, mode: "auto" | "manual") {
+  async function runGithubConnectivityCheck(
+    draft: ConfigDraft,
+    mode: "auto" | "manual"
+  ): Promise<GithubConnectivityResultLike | null> {
     const testedConfigKey = getNetworkConfigKey(draft);
     const checkId = connectivityCheckId.current + 1;
     connectivityCheckId.current = checkId;
@@ -1312,19 +1358,20 @@ export function App() {
     try {
       const result = await testGithubConnectivity(desktopConfigFromDraft(draft));
       if (connectivityCheckId.current !== checkId) {
-        return;
+        return null;
       }
       if (currentNetworkConfigKey.current !== testedConfigKey) {
         setConnectivityTest({ status: "stale", configKey: testedConfigKey });
-        return;
+        return null;
       }
       setConnectivityTest(buildConnectivityTestViewState(result, draft));
       if (mode === "manual") {
         setTaskStatus(result.ok ? taskText.githubConnectivitySucceeded : taskText.githubConnectivityFailed);
       }
+      return result;
     } catch (caught) {
       if (connectivityCheckId.current !== checkId) {
-        return;
+        return null;
       }
       const message = caught instanceof Error ? caught.message : String(caught);
       setConnectivityTest({ status: "failed", message, problem: "unknown", configKey: testedConfigKey });
@@ -1332,6 +1379,11 @@ export function App() {
         setError(message);
         setTaskStatus(taskText.githubConnectivityFailed);
       }
+      return {
+        ok: false,
+        message,
+        problem: "unknown"
+      };
     } finally {
       if (mode === "manual") {
         setConnectivityTesting(false);
@@ -1405,7 +1457,7 @@ export function App() {
                     </span>
                   ) : null}
                 </div>
-                <TooltipButton label={ui.checkUpdates} onClick={() => void refreshDashboard()} disabled={busy || loading} className="ghostButton topbarButton">
+                <TooltipButton label={ui.checkUpdates} onClick={() => void refreshDashboard()} disabled={busy || loading || connectivityTesting} className="ghostButton topbarButton">
                   <RefreshCw size={17} />
                   <span>{ui.checkUpdates}</span>
                 </TooltipButton>

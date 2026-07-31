@@ -150,6 +150,11 @@ describe("createTaskStatusText", () => {
     expect(zh.stage.restoringRollback).toBe("恢复回滚快照");
   });
 
+  it("provides a distinct local dashboard fallback status", () => {
+    expect(createUiText("en").currentStatusLocal(2)).toBe("Showing 2 local records");
+    expect(createUiText("zh-CN").currentStatusLocal(2)).toBe("正在显示 2 条本地记录");
+  });
+
   it("provides release lifecycle controls and preview copy", () => {
     const zh = createUiText("zh-CN");
     const en = createUiText("en");

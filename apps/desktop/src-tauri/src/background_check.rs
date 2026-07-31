@@ -85,6 +85,8 @@ pub fn spawn_background_checker(app: AppHandle, interval_minutes: u64) -> JoinHa
         let interval = Duration::from_secs(interval_minutes * 60);
         let mut last_notified_update_count: Option<usize> = None;
         loop {
+            // 首次启动先让前台 dashboard 完成自己的连接检查，避免同一时间重复请求 GitHub。
+            tokio::time::sleep(interval).await;
             match run_background_check().await {
                 Ok(result) => {
                     let _ = app.emit(BACKGROUND_CHECK_EVENT, &result);
@@ -108,7 +110,6 @@ pub fn spawn_background_checker(app: AppHandle, interval_minutes: u64) -> JoinHa
                     let _ = app.emit(BACKGROUND_CHECK_EVENT, &result);
                 }
             }
-            tokio::time::sleep(interval).await;
         }
     })
 }
@@ -218,7 +219,12 @@ fn notify_updates(app: &AppHandle, count: usize, language: Language) {
         }
         Language::ZhCn => format!("{count} 个软件有可用更新"),
     };
-    let _ = app.notification().builder().title(&title).body(&body).show();
+    let _ = app
+        .notification()
+        .builder()
+        .title(&title)
+        .body(&body)
+        .show();
 }
 
 fn runtime_config() -> Result<Config> {
@@ -241,6 +247,22 @@ fn release_client(runtime_config: Option<&Config>) -> Result<ReleaseClient> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn background_checker_waits_for_interval_before_first_request() {
+        let source = include_str!("background_check.rs");
+        let first_check = source
+            .find("match run_background_check().await")
+            .expect("background checker should run its check in the loop");
+        let first_sleep = source
+            .find("tokio::time::sleep(interval).await")
+            .expect("background checker should wait before its first check");
+
+        assert!(
+            first_sleep < first_check,
+            "the initial background check must not compete with the foreground dashboard load"
+        );
+    }
 
     #[test]
     fn has_update_returns_false_when_versions_match() {

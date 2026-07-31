@@ -50,6 +50,8 @@ import {
   shouldShowNotificationPermissionRequest,
   shouldShowNotificationSettingsAction,
   shouldShowSystemInstallDetectionAction,
+  shouldLoadRemoteDashboard,
+  shouldLoadReleaseVersions,
   systemPackageManagerLabel,
   taskActionLabel,
   taskStageLabel,
@@ -63,6 +65,20 @@ import {
 } from "./appModel";
 
 const language: Language = "en";
+
+describe("startup release loading", () => {
+  it("only loads the remote dashboard after a successful connectivity check", () => {
+    expect(shouldLoadRemoteDashboard({ ok: true, message: "ok", problem: "none" })).toBe(true);
+    expect(shouldLoadRemoteDashboard({ ok: false, message: "offline", problem: "network" })).toBe(false);
+    expect(shouldLoadRemoteDashboard(null)).toBe(false);
+  });
+
+  it("does not request versions for local fallback or failed dashboard rows", () => {
+    expect(shouldLoadReleaseVersions(true, "current")).toBe(true);
+    expect(shouldLoadReleaseVersions(false, "current")).toBe(false);
+    expect(shouldLoadReleaseVersions(true, "failed")).toBe(false);
+  });
+});
 
 describe("release lifecycle inspector state", () => {
   const managed = {

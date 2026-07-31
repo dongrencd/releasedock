@@ -206,6 +206,14 @@ export type GithubConnectivityResultLike = {
   usedProxy?: boolean;
 };
 
+export function shouldLoadRemoteDashboard(result: GithubConnectivityResultLike | null): boolean {
+  return result?.ok === true;
+}
+
+export function shouldLoadReleaseVersions(remoteDashboardReady: boolean, status?: AppStatus): boolean {
+  return remoteDashboardReady && status !== undefined && status !== "failed";
+}
+
 export type ConnectivityTestStatus = {
   label: string;
   detail: string;

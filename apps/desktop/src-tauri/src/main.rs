@@ -271,6 +271,7 @@ async fn main() -> Result<()> {
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             load_dashboard,
+            load_local_dashboard,
             load_config,
             save_config,
             notification_permission_state,
@@ -418,6 +419,14 @@ async fn load_dashboard(
     build_dashboard(&app, refresh_id)
         .await
         .map_err(format_error)
+}
+
+#[tauri::command]
+async fn load_local_dashboard() -> Result<Vec<ManagedAppView>, String> {
+    let language = runtime_config()
+        .map(|config| ui_language(&config))
+        .unwrap_or(Language::En);
+    build_local_dashboard(language).map_err(format_error)
 }
 
 #[tauri::command]
@@ -759,6 +768,59 @@ async fn build_dashboard(app: &tauri::AppHandle, refresh_id: u64) -> Result<Vec<
         .into_iter()
         .map(|item| item.expect("dashboard item should be populated"))
         .collect())
+}
+
+fn build_local_dashboard(language: Language) -> Result<Vec<ManagedAppView>> {
+    let store = ManifestStore::default()?;
+    let tracked_store = TrackedRepoStore::default()?;
+    tracked_store.seed_if_missing(&[DEFAULT_TRACKED_REPO_ID])?;
+    let tracked_repos = tracked_store.load()?;
+    let manifest = store.load()?;
+    let installed_ids: HashSet<String> = manifest.apps.iter().map(|app| app.id.clone()).collect();
+    let recent_activities = group_recent_activities(&manifest.lifecycle_events);
+    let work_items = build_dashboard_work_items(manifest.apps, tracked_repos, installed_ids);
+    let reason = tr_owned(
+        language,
+        "GitHub release data is unavailable. Fix the connection settings and retry.",
+        "GitHub release 数据暂时不可用，请修复连接设置后重试。",
+    );
+
+    Ok(build_local_dashboard_views(
+        work_items,
+        language,
+        &reason,
+        &recent_activities,
+    ))
+}
+
+fn build_local_dashboard_views(
+    work_items: Vec<DashboardWorkItem>,
+    language: Language,
+    reason: &str,
+    recent_activities: &HashMap<String, Vec<LifecycleEvent>>,
+) -> Vec<ManagedAppView> {
+    work_items
+        .into_iter()
+        .map(|work_item| {
+            let item = match work_item {
+                DashboardWorkItem::Installed { app, repo, .. } => {
+                    build_failed_installed_view(app, repo, Some(reason.to_string()), language)
+                }
+                DashboardWorkItem::Tracked { repo, .. } => {
+                    let mut view = build_failed_view(
+                        repo.id(),
+                        repo.name.clone(),
+                        Some(repo.github_url()),
+                        Some(reason.to_string()),
+                        language,
+                    );
+                    view.current_version = tr_owned(language, "Not installed", "未安装");
+                    view
+                }
+            };
+            attach_recent_activity(item, recent_activities)
+        })
+        .collect()
 }
 
 fn spawn_dashboard_task(
@@ -2156,10 +2218,11 @@ mod tests {
     };
 
     use super::{
-        InstallPlanView, RollbackPreview, build_plan_from_releases, classify_connectivity_problem,
-        ensure_install_preview_matches, load_release_catalog_with, management_kind_for_app,
-        preview_install, release_catalog_complete_for_selection, release_versions_from_catalog,
-        render_app, resolve_installer_folder_target, resolve_open_install_location_target,
+        InstallPlanView, RollbackPreview, build_dashboard_work_items, build_local_dashboard_views,
+        build_plan_from_releases, classify_connectivity_problem, ensure_install_preview_matches,
+        load_release_catalog_with, management_kind_for_app, preview_install,
+        release_catalog_complete_for_selection, release_versions_from_catalog, render_app,
+        resolve_installer_folder_target, resolve_open_install_location_target,
         rollback_guard_from_preview, sanitize_connectivity_message, select_tracked_release,
         validate_github_url,
     };
@@ -2254,8 +2317,48 @@ mod tests {
             "notification permission request and settings commands should be exposed to the frontend"
         );
         assert!(
+            handlers.contains("load_local_dashboard"),
+            "startup should expose a local-only dashboard fallback"
+        );
+        assert!(
             source.contains("ms-settings:notifications"),
             "Windows notification settings should open the OS notification settings page"
+        );
+    }
+
+    #[test]
+    fn local_dashboard_keeps_manifest_and_tracking_records_without_release_data() {
+        let installed = InstalledApp::new(
+            "owner/installed",
+            "Installed",
+            "v1.2.3",
+            "installed.AppImage",
+            PathBuf::from("/managed/installed.AppImage"),
+        );
+        let work_items = build_dashboard_work_items(
+            vec![installed],
+            vec![super::TrackedRepo {
+                repo_id: "owner/tracked".to_string(),
+            }],
+            ["owner/installed".to_string()].into_iter().collect(),
+        );
+
+        let views = build_local_dashboard_views(
+            work_items,
+            Language::ZhCn,
+            "GitHub 暂时不可用，请修复连接后重试。",
+            &std::collections::HashMap::new(),
+        );
+
+        assert_eq!(views.len(), 2);
+        assert_eq!(views[0].id, "owner/installed");
+        assert_eq!(views[0].current_version, "v1.2.3");
+        assert!(matches!(views[0].status, super::AppStatus::Failed));
+        assert_eq!(views[1].id, "owner/tracked");
+        assert_eq!(views[1].current_version, "未安装");
+        assert_eq!(
+            views[1].release_note.as_deref(),
+            Some("GitHub 暂时不可用，请修复连接后重试。")
         );
     }
 

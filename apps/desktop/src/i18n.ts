@@ -191,6 +191,7 @@ type Copy = {
   trayBadge: (count: number) => string;
   currentStatusLoading: string;
   currentStatusLoaded: (count: number) => string;
+  currentStatusLocal: (count: number) => string;
   currentStatusEmpty: string;
   addRepoSuccess: (repo: string) => string;
   addRepoFailed: string;
@@ -470,6 +471,7 @@ const copy: Record<Language, Copy> = {
     trayBadge: (count) => `${count} updates available`,
     currentStatusLoading: "Loading GitHub Release data",
     currentStatusLoaded: (count) => `Loaded ${count} apps`,
+    currentStatusLocal: (count) => `Showing ${count} local records`,
     currentStatusEmpty: "No managed apps yet",
     addRepoSuccess: (repo) => `Added ${repo}`,
     addRepoFailed: "Add repository failed",
@@ -749,6 +751,7 @@ const copy: Record<Language, Copy> = {
     trayBadge: (count) => `${count} 个有更新`,
     currentStatusLoading: "正在加载 GitHub Release 数据",
     currentStatusLoaded: (count) => `已加载 ${count} 个软件`,
+    currentStatusLocal: (count) => `正在显示 ${count} 条本地记录`,
     currentStatusEmpty: "当前没有管理的软件",
     addRepoSuccess: (repo) => `已添加 ${repo}`,
     addRepoFailed: "添加失败",
@@ -877,6 +880,7 @@ export function createTaskStatusText(language: Language) {
   const ui = createUiText(language);
   return {
     loadingDashboard: ui.loadingDashboard,
+    currentStatusLocal: ui.currentStatusLocal,
     checkingLatestRelease: localizedText(language, "Checking latest release", "正在检查最新 release"),
     checkingLatestReleaseProgress: (completed: number, total: number) =>
       localizedTemplate(

@@ -45,6 +45,8 @@ The desktop app is a compact update workbench built with Tauri 2 and React.
 
 Public repositories work without a token. Private repositories and frequent refreshes should use a GitHub token. The proxy setting applies to GitHub API queries and Release asset downloads.
 
+On first startup, ReleaseDock shows local manifest and tracked-repository records before contacting GitHub. It performs one connection check and only loads release data when that check succeeds. Network, proxy, rate-limit, or token failures keep the local records visible and can be recovered through the existing network settings and Check updates actions instead of repeatedly refreshing the release list.
+
 ## CLI
 
 The CLI uses the same Rust core as the desktop app.

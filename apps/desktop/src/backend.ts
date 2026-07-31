@@ -133,6 +133,10 @@ export async function loadDashboard(refreshId: number): Promise<ManagedApp[]> {
   return invoke<ManagedApp[]>("load_dashboard", { refreshId });
 }
 
+export async function loadLocalDashboard(): Promise<ManagedApp[]> {
+  return invoke<ManagedApp[]>("load_local_dashboard");
+}
+
 export async function loadConfig(): Promise<DesktopConfig> {
   return invoke<DesktopConfig>("load_config");
 }

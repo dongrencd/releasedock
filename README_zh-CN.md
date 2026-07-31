@@ -45,6 +45,8 @@ ReleaseDock 不是系统包管理器的替代品。如果项目已经通过 `win
 
 公开仓库不需要 Token。私有仓库或频繁刷新建议配置 GitHub Token。代理设置会作用于 GitHub API 查询和 Release 资产下载。
 
+首次打开时，ReleaseDock 会先显示本地 manifest 和已跟踪仓库记录，再联系 GitHub。只有连接检查成功后才会加载 Release 数据；网络、代理、限流或 Token 问题会保留本地记录，并通过现有网络设置和“检查更新”入口恢复，不会反复刷新 Release 列表。
+
 ## 命令行
 
 CLI 和桌面版共用同一套 Rust core 逻辑。
