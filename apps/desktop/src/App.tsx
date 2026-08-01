@@ -45,6 +45,7 @@ import {
   requestNotificationPermission,
   removeTrackedRepo,
   saveConfig,
+  searchGithubRepos,
   setReleaseIgnored,
   setReleasePin,
   testGithubConnectivity,
@@ -99,6 +100,7 @@ import {
   resolveLifecycleSelection,
   resolveVersionSelectionAfterLoadFailure,
   selectVisibleIds,
+  sortDiscoveryResults,
   systemPackageManagerLabel,
   shouldShowLifecyclePreviewAction,
   shouldShowInstallLocationAction,
@@ -111,6 +113,7 @@ import {
   shouldShowSystemInstallDetectionAction,
   toggleSelection,
   type ConnectivityTestViewState,
+  type DiscoveryResult,
   type GithubConnectivityResultLike,
   type InboxFilter,
   type InboxItem,
@@ -169,6 +172,9 @@ export function App() {
   const [filter, setFilter] = useState<InboxFilter>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [repoInput, setRepoInput] = useState("");
+  const [discoveryResults, setDiscoveryResults] = useState<DiscoveryResult[]>([]);
+  const [discoveryLoading, setDiscoveryLoading] = useState(false);
+  const [discoverySearched, setDiscoverySearched] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -740,6 +746,8 @@ export function App() {
       setApps(data);
       setSelectedId(normalizeRepoId(trimmed));
       setRepoInput("");
+      setDiscoveryResults([]);
+      setDiscoverySearched(false);
       setTaskStatus(taskText.addedRepo(trimmed));
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
@@ -747,6 +755,57 @@ export function App() {
       setTaskStatus(taskText.addRepoFailed);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function handleAddDiscoveredRepo(repoId: string) {
+    clearTaskProgress();
+    setBusy(true);
+    setError(null);
+    setPendingInstall(null);
+    setTaskStatus(taskText.addingRepo(repoId));
+    try {
+      const data = await addRepo(repoId);
+      setApps(data);
+      setSelectedId(repoId);
+      setRepoInput("");
+      setDiscoveryResults([]);
+      setDiscoverySearched(false);
+      setTaskStatus(taskText.addedRepo(repoId));
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setError(message);
+      setTaskStatus(taskText.addRepoFailed);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleSearchGitHubRepos() {
+    const trimmed = repoInput.trim();
+    if (!trimmed) {
+      clearTaskProgress();
+      setError(taskText.enterRepo);
+      setTaskStatus(taskText.addRepoFailed);
+      return;
+    }
+
+    clearTaskProgress();
+    setDiscoveryLoading(true);
+    setError(null);
+    setTaskStatus(taskText.checkingLatestRelease);
+    try {
+      const results = await searchGithubRepos(trimmed);
+      const sorted = sortDiscoveryResults(results);
+      setDiscoveryResults(sorted);
+      setDiscoverySearched(true);
+      setTaskStatus(sorted.length > 0 ? taskText.loadedApps(sorted.length) : taskText.noApps);
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setError(message);
+      setTaskStatus(taskText.refreshFailed);
+    } finally {
+      setDiscoveryLoading(false);
     }
   }
 
@@ -1597,9 +1656,61 @@ export function App() {
                         <Plus size={17} />
                         <span>{ui.addRepoButton}</span>
                       </TooltipButton>
+                      <TooltipButton
+                        label={ui.searchGitHub}
+                        onClick={() => void handleSearchGitHubRepos()}
+                        disabled={busy || discoveryLoading}
+                        className="ghostButton addRepoButton"
+                      >
+                        <Search size={17} />
+                        <span>{ui.searchGitHub}</span>
+                      </TooltipButton>
                     </div>
                   </div>
                 </div>
+
+                {discoveryLoading || discoverySearched || discoveryResults.length > 0 ? (
+                  <div className="discoveryPanel" aria-label={ui.discoveryTitle}>
+                    <div className="discoveryHeader">
+                      <strong>{ui.discoveryTitle}</strong>
+                      {discoveryLoading ? <span className="statePill subtle">{ui.loadingVersions}</span> : null}
+                    </div>
+                    {discoveryResults.length === 0 && !discoveryLoading ? (
+                      <p className="mutedText">{ui.discoveryEmpty}</p>
+                    ) : (
+                      <div className="discoveryList">
+                        {discoveryResults.map((result) => (
+                          <div key={result.repoId} className="discoveryItem">
+                            <div className="discoveryItemMain">
+                              <strong>{result.repoId}</strong>
+                              <span>{result.description || result.htmlUrl}</span>
+                              <div className="discoveryMeta">
+                                <span>{ui.discoveryStars(result.stars)}</span>
+                                <span>{result.latestTag || ui.discoveryNoRelease}</span>
+                                <span className={result.hasInstallableAsset ? "statePill success" : "statePill"}>
+                                  {result.hasInstallableAsset
+                                    ? `${ui.discoveryInstallable}: ${result.installableAssetName}`
+                                    : result.latestTag
+                                      ? ui.discoveryNoInstallableAsset
+                                      : ui.discoveryNoRelease}
+                                </span>
+                              </div>
+                            </div>
+                            <TooltipButton
+                              label={ui.addRepoButton}
+                              onClick={() => void handleAddDiscoveredRepo(result.repoId)}
+                              disabled={busy}
+                              className="primaryButton actionButton discoveryAddAction"
+                            >
+                              <Plus size={16} />
+                              <span>{ui.addRepoButton}</span>
+                            </TooltipButton>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
 
                 <div className="listTools">
                   <div className="listToolsPrimary">

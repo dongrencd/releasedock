@@ -22,6 +22,13 @@ type Copy = {
   addRepoTitle: string;
   addRepoPlaceholder: string;
   addRepoButton: string;
+  searchGitHub: string;
+  discoveryTitle: string;
+  discoveryEmpty: string;
+  discoveryInstallable: string;
+  discoveryNoInstallableAsset: string;
+  discoveryNoRelease: string;
+  discoveryStars: (count: number) => string;
   searchPlaceholder: string;
   filterPrefix: string;
   all: string;
@@ -308,6 +315,13 @@ const copy: Record<Language, Copy> = {
     addRepoTitle: "Enter owner/repo or GitHub URL",
     addRepoPlaceholder: "owner/repo",
     addRepoButton: "Add repository",
+    searchGitHub: "Search GitHub",
+    discoveryTitle: "GitHub candidates",
+    discoveryEmpty: "No matching GitHub repositories found.",
+    discoveryInstallable: "Installable asset",
+    discoveryNoInstallableAsset: "No current-platform asset",
+    discoveryNoRelease: "No published release",
+    discoveryStars: (count) => `${count} stars`,
     searchPlaceholder: "Search apps, repos, versions",
     filterPrefix: "Filter:",
     all: "All",
@@ -597,6 +611,13 @@ const copy: Record<Language, Copy> = {
     addRepoTitle: "输入 owner/repo 或 GitHub URL",
     addRepoPlaceholder: "owner/repo",
     addRepoButton: "添加仓库",
+    searchGitHub: "搜索 GitHub",
+    discoveryTitle: "GitHub 候选仓库",
+    discoveryEmpty: "没有找到匹配的 GitHub 仓库。",
+    discoveryInstallable: "有可安装资产",
+    discoveryNoInstallableAsset: "无当前平台资产",
+    discoveryNoRelease: "没有已发布 release",
+    discoveryStars: (count) => `${count} stars`,
     searchPlaceholder: "搜索软件、仓库、版本",
     filterPrefix: "筛选：",
     all: "全部",

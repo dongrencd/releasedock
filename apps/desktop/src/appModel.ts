@@ -206,6 +206,18 @@ export type GithubConnectivityResultLike = {
   usedProxy?: boolean;
 };
 
+export type DiscoveryResult = {
+  repoId: string;
+  name: string;
+  description?: string | null;
+  stars: number;
+  latestTag?: string | null;
+  latestReleaseName?: string | null;
+  hasInstallableAsset: boolean;
+  installableAssetName?: string | null;
+  htmlUrl: string;
+};
+
 export function shouldLoadRemoteDashboard(result: GithubConnectivityResultLike | null): boolean {
   return result?.ok === true;
 }
@@ -239,6 +251,13 @@ export function buildReleaseVersionsFailurePresentation(
     retryLabel: ui.action.retry,
     settingsLabel: ui.openNetworkSettings
   };
+}
+
+export function sortDiscoveryResults(results: DiscoveryResult[]): DiscoveryResult[] {
+  return [...results].sort((left, right) => {
+    const installableRank = Number(right.hasInstallableAsset) - Number(left.hasInstallableAsset);
+    return installableRank || right.stars - left.stars || left.repoId.localeCompare(right.repoId);
+  });
 }
 
 export type ConnectivityTestStatus = {

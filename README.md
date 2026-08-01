@@ -10,6 +10,7 @@ ReleaseDock is not a package manager replacement. Keep using `winget`, `scoop`, 
 
 - Tracks GitHub repositories by `owner/repo` or GitHub URL.
 - Reads release metadata, release notes, assets, publish time, and version history from GitHub.
+- Searches GitHub repositories from the add-repository workbench and pre-checks whether the latest release has an installable asset for the current platform.
 - Selects the best asset for the current OS and CPU architecture.
 - Shows an install preview before running installers or copying managed files.
 - Downloads release assets with progress, retry, `.part` resume support, and multi-connection Range acceleration for large assets when supported.

@@ -52,6 +52,45 @@ pub struct ReleaseAsset {
     pub size: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RepositorySearchResult {
+    pub repo_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    pub html_url: String,
+    pub stars: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct RepositorySearchResponse {
+    #[serde(default)]
+    items: Vec<GitHubRepositorySearchItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubRepositorySearchItem {
+    full_name: String,
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    html_url: String,
+    #[serde(default)]
+    stargazers_count: u64,
+}
+
+impl From<GitHubRepositorySearchItem> for RepositorySearchResult {
+    fn from(item: GitHubRepositorySearchItem) -> Self {
+        Self {
+            repo_id: item.full_name,
+            name: item.name,
+            description: item.description,
+            html_url: item.html_url,
+            stars: item.stargazers_count,
+        }
+    }
+}
+
 impl Release {
     pub fn fixture(tag_name: &str, assets: Vec<ReleaseAsset>) -> Self {
         Self {
@@ -297,6 +336,48 @@ impl ReleaseClient {
             .await
             .context("failed to parse GitHub release by tag response")
             .map(Some)
+    }
+
+    pub async fn search_repositories(
+        &self,
+        query: &str,
+        per_page: u32,
+    ) -> Result<Vec<RepositorySearchResult>> {
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut url = self.api_base_url.clone();
+        {
+            let mut segments = url
+                .path_segments_mut()
+                .map_err(|_| anyhow::anyhow!("GitHub API base URL cannot contain path segments"))?;
+            segments.pop_if_empty();
+            segments.extend(["search", "repositories"]);
+        }
+        url.query_pairs_mut()
+            .append_pair("q", trimmed)
+            .append_pair("per_page", &per_page.clamp(1, 10).to_string());
+
+        let response = self
+            .client
+            .get(url)
+            .timeout(self.api_timeout)
+            .send()
+            .await
+            .context("failed to request GitHub repository search")?;
+
+        if !response.status().is_success() {
+            let error = github_response_error("GitHub repository search", response).await;
+            anyhow::bail!(error);
+        }
+
+        let response = response
+            .json::<RepositorySearchResponse>()
+            .await
+            .context("failed to parse GitHub repository search response")?;
+        Ok(response.items.into_iter().map(Into::into).collect())
     }
 
     /// 轻量检查 GitHub API 是否可达；不依赖具体仓库，适合设置页验证 token/proxy。
@@ -1096,6 +1177,39 @@ mod tests {
         server.await.unwrap();
 
         assert!(!page.has_next_page);
+    }
+
+    #[tokio::test]
+    async fn searches_repositories_with_bounded_page_size() {
+        let body = r#"{
+          "items": [
+            {
+              "full_name": "owner/project",
+              "name": "project",
+              "description": "Project releases",
+              "html_url": "https://github.com/owner/project",
+              "stargazers_count": 42
+            }
+          ]
+        }"#;
+        let (addr, server) = serve_one_response("200 OK", &[], body).await;
+        let client = ReleaseClient::with_test_api_base_url(&format!("http://{addr}")).unwrap();
+
+        let results = client
+            .search_repositories("release dock", 25)
+            .await
+            .unwrap();
+        let request = server.await.unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].repo_id, "owner/project");
+        assert_eq!(results[0].name, "project");
+        assert_eq!(results[0].description.as_deref(), Some("Project releases"));
+        assert_eq!(results[0].html_url, "https://github.com/owner/project");
+        assert_eq!(results[0].stars, 42);
+        assert!(
+            request.starts_with("GET /search/repositories?q=release+dock&per_page=10 HTTP/1.1")
+        );
     }
 
     #[tokio::test]

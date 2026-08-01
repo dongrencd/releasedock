@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ManagedApp } from "./appModel";
+import type { DiscoveryResult, ManagedApp } from "./appModel";
 
 export type ReleaseChannel = "stable" | "prerelease";
 export type ReleaseDirection = "upgrade" | "downgrade" | "reinstall" | "unknown";
@@ -168,6 +168,10 @@ export async function requestNotificationPermission(): Promise<string> {
 
 export async function addRepo(repoInput: string): Promise<ManagedApp[]> {
   return invoke<ManagedApp[]>("add_repo", { repoInput });
+}
+
+export async function searchGithubRepos(query: string): Promise<DiscoveryResult[]> {
+  return invoke<DiscoveryResult[]>("search_github_repos", { query });
 }
 
 export async function listReleaseVersions(repoInput: string): Promise<ReleaseVersion[]> {

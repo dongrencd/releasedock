@@ -873,6 +873,68 @@ h2 {
   margin: 8px 0 10px;
 }
 
+.discoveryPanel {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.discoveryHeader,
+.discoveryItem,
+.discoveryMeta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.discoveryHeader,
+.discoveryItem {
+  justify-content: space-between;
+}
+
+.discoveryList {
+  display: grid;
+  gap: 8px;
+}
+
+.discoveryItem {
+  padding: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.discoveryItemMain {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.discoveryItemMain > strong,
+.discoveryItemMain > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.discoveryItemMain > span,
+.discoveryMeta {
+  color: #475569;
+  font-size: 12px;
+}
+
+.discoveryMeta {
+  flex-wrap: wrap;
+}
+
+.discoveryAddAction {
+  flex: 0 0 auto;
+}
+
 .listToolsPrimary,
 .listToolsActions {
   display: flex;
@@ -2175,6 +2237,15 @@ h2 {
     flex-wrap: wrap;
   }
 
+  .discoveryItem {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .discoveryAddAction {
+    width: 100%;
+  }
+
   .inspectorActionsGroup.secondaryActionGroup {
     grid-template-columns: 1fr;
   }
@@ -2487,6 +2558,8 @@ html[data-theme="dark"] .intervalField > span:first-child {
 html[data-theme="dark"] .settingsForm,
 html[data-theme="dark"] .settingsCard,
 html[data-theme="dark"] .inboxPanel,
+html[data-theme="dark"] .discoveryPanel,
+html[data-theme="dark"] .discoveryItem,
 html[data-theme="dark"] .inspector,
 html[data-theme="dark"] .tableHead,
 html[data-theme="dark"] .tableRow,

@@ -35,7 +35,7 @@ use releasedock_core::{
     manifest::{
         InstallPathKind, InstalledApp, LifecycleEvent, ManifestStore, SystemPackageManager,
     },
-    release::{Release, ReleaseClient, ReleasePage},
+    release::{Release, ReleaseClient, ReleasePage, RepositorySearchResult},
     release_policy::{
         PolicyMutation, ReleaseChannel, ReleaseDirection, ReleasePolicy, ReleaseSelection,
         ReleaseSelector,
@@ -123,6 +123,20 @@ struct ManagedAppView {
 struct RollbackSnapshotView {
     version: String,
     asset_name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RepositoryDiscoveryView {
+    repo_id: String,
+    name: String,
+    description: Option<String>,
+    stars: u64,
+    latest_tag: Option<String>,
+    latest_release_name: Option<String>,
+    has_installable_asset: bool,
+    installable_asset_name: Option<String>,
+    html_url: String,
 }
 
 impl From<&releasedock_core::manifest::RollbackSnapshot> for RollbackSnapshotView {
@@ -282,6 +296,7 @@ async fn main() -> Result<()> {
             is_background_start,
             is_main_window_visible,
             add_repo,
+            search_github_repos,
             list_release_versions,
             preview_install,
             install_repo,
@@ -543,6 +558,13 @@ async fn add_repo(
     repo_input: String,
 ) -> Result<Vec<ManagedAppView>, String> {
     add_repo_to_tracking(&app, &repo_input)
+        .await
+        .map_err(format_error)
+}
+
+#[tauri::command]
+async fn search_github_repos(query: String) -> Result<Vec<RepositoryDiscoveryView>, String> {
+    search_github_repos_for_discovery(&query)
         .await
         .map_err(format_error)
 }
@@ -1302,6 +1324,68 @@ async fn add_repo_to_tracking(
     store.upsert(&repo.id())?;
 
     build_dashboard(app, 0).await
+}
+
+async fn search_github_repos_for_discovery(query: &str) -> Result<Vec<RepositoryDiscoveryView>> {
+    let runtime_config = runtime_config()?;
+    let client = release_client(Some(&runtime_config))?;
+    let matcher = AssetMatcher::current();
+    let repositories = client.search_repositories(query, 8).await?;
+    let mut views = Vec::with_capacity(repositories.len());
+
+    for repository in repositories {
+        // 发现页的主价值是给用户候选仓库；单个仓库 latest release 失败不应清空整批结果。
+        let view =
+            match build_repository_discovery_view(&client, &matcher, repository.clone()).await {
+                Ok(view) => view,
+                Err(_) => RepositoryDiscoveryView {
+                    repo_id: repository.repo_id,
+                    name: repository.name,
+                    description: repository.description,
+                    stars: repository.stars,
+                    latest_tag: None,
+                    latest_release_name: None,
+                    has_installable_asset: false,
+                    installable_asset_name: None,
+                    html_url: repository.html_url,
+                },
+            };
+        views.push(view);
+    }
+
+    Ok(views)
+}
+
+async fn build_repository_discovery_view(
+    client: &ReleaseClient,
+    matcher: &AssetMatcher,
+    repository: RepositorySearchResult,
+) -> Result<RepositoryDiscoveryView> {
+    let repo = RepoRef::parse(&repository.repo_id)?;
+    let latest_release = client.latest_release_optional(&repo).await?;
+    let (latest_tag, latest_release_name, installable_asset_name) =
+        if let Some(release) = latest_release {
+            let matched_asset = matcher.select_best(&release).ok();
+            (
+                Some(release.tag_name),
+                release.name,
+                matched_asset.map(|matched| matched.asset.name),
+            )
+        } else {
+            (None, None, None)
+        };
+
+    Ok(RepositoryDiscoveryView {
+        repo_id: repository.repo_id,
+        name: repository.name,
+        description: repository.description,
+        stars: repository.stars,
+        latest_tag,
+        latest_release_name,
+        has_installable_asset: installable_asset_name.is_some(),
+        installable_asset_name,
+        html_url: repository.html_url,
+    })
 }
 
 async fn install_repo_to_tracking(
@@ -2359,6 +2443,10 @@ mod tests {
         assert!(
             handlers.contains("load_local_dashboard"),
             "startup should expose a local-only dashboard fallback"
+        );
+        assert!(
+            handlers.contains("search_github_repos"),
+            "dashboard should expose GitHub repository discovery"
         );
         assert!(
             source.contains("ms-settings:notifications"),

@@ -5,6 +5,7 @@ import {
   buildConnectivityTestStatus,
   buildConnectivityTestViewState,
   buildReleaseVersionsFailurePresentation,
+  sortDiscoveryResults,
   buildBackgroundCheckPresentation,
   buildNetworkConfigHealth,
   resolveBackgroundUpdateCountAfterDashboardRefresh,
@@ -109,6 +110,46 @@ describe("startup release loading", () => {
       detail: "All 4 repository checks failed. Review GitHub network or token settings.",
       tone: "danger"
     });
+  });
+});
+
+describe("GitHub discovery results", () => {
+  it("prioritizes repositories with installable release assets and then stars", () => {
+    expect(sortDiscoveryResults([
+      {
+        repoId: "owner/plain",
+        name: "plain",
+        description: "No asset",
+        stars: 500,
+        latestTag: "v1.0.0",
+        latestReleaseName: "v1.0.0",
+        hasInstallableAsset: false,
+        installableAssetName: null,
+        htmlUrl: "https://github.com/owner/plain"
+      },
+      {
+        repoId: "owner/tool",
+        name: "tool",
+        description: "Tool",
+        stars: 10,
+        latestTag: "v2.0.0",
+        latestReleaseName: "v2.0.0",
+        hasInstallableAsset: true,
+        installableAssetName: "tool.exe",
+        htmlUrl: "https://github.com/owner/tool"
+      },
+      {
+        repoId: "owner/app",
+        name: "app",
+        description: "App",
+        stars: 100,
+        latestTag: "v3.0.0",
+        latestReleaseName: "v3.0.0",
+        hasInstallableAsset: true,
+        installableAssetName: "app.exe",
+        htmlUrl: "https://github.com/owner/app"
+      }
+    ]).map((result) => result.repoId)).toEqual(["owner/app", "owner/tool", "owner/plain"]);
   });
 });
 
