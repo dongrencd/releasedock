@@ -4,6 +4,7 @@ import {
   buildConfigConnectivityWarning,
   buildConnectivityTestStatus,
   buildConnectivityTestViewState,
+  buildReleaseVersionsFailurePresentation,
   buildBackgroundCheckPresentation,
   buildNetworkConfigHealth,
   resolveBackgroundUpdateCountAfterDashboardRefresh,
@@ -39,6 +40,7 @@ import {
   releaseDirectionLabel,
   shouldInitializeWorkspace,
   resolveLifecycleSelection,
+  resolveVersionSelectionAfterLoadFailure,
   resolveUninstallExecutionKind,
   getDetailPathLabel,
   isRemovableTrackedItem,
@@ -197,6 +199,28 @@ describe("release lifecycle inspector state", () => {
       latestVersion: "v3.0.0",
       releasePolicy: { channel: "prerelease", pinnedVersion: "v1.0.0", ignoredVersions: [] }
     }, versions)).toEqual({ selectedVersion: "v1.0.0", channel: "prerelease" });
+  });
+
+  it("keeps the current target version when the version list cannot be refreshed", () => {
+    expect(resolveVersionSelectionAfterLoadFailure("v2.0.0", "v1.0.0")).toBe("v2.0.0");
+    expect(resolveVersionSelectionAfterLoadFailure("", "v1.0.0")).toBe("v1.0.0");
+  });
+
+  it("turns release-version loading failures into a recoverable inspector warning", () => {
+    expect(buildReleaseVersionsFailurePresentation("token rejected", "en")).toEqual({
+      label: "Version list unavailable",
+      detail: "token rejected Check GitHub network or token settings, then retry.",
+      tone: "danger",
+      retryLabel: "Retry",
+      settingsLabel: "Open network settings"
+    });
+    expect(buildReleaseVersionsFailurePresentation("代理连接失败", "zh-CN")).toEqual({
+      label: "版本列表暂时不可用",
+      detail: "代理连接失败 请检查 GitHub 网络或 Token 配置后重试。",
+      tone: "danger",
+      retryLabel: "重试",
+      settingsLabel: "前往网络配置"
+    });
   });
 
   it("derives the preview channel from the selected release metadata", () => {

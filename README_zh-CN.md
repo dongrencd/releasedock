@@ -139,6 +139,7 @@ bash scripts/linux/build-desktop.sh
 
 匹配 `v*.*.*` 的 tag 会创建同版本 GitHub Release，并上传可用的 Linux 和 Windows 产物。
 带 tag 的 Windows Release 在仓库配置代码签名 secrets 时，会发布 Authenticode 签名后的可执行文件、NSIS 和 MSI 资产。没有可信证书的构建仍可能触发 Windows SmartScreen 提示。
+带 tag 的 Release 还会包含 `SHA256SUMS`，用于核对已上传产物的 SHA-256。
 
 ```bash
 git tag v0.2.13
@@ -159,7 +160,7 @@ git push origin v0.2.13
 ## 安全说明
 
 - Windows `.exe` / `.msi` 和 Linux `.deb` / `.rpm` 安装器必须显式确认。
-- 官方 tag 发布的 Windows 产物会执行代码签名；未签名的本地构建或 fork 构建仍可能在 Windows SmartScreen 中显示发布者未知。
+- 官方 tag 发布的 Windows 产物只有在仓库配置 Windows 签名 secrets 后才会执行代码签名；未签名的 Release、本地构建或 fork 构建仍可能在 Windows SmartScreen 中显示发布者未知。
 - `GITHUB_TOKEN` 只用于 GitHub API 请求，不能写入日志。
 - ReleaseDock 只管理由它安装到自身安装根目录下的文件；自动接管只针对 ReleaseDock 已创建且还没有启动路径的 Windows 系统安装器记录。
 - Windows 系统安装探测只读取卸载注册表元数据；接管探测不会执行卸载命令。

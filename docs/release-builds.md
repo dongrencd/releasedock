@@ -29,6 +29,7 @@ CLI jobs only test and build `releasedock-core` and `releasedock-cli` so command
 Artifact upload paths use repository-relative `apps/desktop/src-tauri/target/...` paths because `actions/upload-artifact` does not inherit the command step working directory.
 The Windows desktop release uses the GUI subsystem, so it should open without a console window when launched normally. Windows open actions are routed through the system shell instead of `cmd`.
 Tagged Windows release builds use `WINDOWS_CODESIGN_PFX_BASE64` and `WINDOWS_CODESIGN_PASSWORD` GitHub secrets when they are configured. The PFX may include its certificate chain, but it must contain a code-signing certificate with a private key. The workflow imports that PFX only for the tag job, selects the usable code-signing certificate, passes its thumbprint to Tauri so the app executable and Windows bundles are Authenticode-signed during packaging, verifies the standalone executable, NSIS installer, and MSI with `signtool`, then removes the certificate from the runner store. If both signing secrets are absent, the tag job publishes unsigned Windows artifacts with an explicit CI warning; those builds may still trigger SmartScreen unknown-publisher warnings.
+The tag release job also generates `SHA256SUMS` from the downloaded Linux and Windows artifacts and uploads that checksum file with the release.
 
 ## GitHub Releases
 
@@ -39,7 +40,7 @@ git tag v0.2.10
 git push origin v0.2.10
 ```
 
-When the tag workflow finishes, the matching release appears on the repository Releases page. Release assets include the Linux CLI executable, Linux desktop executable, Linux Debian package, Linux RPM package, Windows desktop executable, NSIS installer, and MSI.
+When the tag workflow finishes, the matching release appears on the repository Releases page. Release assets include the Linux CLI executable, Linux desktop executable, Linux Debian package, Linux RPM package, Windows desktop executable, NSIS installer, MSI, and `SHA256SUMS`.
 
 If a release with the same tag already exists, the publish job fails. Remove the previous tag and release or use a new version number.
 
@@ -63,6 +64,6 @@ If you want to exercise local packaging, pass `--bundles deb,rpm` explicitly. Th
 ## Notes
 
 - `main`, pull request, and manual runs upload Actions artifacts only; tag pushes create GitHub Releases.
-- Official tagged Windows release assets are signed when signing secrets are present. If no signing secrets are configured, the release still publishes unsigned Windows assets and the Actions log calls out the SmartScreen risk.
+- Official tagged Windows release assets are signed when signing secrets are present. If no signing secrets are configured, the release still publishes unsigned Windows assets, includes `SHA256SUMS`, and the Actions log calls out the SmartScreen risk.
 - Do not commit `target/`, `node_modules/`, or `dist/`.
 - GitHub tokens are for authentication only and must not be written into the repository, logs, or remote URLs.

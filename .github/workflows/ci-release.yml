@@ -286,11 +286,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          mapfile -d '' release_assets < <(find release-assets -type f -print0 | sort -z)
-          if [ "${#release_assets[@]}" -eq 0 ]; then
+          mapfile -d '' packaged_assets < <(find release-assets -type f -print0 | sort -z)
+          if [ "${#packaged_assets[@]}" -eq 0 ]; then
             echo "No release assets were downloaded." >&2
             exit 1
           fi
+
+          (
+            cd release-assets
+            for asset in "${packaged_assets[@]}"; do
+              sha256sum "${asset#release-assets/}"
+            done > SHA256SUMS
+          )
+
+          mapfile -d '' release_assets < <(find release-assets -type f -print0 | sort -z)
 
           gh release create "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \

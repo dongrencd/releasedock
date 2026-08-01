@@ -79,6 +79,8 @@ type Copy = {
   releaseChannelPrerelease: string;
   loadingVersions: string;
   noVersions: string;
+  versionListUnavailable: string;
+  versionListUnavailableHelp: string;
   previewSelectedVersion: string;
   pinSelectedVersion: string;
   ignoreSelectedVersion: string;
@@ -363,6 +365,8 @@ const copy: Record<Language, Copy> = {
     releaseChannelPrerelease: "Prerelease",
     loadingVersions: "Loading versions",
     noVersions: "No published versions",
+    versionListUnavailable: "Version list unavailable",
+    versionListUnavailableHelp: "Check GitHub network or token settings, then retry.",
     previewSelectedVersion: "Preview install",
     pinSelectedVersion: "Pin selected version",
     ignoreSelectedVersion: "Ignore selected version",
@@ -650,6 +654,8 @@ const copy: Record<Language, Copy> = {
     releaseChannelPrerelease: "预发布版",
     loadingVersions: "正在加载版本",
     noVersions: "没有已发布版本",
+    versionListUnavailable: "版本列表暂时不可用",
+    versionListUnavailableHelp: "请检查 GitHub 网络或 Token 配置后重试。",
     previewSelectedVersion: "预览安装",
     pinSelectedVersion: "固定所选版本",
     ignoreSelectedVersion: "忽略所选版本",

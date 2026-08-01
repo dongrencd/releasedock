@@ -15,6 +15,12 @@ pub struct TrackedRepoStore {
     path: PathBuf,
 }
 
+#[derive(Debug, Default)]
+pub struct DashboardTrackedRepos {
+    pub repos: Vec<TrackedRepo>,
+    pub error: Option<String>,
+}
+
 impl TrackedRepoStore {
     pub fn default() -> Result<Self> {
         Ok(Self {
@@ -27,10 +33,23 @@ impl TrackedRepoStore {
             return Ok(Vec::new());
         }
 
-        let content = fs::read_to_string(&self.path)
-            .with_context(|| format!("failed to read tracked repo store {}", self.path.display()))?;
+        let content = fs::read_to_string(&self.path).with_context(|| {
+            format!("failed to read tracked repo store {}", self.path.display())
+        })?;
         serde_json::from_str(&content)
             .with_context(|| format!("failed to parse tracked repo store {}", self.path.display()))
+    }
+
+    /// Dashboard 读取走容错路径：跟踪文件损坏时仍让 manifest 里的已安装记录可见。
+    /// 增删跟踪仓库继续使用严格 `load()`，避免把损坏文件静默覆盖掉。
+    pub fn load_for_dashboard(&self) -> Result<DashboardTrackedRepos> {
+        match self.load() {
+            Ok(repos) => Ok(DashboardTrackedRepos { repos, error: None }),
+            Err(error) => Ok(DashboardTrackedRepos {
+                repos: Vec::new(),
+                error: Some(error.to_string()),
+            }),
+        }
     }
 
     pub fn seed_if_missing(&self, repo_ids: &[&str]) -> Result<()> {
@@ -102,7 +121,10 @@ impl TrackedRepoStore {
     fn save(&self, repos: &[TrackedRepo]) -> Result<()> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent).with_context(|| {
-                format!("failed to create tracked repo directory {}", parent.display())
+                format!(
+                    "failed to create tracked repo directory {}",
+                    parent.display()
+                )
             })?;
         }
 
@@ -110,10 +132,17 @@ impl TrackedRepoStore {
         let content =
             serde_json::to_string_pretty(repos).context("failed to serialize tracked repos")?;
         fs::write(&temp_path, content).with_context(|| {
-            format!("failed to write temporary tracked repo store {}", temp_path.display())
+            format!(
+                "failed to write temporary tracked repo store {}",
+                temp_path.display()
+            )
         })?;
-        fs::rename(&temp_path, &self.path)
-            .with_context(|| format!("failed to replace tracked repo store {}", self.path.display()))?;
+        fs::rename(&temp_path, &self.path).with_context(|| {
+            format!(
+                "failed to replace tracked repo store {}",
+                self.path.display()
+            )
+        })?;
         Ok(())
     }
 }
@@ -159,9 +188,33 @@ mod tests {
             .remove_many(&["owner/one".to_string(), "owner/three".to_string()])
             .unwrap();
 
-        assert_eq!(removed, vec!["owner/one".to_string(), "owner/three".to_string()]);
+        assert_eq!(
+            removed,
+            vec!["owner/one".to_string(), "owner/three".to_string()]
+        );
         let repos = store.load().unwrap();
         assert_eq!(repos.len(), 1);
         assert_eq!(repos[0].repo_id, "owner/two");
+    }
+
+    #[test]
+    fn dashboard_load_reports_corrupt_tracking_without_hiding_manifest_records() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = TrackedRepoStore {
+            path: temp.path().join("tracked.json"),
+        };
+        fs::write(&store.path, "{not json").unwrap();
+
+        assert!(store.load().is_err());
+
+        let loaded = store.load_for_dashboard().unwrap();
+        assert!(loaded.repos.is_empty());
+        assert!(
+            loaded
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("failed to parse tracked repo store")
+        );
     }
 }

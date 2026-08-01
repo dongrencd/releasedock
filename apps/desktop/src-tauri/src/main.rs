@@ -724,7 +724,7 @@ async fn build_dashboard(app: &tauri::AppHandle, refresh_id: u64) -> Result<Vec<
     let manifest = store.load()?;
     let tracked_store = TrackedRepoStore::default()?;
     tracked_store.seed_if_missing(&[DEFAULT_TRACKED_REPO_ID])?;
-    let tracked_repos = tracked_store.load()?;
+    let tracked_repos = tracked_store.load_for_dashboard()?.repos;
     let recent_activities = Arc::new(group_recent_activities(&manifest.lifecycle_events));
     let releasedock_core::manifest::Manifest { apps, .. } = manifest;
     let installed_ids: HashSet<String> = apps.iter().map(|app| app.id.clone()).collect();
@@ -796,16 +796,19 @@ fn build_local_dashboard(language: Language) -> Result<Vec<ManagedAppView>> {
     let store = ManifestStore::default()?;
     let tracked_store = TrackedRepoStore::default()?;
     tracked_store.seed_if_missing(&[DEFAULT_TRACKED_REPO_ID])?;
-    let tracked_repos = tracked_store.load()?;
+    let tracked_load = tracked_store.load_for_dashboard()?;
+    let tracked_repos = tracked_load.repos;
     let manifest = store.load()?;
     let installed_ids: HashSet<String> = manifest.apps.iter().map(|app| app.id.clone()).collect();
     let recent_activities = group_recent_activities(&manifest.lifecycle_events);
     let work_items = build_dashboard_work_items(manifest.apps, tracked_repos, installed_ids);
-    let reason = tr_owned(
-        language,
-        "GitHub release data is unavailable. Fix the connection settings and retry.",
-        "GitHub release 数据暂时不可用，请修复连接设置后重试。",
-    );
+    let reason = tracked_load.error.unwrap_or_else(|| {
+        tr_owned(
+            language,
+            "GitHub release data is unavailable. Fix the connection settings and retry.",
+            "GitHub release 数据暂时不可用，请修复连接设置后重试。",
+        )
+    });
 
     Ok(build_local_dashboard_views(
         work_items,

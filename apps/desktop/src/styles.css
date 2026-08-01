@@ -1448,6 +1448,43 @@ h2 {
   font-weight: 700;
 }
 
+.versionLoadWarning {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  background: #fff7f7;
+}
+
+.versionLoadWarningCopy {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: #7f1d1d;
+  font-size: 12px;
+}
+
+.versionLoadWarningCopy > span:last-child {
+  overflow-wrap: anywhere;
+}
+
+.versionLoadWarningActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.compactAction {
+  min-height: 32px;
+  padding-inline: 10px;
+  font-size: 12px;
+}
+
 .selectControl {
   width: 100%;
   min-height: 38px;
@@ -2130,6 +2167,14 @@ h2 {
     width: 100%;
   }
 
+  .versionLoadWarning {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .versionLoadWarningActions {
+    flex-wrap: wrap;
+  }
+
   .inspectorActionsGroup.secondaryActionGroup {
     grid-template-columns: 1fr;
   }
@@ -2587,6 +2632,15 @@ html[data-theme="dark"] .decisionDetailList,
 html[data-theme="dark"] .decisionDetailList div,
 html[data-theme="dark"] .decisionBlock .inspectorActionsGroup.dangerActionGroup {
   border-color: #2b3b4a;
+}
+
+html[data-theme="dark"] .versionLoadWarning {
+  border-color: #7f1d1d;
+  background: #201416;
+}
+
+html[data-theme="dark"] .versionLoadWarningCopy {
+  color: #fecaca;
 }
 
 html[data-theme="dark"] .decisionBlock.installedDecision .lifecycleBlock {

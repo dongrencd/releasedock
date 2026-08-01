@@ -214,6 +214,33 @@ export function shouldLoadReleaseVersions(remoteDashboardReady: boolean, status?
   return remoteDashboardReady && status !== undefined && status !== "failed";
 }
 
+export type ReleaseVersionsFailurePresentation = {
+  label: string;
+  detail: string;
+  tone: "danger";
+  retryLabel: string;
+  settingsLabel: string;
+};
+
+export function resolveVersionSelectionAfterLoadFailure(currentVersion: string, fallbackVersion: string): string {
+  return currentVersion.trim() || fallbackVersion.trim();
+}
+
+export function buildReleaseVersionsFailurePresentation(
+  message: string,
+  language: Language
+): ReleaseVersionsFailurePresentation {
+  const ui = createUiText(language);
+  const trimmed = message.trim();
+  return {
+    label: ui.versionListUnavailable,
+    detail: trimmed ? `${trimmed} ${ui.versionListUnavailableHelp}` : ui.versionListUnavailableHelp,
+    tone: "danger",
+    retryLabel: ui.action.retry,
+    settingsLabel: ui.openNetworkSettings
+  };
+}
+
 export type ConnectivityTestStatus = {
   label: string;
   detail: string;

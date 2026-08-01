@@ -55,6 +55,7 @@ import {
 import {
   buildConfigConnectivityWarning,
   buildBackgroundCheckPresentation,
+  buildReleaseVersionsFailurePresentation,
   buildConnectivityTestStatus,
   buildConnectivityTestViewState,
   buildNetworkConfigHealth,
@@ -96,6 +97,7 @@ import {
   resolveUninstallExecutionKind,
   releaseChannelForVersion,
   resolveLifecycleSelection,
+  resolveVersionSelectionAfterLoadFailure,
   selectVisibleIds,
   systemPackageManagerLabel,
   shouldShowLifecyclePreviewAction,
@@ -112,7 +114,8 @@ import {
   type GithubConnectivityResultLike,
   type InboxFilter,
   type InboxItem,
-  type ManagedApp
+  type ManagedApp,
+  type ReleaseVersionsFailurePresentation
 } from "./appModel";
 import {
   createTaskStatusText,
@@ -174,6 +177,7 @@ export function App() {
   const [pendingUninstall, setPendingUninstall] = useState<InboxItem | null>(null);
   const [releaseVersions, setReleaseVersions] = useState<ReleaseVersion[]>([]);
   const [versionsLoading, setVersionsLoading] = useState(false);
+  const [versionLoadError, setVersionLoadError] = useState<string | null>(null);
   const [selectedVersion, setSelectedVersion] = useState("");
   const [taskProgress, setTaskProgress] = useState<TaskProgressView | null>(null);
   const [configDraft, setConfigDraft] = useState<ConfigDraft>({
@@ -235,6 +239,9 @@ export function App() {
   const networkConfigHealth = buildNetworkConfigHealth(configDraft, language, connectivityTest);
   const backgroundCheckPresentation = backgroundCheckEvent
     ? buildBackgroundCheckPresentation(backgroundCheckEvent, language)
+    : null;
+  const releaseVersionsFailurePresentation = versionLoadError
+    ? buildReleaseVersionsFailurePresentation(versionLoadError, language)
     : null;
   const connectivityTestStatus = buildConnectivityTestStatus(connectivityTest, language, configDraft);
   const installRoot = configDraft.installRoot.trim();
@@ -341,6 +348,7 @@ export function App() {
     setPendingRollback(null);
     setPendingUninstall(null);
     setReleaseVersions([]);
+    setVersionLoadError(null);
     const initialSelection = resolveLifecycleSelection(selected, []);
     setSelectedVersion(initialSelection.selectedVersion);
     if (!selected?.id || !shouldLoadReleaseVersions(remoteDashboardReady, selected.status)) {
@@ -348,29 +356,7 @@ export function App() {
     }
 
     let cancelled = false;
-    setVersionsLoading(true);
-    void listReleaseVersions(selected.id)
-      .then((versions) => {
-        if (cancelled) {
-          return;
-        }
-        setReleaseVersions(versions);
-        const nextSelection = resolveLifecycleSelection(
-          selected,
-          versions.map((version) => version.tagName)
-        );
-        setSelectedVersion(nextSelection.selectedVersion);
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setReleaseVersions([]);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setVersionsLoading(false);
-        }
-      });
+    void refreshReleaseVersionsForSelection(selected, () => cancelled);
 
     return () => {
       cancelled = true;
@@ -632,6 +618,47 @@ export function App() {
         setLoading(false);
       }
     }
+  }
+
+  async function refreshReleaseVersionsForSelection(
+    item: ManagedApp,
+    isCancelled: () => boolean = () => false
+  ) {
+    // Version-list failures should not erase the visible target; users need a stable
+    // retry point when GitHub, proxy, or token settings are temporarily broken.
+    setVersionsLoading(true);
+    setVersionLoadError(null);
+    try {
+      const versions = await listReleaseVersions(item.id);
+      if (isCancelled()) {
+        return;
+      }
+      setReleaseVersions(versions);
+      const nextSelection = resolveLifecycleSelection(
+        item,
+        versions.map((version) => version.tagName)
+      );
+      setSelectedVersion(nextSelection.selectedVersion);
+    } catch (caught) {
+      if (isCancelled()) {
+        return;
+      }
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setVersionLoadError(message);
+      setReleaseVersions([]);
+      setSelectedVersion((current) => resolveVersionSelectionAfterLoadFailure(current, item.latestVersion));
+    } finally {
+      if (!isCancelled()) {
+        setVersionsLoading(false);
+      }
+    }
+  }
+
+  async function handleRetryReleaseVersions() {
+    if (!selected?.id || !shouldLoadReleaseVersions(remoteDashboardReady, selected.status)) {
+      return;
+    }
+    await refreshReleaseVersionsForSelection(selected);
   }
 
   async function refreshDashboard(statusLanguage: Language = languageRef.current) {
@@ -1707,8 +1734,13 @@ export function App() {
                   }}
                   releaseVersions={releaseVersions}
                   versionsLoading={versionsLoading}
+                  releaseVersionsFailure={releaseVersionsFailurePresentation}
                   selectedVersion={selectedVersion}
                   onVersionChange={setSelectedVersion}
+                  onRetryReleaseVersions={() => {
+                    void handleRetryReleaseVersions();
+                  }}
+                  onOpenNetworkSettings={handleFocusNetworkConfig}
                   onPreviewSelectedVersion={() => {
                     void handlePreviewSelectedVersion(selected);
                   }}
@@ -2130,8 +2162,11 @@ function Inspector({
   installRetrying,
   releaseVersions,
   versionsLoading,
+  releaseVersionsFailure,
   selectedVersion,
   onVersionChange,
+  onRetryReleaseVersions,
+  onOpenNetworkSettings,
   onPreviewSelectedVersion,
   onPinnedChange,
   onToggleIgnored,
@@ -2162,8 +2197,11 @@ function Inspector({
   installRetrying: boolean;
   releaseVersions: ReleaseVersion[];
   versionsLoading: boolean;
+  releaseVersionsFailure: ReleaseVersionsFailurePresentation | null;
   selectedVersion: string;
   onVersionChange: (version: string) => void;
+  onRetryReleaseVersions: () => void;
+  onOpenNetworkSettings: () => void;
   onPreviewSelectedVersion: () => void;
   onPinnedChange: (pinned: boolean) => void;
   onToggleIgnored: () => void;
@@ -2372,6 +2410,35 @@ function Inspector({
               ))}
             </select>
           </label>
+          {releaseVersionsFailure ? (
+            <div className="versionLoadWarning" role="status">
+              <div className="versionLoadWarningCopy">
+                <span className={`statePill ${releaseVersionsFailure.tone}`}>
+                  {releaseVersionsFailure.label}
+                </span>
+                <span>{releaseVersionsFailure.detail}</span>
+              </div>
+              <div className="versionLoadWarningActions">
+                <button
+                  type="button"
+                  className="ghostButton actionButton compactAction"
+                  onClick={onRetryReleaseVersions}
+                  disabled={busy || versionsLoading}
+                >
+                  <RefreshCw size={15} />
+                  <span>{releaseVersionsFailure.retryLabel}</span>
+                </button>
+                <button
+                  type="button"
+                  className="ghostButton actionButton compactAction"
+                  onClick={onOpenNetworkSettings}
+                >
+                  <Settings2 size={15} />
+                  <span>{releaseVersionsFailure.settingsLabel}</span>
+                </button>
+              </div>
+            </div>
+          ) : null}
           {showLifecyclePreviewAction ? (
             <TooltipButton
               label={ui.previewSelectedVersion}
