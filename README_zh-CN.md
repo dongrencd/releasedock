@@ -149,8 +149,8 @@ bash scripts/linux/build-desktop.sh
 带 tag 的 Release 还会包含 `SHA256SUMS`，用于核对已上传产物的 SHA-256。
 
 ```bash
-git tag v0.2.13
-git push origin v0.2.13
+git tag v0.2.14
+git push origin v0.2.14
 ```
 
 ## 文档

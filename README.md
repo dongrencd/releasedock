@@ -149,8 +149,8 @@ Tagged Windows releases publish Authenticode-signed executable, NSIS, and MSI as
 Tagged releases also include `SHA256SUMS` for the uploaded assets.
 
 ```bash
-git tag v0.2.13
-git push origin v0.2.13
+git tag v0.2.14
+git push origin v0.2.14
 ```
 
 ## Documentation

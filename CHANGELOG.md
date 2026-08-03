@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.14] - 2026-08-03
+
+### Fixed
+- Windows managed self-relaunch now uses the process access constant exposed by the current Windows API crate.
+
 ## [0.2.13] - 2026-07-31
 
 ### Changed
