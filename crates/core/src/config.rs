@@ -44,6 +44,9 @@ pub struct Config {
     /// 是否随系统启动 ReleaseDock。默认关闭，避免安装后无感常驻。
     #[serde(default)]
     pub autostart_enabled: Option<bool>,
+    /// 用户点击窗口关闭按钮时的行为；默认驻留托盘，保留后台检查能力。
+    #[serde(default)]
+    pub close_behavior: Option<String>,
 }
 
 pub struct ConfigStore {
@@ -79,6 +82,19 @@ pub fn download_max_connections(config: Option<&Config>) -> u8 {
         .and_then(|c| c.download_max_connections)
         .unwrap_or(4)
         .clamp(1, 8)
+}
+
+pub fn close_behavior(config: Option<&Config>) -> CloseBehavior {
+    match config.and_then(|c| c.close_behavior.as_deref()) {
+        Some("exit") => CloseBehavior::Exit,
+        _ => CloseBehavior::Tray,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseBehavior {
+    Tray,
+    Exit,
 }
 
 pub fn effective_install_root(config: Option<&Config>, fallback_root: Option<PathBuf>) -> PathBuf {
@@ -216,6 +232,32 @@ mod tests {
         assert!(download_acceleration_enabled(Some(&Config::default())));
         assert_eq!(download_max_connections(None), 4);
         assert_eq!(download_max_connections(Some(&Config::default())), 4);
+    }
+
+    #[test]
+    fn close_behavior_defaults_to_tray_and_accepts_exit() {
+        assert_eq!(close_behavior(None), CloseBehavior::Tray);
+        assert_eq!(
+            close_behavior(Some(&Config::default())),
+            CloseBehavior::Tray
+        );
+        assert_eq!(
+            close_behavior(Some(&Config {
+                close_behavior: Some("exit".to_string()),
+                ..Default::default()
+            })),
+            CloseBehavior::Exit
+        );
+    }
+
+    #[test]
+    fn close_behavior_treats_unknown_values_as_tray() {
+        let config = Config {
+            close_behavior: Some("quit".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(close_behavior(Some(&config)), CloseBehavior::Tray);
     }
 
     #[test]

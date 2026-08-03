@@ -60,6 +60,22 @@ describe("workspace layout CSS", () => {
     expect(ruleBody(".statePill.warning")).toContain("color: #92400e");
   });
 
+  it("gives danger actions the same geometry as other buttons", () => {
+    // dangerButton 保留危险色，但必须复用按钮基础布局，避免退回浏览器默认直角样式。
+    expect(styles).toMatch(
+      /\.ghostButton,\s*\.primaryButton,\s*\.iconButton,\s*\.linkButton,\s*\.dangerButton\s*\{[\s\S]*?display: inline-flex[\s\S]*?min-height: 38px[\s\S]*?border-radius: 8px[\s\S]*?cursor: pointer/
+    );
+    expect(styles).toMatch(/\.dangerButton\s*\{[\s\S]*?border: 1px solid #f5c2c7/);
+    expect(styles).toMatch(/\.dangerButton\s*\{[\s\S]*?color: #b91c1c/);
+  });
+
+  it("renders the self-management restart banner as a non-error warning", () => {
+    expect(appSource).toContain("showSelfRestartBanner");
+    expect(appSource).toContain("handleRestartToManagedSelf");
+    expect(ruleBody(".selfManagementBanner")).toContain("display: flex");
+    expect(ruleBody(".selfManagementBanner")).toContain("background: #fffbeb");
+  });
+
   it("styles the network configuration guidance card and highlighted fields", () => {
     expect(ruleBody(".statePillButton")).toContain("cursor: pointer");
     expect(ruleBody(".fieldRow.attention")).toContain("border-color: #f59e0b");

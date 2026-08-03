@@ -68,6 +68,13 @@ export type DesktopConfig = {
   downloadAccelerationEnabled: boolean | null;
   downloadMaxConnections: number | null;
   autostartEnabled: boolean | null;
+  closeBehavior: "tray" | "exit" | null;
+};
+
+export type SelfManagementStatus = {
+  pendingRestart: boolean;
+  managedPath?: string | null;
+  currentPath?: string | null;
 };
 
 export type BulkRemoveResult = {
@@ -136,6 +143,14 @@ export async function loadDashboard(refreshId: number): Promise<ManagedApp[]> {
 
 export async function loadLocalDashboard(): Promise<ManagedApp[]> {
   return invoke<ManagedApp[]>("load_local_dashboard");
+}
+
+export async function loadSelfManagementStatus(): Promise<SelfManagementStatus> {
+  return invoke<SelfManagementStatus>("load_self_management_status");
+}
+
+export async function restartToManagedSelf(): Promise<void> {
+  return invoke("restart_to_managed_self");
 }
 
 export async function loadConfig(): Promise<DesktopConfig> {
@@ -252,4 +267,12 @@ export async function openNotificationSettings(): Promise<void> {
 
 export async function openSystemUninstallSettings(): Promise<void> {
   await invoke("open_system_uninstall_settings");
+}
+
+export async function loadLocalDataDir(): Promise<string> {
+  return invoke<string>("load_local_data_dir");
+}
+
+export async function quitApp(): Promise<void> {
+  await invoke("quit_app");
 }

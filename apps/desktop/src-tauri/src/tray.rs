@@ -13,6 +13,15 @@ use tauri::{Emitter, Runtime};
 
 /// 创建系统托盘图标和菜单
 pub fn build_tray<R: Runtime>(app: &tauri::AppHandle<R>, language: Language) -> tauri::Result<()> {
+    rebuild_tray(app, language)
+}
+
+/// 语言切换后重建托盘菜单，避免 Windows 托盘菜单在保存设置后仍显示旧语言。
+pub fn rebuild_tray<R: Runtime>(app: &tauri::AppHandle<R>, language: Language) -> tauri::Result<()> {
+    if let Some(existing) = app.tray_by_id("main") {
+        let _ = app.remove_tray_by_id(existing.id());
+    }
+
     let check_item = MenuItem::with_id(
         app,
         "tray_check",

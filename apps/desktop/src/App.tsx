@@ -10,6 +10,7 @@ import {
   Layers3,
   Pin,
   Play,
+  Power,
   Plus,
   Eye,
   EyeOff,
@@ -26,6 +27,8 @@ import {
   type DashboardItemEvent,
   type DashboardProgressEvent,
   bulkRemoveTrackedRepos,
+  loadLocalDataDir,
+  loadSelfManagementStatus,
   installRepo,
   isBackgroundStart,
   isMainWindowVisible,
@@ -50,13 +53,17 @@ import {
   setReleasePin,
   testGithubConnectivity,
   uninstallRepo,
+  restartToManagedSelf,
   rollbackRepo,
-  openSystemUninstallSettings
+  openSystemUninstallSettings,
+  quitApp,
+  type SelfManagementStatus
 } from "./backend";
 import {
   buildConfigConnectivityWarning,
   buildBackgroundCheckPresentation,
   buildReleaseVersionsFailurePresentation,
+  applySystemInstallAdoption,
   buildConnectivityTestStatus,
   buildConnectivityTestViewState,
   buildNetworkConfigHealth,
@@ -76,10 +83,12 @@ import {
   getSelectionActionAvailability,
   getSelectionSummary,
   buildReleaseActionGuidance,
+  buildSystemInstallerFollowUp,
   buildInspectorStatusSummary,
   formatInstallFailureMessage,
   hasInstallableAsset,
   isManagedPathKind,
+  isPendingSystemInstallAdoption,
   isSystemInstallerKind,
   isRemovableNoRelease,
   isRemovableTrackedItem,
@@ -98,13 +107,18 @@ import {
   resolveUninstallExecutionKind,
   releaseChannelForVersion,
   resolveLifecycleSelection,
+  resolveDesktopShortcut,
   resolveVersionSelectionAfterLoadFailure,
+  shouldLoadCachedReleaseVersions,
+  updateReleaseVersionsCache,
   selectVisibleIds,
+  shouldClearDiscoveryResultsForInput,
   sortDiscoveryResults,
   systemPackageManagerLabel,
   shouldShowLifecyclePreviewAction,
   shouldShowInstallLocationAction,
   shouldShowInstallLocationSecondary,
+  shouldShowInstallerFileSecondary,
   shouldShowInstallerFolderSecondary,
   shouldShowOpenAppSecondary,
   shouldShowOpenReleaseSecondary,
@@ -118,13 +132,16 @@ import {
   type InboxFilter,
   type InboxItem,
   type ManagedApp,
-  type ReleaseVersionsFailurePresentation
+  type ReleaseVersionsCache,
+  type ReleaseVersionsFailurePresentation,
+  type SystemInstallAdoptionEvent
 } from "./appModel";
 import {
   createTaskStatusText,
   createUiText,
   formatPublishedAt,
   isWindowsPlatform,
+  closeBehaviorOptions,
   languageOptions,
   normalizeLanguage,
   normalizeThemeMode,
@@ -154,6 +171,7 @@ type ConfigDraft = {
   downloadAccelerationEnabled: boolean;
   downloadMaxConnections: string;
   autostartEnabled: boolean;
+  closeBehavior: "tray" | "exit";
 };
 
 type TaskProgressView = Omit<TaskProgressEvent, "stage"> & {
@@ -165,6 +183,16 @@ type TaskProgressContext = {
   action: TaskProgressView["action"];
 } | null;
 
+// 复用空数组引用，避免没有选中仓库时触发依赖该数组的 effect 反复执行。
+const EMPTY_RELEASE_VERSIONS: ReleaseVersion[] = [];
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  return target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
+}
+
 export function App() {
   const [apps, setApps] = useState<ManagedApp[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -175,16 +203,16 @@ export function App() {
   const [discoveryResults, setDiscoveryResults] = useState<DiscoveryResult[]>([]);
   const [discoveryLoading, setDiscoveryLoading] = useState(false);
   const [discoverySearched, setDiscoverySearched] = useState(false);
+  const [lastDiscoveryQuery, setLastDiscoveryQuery] = useState("");
+  const discoveryRequestRef = useRef(0);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [pendingInstall, setPendingInstall] = useState<InstallPlan | null>(null);
   const [pendingRollback, setPendingRollback] = useState<RollbackPreview | null>(null);
   const [pendingUninstall, setPendingUninstall] = useState<InboxItem | null>(null);
-  const [releaseVersions, setReleaseVersions] = useState<ReleaseVersion[]>([]);
-  const [versionsLoading, setVersionsLoading] = useState(false);
-  const [versionLoadError, setVersionLoadError] = useState<string | null>(null);
-  const [selectedVersion, setSelectedVersion] = useState("");
+  const [releaseVersionsByRepo, setReleaseVersionsByRepo] = useState<ReleaseVersionsCache>({});
+  const [releaseVersionsCacheEpoch, setReleaseVersionsCacheEpoch] = useState(0);
   const [taskProgress, setTaskProgress] = useState<TaskProgressView | null>(null);
   const [configDraft, setConfigDraft] = useState<ConfigDraft>({
     githubToken: "",
@@ -197,7 +225,8 @@ export function App() {
     checkIntervalMinutes: 30,
     downloadAccelerationEnabled: true,
     downloadMaxConnections: "4",
-    autostartEnabled: false
+    autostartEnabled: false,
+    closeBehavior: "tray"
   });
   const themeMode = normalizeThemeMode(configDraft.themeMode);
   const currentConfigKey = useRef(configDraftKey(configDraft));
@@ -210,6 +239,7 @@ export function App() {
   const [configLoaded, setConfigLoaded] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
   const [connectivityTesting, setConnectivityTesting] = useState(false);
+  const [selfManagementStatus, setSelfManagementStatus] = useState<SelfManagementStatus | null>(null);
   const [remoteDashboardReady, setRemoteDashboardReady] = useState(false);
   const [connectivityTest, setConnectivityTest] = useState<ConnectivityTestViewState>({ status: "idle" });
   const [notificationPermission, setNotificationPermission] = useState("prompt");
@@ -226,6 +256,7 @@ export function App() {
   const selectedRepoIdRef = useRef<string | null>(selectedId);
   const githubTokenInput = useRef<HTMLInputElement>(null);
   const proxyUrlInput = useRef<HTMLInputElement>(null);
+  const listSearchInput = useRef<HTMLInputElement>(null);
   const backgroundStartRef = useRef<boolean | null>(null);
   const restoreRequestedRef = useRef(false);
   const workspaceInitializedRef = useRef(false);
@@ -237,6 +268,13 @@ export function App() {
   const visibleApps = filterManagedApps(apps, filter, searchQuery);
   const inbox = buildUpdateInbox(visibleApps, language);
   const selected = inbox.find((item) => item.id === selectedId) ?? inbox[0] ?? null;
+  const selectedReleaseVersionsState = selected?.id ? releaseVersionsByRepo[selected.id] : undefined;
+  // 所有版本相关控件都读取当前仓库的缓存状态，切换软件时不会串用上一个仓库的数据。
+  const releaseVersions = selectedReleaseVersionsState?.versions ?? EMPTY_RELEASE_VERSIONS;
+  const versionsLoading = selectedReleaseVersionsState?.loading ?? false;
+  const versionLoadError = selectedReleaseVersionsState?.error ?? null;
+  const selectedVersion = selectedReleaseVersionsState?.selectedVersion
+    ?? resolveLifecycleSelection(selected, []).selectedVersion;
   const isEmptyDashboard = apps.length === 0;
   const pendingInstallRepoId = pendingInstall?.repo_id ?? null;
   const installRetrying = isFailedInstallProgress(taskProgress, pendingInstallRepoId);
@@ -246,6 +284,7 @@ export function App() {
   const backgroundCheckPresentation = backgroundCheckEvent
     ? buildBackgroundCheckPresentation(backgroundCheckEvent, language)
     : null;
+  const showSelfRestartBanner = Boolean(selfManagementStatus?.pendingRestart);
   const releaseVersionsFailurePresentation = versionLoadError
     ? buildReleaseVersionsFailurePresentation(versionLoadError, language)
     : null;
@@ -298,6 +337,20 @@ export function App() {
     return previewRequestId.current;
   }
 
+  function updateCachedSelectedVersion(repoId: string | null, nextVersion: string) {
+    if (!repoId) {
+      return;
+    }
+    setReleaseVersionsByRepo((current) => updateReleaseVersionsCache(current, repoId, {
+      selectedVersion: nextVersion
+    }));
+  }
+
+  function invalidateReleaseVersionsCache() {
+    setReleaseVersionsByRepo({});
+    setReleaseVersionsCacheEpoch((current) => current + 1);
+  }
+
   function applyLifecycleDashboard(nextApps: ManagedApp[], repoId: string) {
     setApps(nextApps);
     const updated = nextApps.find((app) => app.id === repoId) ?? null;
@@ -305,7 +358,7 @@ export function App() {
       updated,
       releaseVersions.map((version) => version.tagName)
     );
-    setSelectedVersion(nextSelection.selectedVersion);
+    updateCachedSelectedVersion(repoId, nextSelection.selectedVersion);
   }
 
   function initializeWorkspace() {
@@ -353,13 +406,20 @@ export function App() {
     setPendingInstall(null);
     setPendingRollback(null);
     setPendingUninstall(null);
-    setReleaseVersions([]);
-    setVersionLoadError(null);
     const initialSelection = resolveLifecycleSelection(selected, []);
-    setSelectedVersion(initialSelection.selectedVersion);
     if (!selected?.id || !shouldLoadReleaseVersions(remoteDashboardReady, selected.status)) {
       return;
     }
+
+    if (!shouldLoadCachedReleaseVersions(releaseVersionsByRepo, selected.id)) {
+      return;
+    }
+
+    setReleaseVersionsByRepo((current) => updateReleaseVersionsCache(current, selected.id, {
+      loading: true,
+      error: null,
+      selectedVersion: current[selected.id]?.selectedVersion ?? initialSelection.selectedVersion
+    }));
 
     let cancelled = false;
     void refreshReleaseVersionsForSelection(selected, () => cancelled);
@@ -367,14 +427,18 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [selected?.id, selected?.status, remoteDashboardReady]);
+  }, [selected?.id, selected?.status, remoteDashboardReady, releaseVersionsCacheEpoch]);
 
   useEffect(() => {
+    if (selected?.id && releaseVersionsByRepo[selected.id]?.loaded) {
+      // 已加载仓库保留用户上次选择；策略或 Dashboard 变化会主动失效该缓存。
+      return;
+    }
     const nextSelection = resolveLifecycleSelection(
       selected,
       releaseVersions.map((version) => version.tagName)
     );
-    setSelectedVersion(nextSelection.selectedVersion);
+    updateCachedSelectedVersion(selected?.id ?? null, nextSelection.selectedVersion);
   }, [
     selected?.latestVersion,
     selected?.releasePolicy?.channel,
@@ -436,6 +500,7 @@ export function App() {
     let unlistenItem: (() => void) | undefined;
     let unlistenProgress: (() => void) | undefined;
     let unlistenBackground: (() => void) | undefined;
+    let unlistenSystemInstallAdoption: (() => void) | undefined;
     let unlistenTrayCheck: (() => void) | undefined;
     let unlistenRestore: (() => void) | undefined;
 
@@ -450,6 +515,18 @@ export function App() {
       }
     }).then((dispose) => {
       unlistenBackground = dispose;
+    });
+
+    void listen<SystemInstallAdoptionEvent>("system-install-adoption", (event) => {
+      const statusText = createTaskStatusText(languageRef.current);
+      if (event.payload.status === "adopted") {
+        setApps((current) => applySystemInstallAdoption(current, event.payload));
+        setTaskStatus(statusText.systemInstallerAutoDetected(event.payload.repoId));
+        return;
+      }
+      setTaskStatus(statusText.systemInstallerAutoDetectionTimedOut(event.payload.repoId));
+    }).then((dispose) => {
+      unlistenSystemInstallAdoption = dispose;
     });
 
     // 托盘"检查更新"菜单 — 触发前端刷新
@@ -500,10 +577,71 @@ export function App() {
       unlistenItem?.();
       unlistenProgress?.();
       unlistenBackground?.();
+      unlistenSystemInstallAdoption?.();
       unlistenTrayCheck?.();
       unlistenRestore?.();
     };
   }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const shortcut = resolveDesktopShortcut({
+        key: event.key,
+        ctrlOrMeta: event.ctrlKey || event.metaKey,
+        activeView,
+        busy: busy || loading || configSaving || connectivityTesting,
+        editable: isEditableTarget(event.target),
+        hasDialog: pendingInstall != null || pendingRollback != null || pendingUninstall != null
+      });
+      if (!shortcut) {
+        return;
+      }
+
+      event.preventDefault();
+      switch (shortcut) {
+        case "refreshDashboard":
+          void refreshDashboard();
+          return;
+        case "focusSearch":
+          listSearchInput.current?.focus();
+          return;
+        case "selectPrevious":
+        case "selectNext": {
+          const selectedIndex = inbox.findIndex((item) => item.id === selected?.id);
+          const nextIndex = shortcut === "selectPrevious" ? selectedIndex - 1 : selectedIndex + 1;
+          const nextItem = inbox[nextIndex];
+          if (nextItem) {
+            selectRepo(nextItem.id);
+          }
+          return;
+        }
+        case "cancelDialog":
+          if (pendingInstall) {
+            setPendingInstall(null);
+          } else if (pendingRollback) {
+            setPendingRollback(null);
+          } else {
+            setPendingUninstall(null);
+          }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [
+    activeView,
+    busy,
+    configSaving,
+    connectivityTesting,
+    inbox,
+    loading,
+    pendingInstall,
+    pendingRollback,
+    pendingUninstall,
+    selected?.id
+  ]);
 
   useEffect(() => {
     if (!taskProgress || taskProgress.stage !== "finished") {
@@ -580,6 +718,7 @@ export function App() {
       setLoading(false);
       const statusText = createTaskStatusText(statusLanguage);
       setTaskStatus(statusText.currentStatusLocal(data.length));
+      await refreshSelfManagementStatus();
       return true;
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
@@ -592,6 +731,8 @@ export function App() {
   async function refreshRemoteDashboard(statusLanguage: Language = languageRef.current) {
     const statusText = createTaskStatusText(statusLanguage);
     clearTaskProgress();
+    // Dashboard 刷新会重新计算所有仓库的目标状态，旧版本列表只保留在当前进程内，需整体失效。
+    invalidateReleaseVersionsCache();
     const refreshId = dashboardRefreshId.current + 1;
     dashboardRefreshId.current = refreshId;
     dashboardOrder.current = new Map(apps.map((app, index) => [app.id, index]));
@@ -611,6 +752,7 @@ export function App() {
       setBackgroundCheckEvent(null);
       setSelectedId((current) => (current && data.some((item) => item.id === current) ? current : data[0]?.id ?? null));
       setTaskStatus(data.length > 0 ? statusText.loadedApps(data.length) : statusText.noApps);
+      await refreshSelfManagementStatus();
     } catch (caught) {
       if (dashboardRefreshId.current !== refreshId) {
         return;
@@ -626,36 +768,66 @@ export function App() {
     }
   }
 
+  async function refreshSelfManagementStatus() {
+    try {
+      setSelfManagementStatus(await loadSelfManagementStatus());
+    } catch {
+      // 自接管状态只影响 ReleaseDock 自身 handoff；失败不应遮挡主列表。
+      setSelfManagementStatus(null);
+    }
+  }
+
   async function refreshReleaseVersionsForSelection(
     item: ManagedApp,
     isCancelled: () => boolean = () => false
   ) {
     // Version-list failures should not erase the visible target; users need a stable
     // retry point when GitHub, proxy, or token settings are temporarily broken.
-    setVersionsLoading(true);
-    setVersionLoadError(null);
+    setReleaseVersionsByRepo((current) => updateReleaseVersionsCache(current, item.id, {
+      loading: true,
+      error: null,
+      selectedVersion: current[item.id]?.selectedVersion
+        ?? resolveLifecycleSelection(item, []).selectedVersion
+    }));
     try {
       const versions = await listReleaseVersions(item.id);
       if (isCancelled()) {
         return;
       }
-      setReleaseVersions(versions);
       const nextSelection = resolveLifecycleSelection(
         item,
         versions.map((version) => version.tagName)
       );
-      setSelectedVersion(nextSelection.selectedVersion);
+      setReleaseVersionsByRepo((current) => updateReleaseVersionsCache(current, item.id, {
+        versions,
+        loading: false,
+        error: null,
+        selectedVersion: nextSelection.selectedVersion,
+        loaded: true
+      }));
     } catch (caught) {
       if (isCancelled()) {
         return;
       }
       const message = caught instanceof Error ? caught.message : String(caught);
-      setVersionLoadError(message);
-      setReleaseVersions([]);
-      setSelectedVersion((current) => resolveVersionSelectionAfterLoadFailure(current, item.latestVersion));
+      setReleaseVersionsByRepo((current) => {
+        const cached = current[item.id];
+        return updateReleaseVersionsCache(current, item.id, {
+          loading: false,
+          error: message,
+          // 已有版本保持可见；首次失败也保留当前软件的目标版本供重试。
+          selectedVersion: resolveVersionSelectionAfterLoadFailure(
+            cached?.selectedVersion ?? "",
+            item.latestVersion
+          ),
+          loaded: true
+        });
+      });
     } finally {
       if (!isCancelled()) {
-        setVersionsLoading(false);
+        setReleaseVersionsByRepo((current) => updateReleaseVersionsCache(current, item.id, {
+          loading: false
+        }));
       }
     }
   }
@@ -668,6 +840,8 @@ export function App() {
   }
 
   async function refreshDashboard(statusLanguage: Language = languageRef.current) {
+    // 手动刷新可能走本地 fallback，也要避免继续展示旧的远程版本列表。
+    invalidateReleaseVersionsCache();
     const connectivity = await runGithubConnectivityCheck(configDraft, "manual");
     if (!shouldLoadRemoteDashboard(connectivity)) {
       await refreshLocalDashboard(statusLanguage);
@@ -692,7 +866,8 @@ export function App() {
         checkIntervalMinutes: data.checkIntervalMinutes ?? 30,
         downloadAccelerationEnabled: data.downloadAccelerationEnabled ?? true,
         downloadMaxConnections: String(clampDownloadMaxConnections(data.downloadMaxConnections)),
-        autostartEnabled: data.autostartEnabled ?? false
+        autostartEnabled: data.autostartEnabled ?? false,
+        closeBehavior: normalizeCloseBehavior(data.closeBehavior)
       };
       lastSavedConfigKey.current = configDraftKey(draft);
       currentConfigKey.current = configDraftKey(draft);
@@ -727,6 +902,22 @@ export function App() {
     await refreshRemoteDashboard(statusLanguage);
   }
 
+  function clearDiscoveryState() {
+    // Input changes invalidate an older response so it cannot repopulate hidden candidates.
+    discoveryRequestRef.current += 1;
+    setDiscoveryLoading(false);
+    setDiscoveryResults([]);
+    setDiscoverySearched(false);
+    setLastDiscoveryQuery("");
+  }
+
+  function handleRepoInputChange(value: string) {
+    setRepoInput(value);
+    if (discoveryLoading || shouldClearDiscoveryResultsForInput(value, lastDiscoveryQuery)) {
+      clearDiscoveryState();
+    }
+  }
+
   async function handleAddRepo() {
     const trimmed = repoInput.trim();
     if (!trimmed) {
@@ -746,8 +937,7 @@ export function App() {
       setApps(data);
       setSelectedId(normalizeRepoId(trimmed));
       setRepoInput("");
-      setDiscoveryResults([]);
-      setDiscoverySearched(false);
+      clearDiscoveryState();
       setTaskStatus(taskText.addedRepo(trimmed));
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
@@ -769,8 +959,7 @@ export function App() {
       setApps(data);
       setSelectedId(repoId);
       setRepoInput("");
-      setDiscoveryResults([]);
-      setDiscoverySearched(false);
+      clearDiscoveryState();
       setTaskStatus(taskText.addedRepo(repoId));
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
@@ -791,21 +980,31 @@ export function App() {
     }
 
     clearTaskProgress();
+    const requestId = ++discoveryRequestRef.current;
     setDiscoveryLoading(true);
     setError(null);
     setTaskStatus(taskText.checkingLatestRelease);
     try {
       const results = await searchGithubRepos(trimmed);
+      if (requestId !== discoveryRequestRef.current) {
+        return;
+      }
       const sorted = sortDiscoveryResults(results);
       setDiscoveryResults(sorted);
       setDiscoverySearched(true);
+      setLastDiscoveryQuery(trimmed);
       setTaskStatus(sorted.length > 0 ? taskText.loadedApps(sorted.length) : taskText.noApps);
     } catch (caught) {
+      if (requestId !== discoveryRequestRef.current) {
+        return;
+      }
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
       setTaskStatus(taskText.refreshFailed);
     } finally {
-      setDiscoveryLoading(false);
+      if (requestId === discoveryRequestRef.current) {
+        setDiscoveryLoading(false);
+      }
     }
   }
 
@@ -833,10 +1032,15 @@ export function App() {
         checkIntervalMinutes: saved.checkIntervalMinutes ?? 30,
         downloadAccelerationEnabled: saved.downloadAccelerationEnabled ?? true,
         downloadMaxConnections: String(clampDownloadMaxConnections(saved.downloadMaxConnections)),
-        autostartEnabled: saved.autostartEnabled ?? false
+        autostartEnabled: saved.autostartEnabled ?? false,
+        closeBehavior: normalizeCloseBehavior(saved.closeBehavior)
       };
       lastSavedConfigKey.current = configDraftKey(savedDraft);
       if (currentConfigKey.current === draftKey) {
+        if (currentNetworkConfigKey.current !== getNetworkConfigKey(savedDraft)) {
+          // Token 或代理变化后，之前的版本列表可能来自不同的网络上下文。
+          invalidateReleaseVersionsCache();
+        }
         currentNetworkConfigKey.current = getNetworkConfigKey(savedDraft);
         setConfigDraft(savedDraft);
         setTaskStatus(taskText.settingsSaved);
@@ -900,6 +1104,9 @@ export function App() {
       case "openInstallLocation":
       case "openInstallerFile":
         await handleOpenInstallPath(item);
+        return;
+      case "detectSystemInstall":
+        await handleRefreshSystemInstallDetection(item);
         return;
       case "retry":
         await refreshDashboard();
@@ -972,6 +1179,10 @@ export function App() {
     });
     try {
       const data = await installRepo(pendingInstall);
+      const installedItem = data.find((candidate) => candidate.id === item.id) ?? null;
+      const installedMessage = isPendingSystemInstallAdoption(installedItem)
+        ? taskText.systemInstallerNeedsDetection
+        : taskText.finishedInstalling(item.name);
       setApps(data);
       setSelectedId(item.id);
       setPendingInstall(null);
@@ -979,10 +1190,12 @@ export function App() {
         repoId: item.id,
         action: "install",
         stage: "finished",
-        message: taskText.finishedInstalling(item.name),
+        message: installedMessage,
         percent: 100
       });
-      setTaskStatus(taskText.installedOrUpdated(item.name));
+      setTaskStatus(isPendingSystemInstallAdoption(installedItem)
+        ? taskText.systemInstallerNeedsDetection
+        : taskText.installedOrUpdated(item.name));
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       const installError = formatInstallFailureMessage(message, languageRef.current);
@@ -1441,6 +1654,51 @@ export function App() {
     }
   }
 
+  async function handleOpenDataDir() {
+    clearTaskProgress();
+    setBusy(true);
+    setError(null);
+    try {
+      const localDataDir = await loadLocalDataDir();
+      await openPath(localDataDir);
+      setTaskStatus(taskText.openedDataDir);
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setError(message);
+      setTaskStatus(taskText.openFolderFailed);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleQuitApp() {
+    clearTaskProgress();
+    setError(null);
+    try {
+      await quitApp();
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setError(message);
+      setTaskStatus(taskText.quitFailed);
+    }
+  }
+
+  async function handleRestartToManagedSelf() {
+    clearTaskProgress();
+    setBusy(true);
+    setError(null);
+    setTaskStatus(taskText.restartingManagedSelf);
+    try {
+      await restartToManagedSelf();
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setError(message);
+      setTaskStatus(taskText.restartManagedSelfFailed);
+      await refreshSelfManagementStatus();
+      setBusy(false);
+    }
+  }
+
   function handleCopyReleaseNote(note?: string) {
     if (!note || !navigator.clipboard) {
       clearTaskProgress();
@@ -1617,6 +1875,23 @@ export function App() {
         </header>
 
         {error ? <div className="errorBanner">{error}</div> : null}
+        {showSelfRestartBanner ? (
+          <div className="errorBanner selfManagementBanner" role="status">
+            <div>
+              <strong>{ui.selfManagedRestartTitle}</strong>
+              <span>{ui.selfManagedRestartDetail}</span>
+            </div>
+            <button
+              type="button"
+              className="ghostButton actionButton compactAction"
+              onClick={() => void handleRestartToManagedSelf()}
+              disabled={busy}
+            >
+              <RotateCcw size={15} />
+              <span>{ui.restartManagedSelf}</span>
+            </button>
+          </div>
+        ) : null}
 
         {activeView === "dashboard" ? (
           <section className="dashboardView">
@@ -1644,7 +1919,7 @@ export function App() {
                           placeholder={ui.addRepoPlaceholder}
                           aria-label={ui.addRepoEyebrow}
                           value={repoInput}
-                          onChange={(event) => setRepoInput(event.target.value)}
+                          onChange={(event) => handleRepoInputChange(event.target.value)}
                           onKeyDown={(event) => {
                             if (event.key === "Enter") {
                               void handleAddRepo();
@@ -1717,6 +1992,7 @@ export function App() {
                     <div className="searchBox">
                       <Search size={17} />
                       <input
+                        ref={listSearchInput}
                         placeholder={ui.searchPlaceholder}
                         aria-label={ui.searchPlaceholder}
                         value={searchQuery}
@@ -1847,7 +2123,7 @@ export function App() {
                   versionsLoading={versionsLoading}
                   releaseVersionsFailure={releaseVersionsFailurePresentation}
                   selectedVersion={selectedVersion}
-                  onVersionChange={setSelectedVersion}
+                  onVersionChange={(version) => updateCachedSelectedVersion(selected?.id ?? null, version)}
                   onRetryReleaseVersions={() => {
                     void handleRetryReleaseVersions();
                   }}
@@ -1953,6 +2229,24 @@ export function App() {
                         </TooltipButton>
                       ))}
                     </div>
+                  </div>
+
+                  <div className="fieldRow">
+                    <span>{ui.closeBehavior}</span>
+                    <div className="segmentedControl" role="group" aria-label={ui.closeBehavior}>
+                      {closeBehaviorOptions(language).map((option) => (
+                        <TooltipButton
+                          key={option.value}
+                          label={option.label}
+                          onClick={() => setConfigDraft((current) => ({ ...current, closeBehavior: option.value }))}
+                          active={configDraft.closeBehavior === option.value}
+                          className={configDraft.closeBehavior === option.value ? "segmentedPill active" : "segmentedPill"}
+                        >
+                          <span>{option.label}</span>
+                        </TooltipButton>
+                      ))}
+                    </div>
+                    <small>{ui.closeBehaviorHelp}</small>
                   </div>
 
                   <label className={networkFieldsAttention ? "fieldRow attention" : "fieldRow"}>
@@ -2136,8 +2430,33 @@ export function App() {
                       <strong>{connectivityTestStatus.label}</strong> · {connectivityTestStatus.detail}
                     </p>
                   </div>
+	                </section>
+                <section className="settingsCard settingsActionsCard">
+                  <div className="settingsCardHeader">
+                    <span className="settingsCardEyebrow">{ui.settingsActions}</span>
+                    <p>{ui.settingsActionsHelp}</p>
+                  </div>
+                  <div className="networkConfigActions">
+                    <TooltipButton
+                      label={ui.openDataDir}
+                      onClick={() => void handleOpenDataDir()}
+                      disabled={busy}
+                      className="ghostButton"
+                    >
+                      <FolderOpen size={16} />
+                      <span>{ui.openDataDir}</span>
+                    </TooltipButton>
+                    <TooltipButton
+                      label={ui.quitReleaseDock}
+                      onClick={() => void handleQuitApp()}
+                      className="dangerButton"
+                    >
+                      <Power size={16} />
+                      <span>{ui.quitReleaseDock}</span>
+                    </TooltipButton>
+                  </div>
                 </section>
-              </aside>
+	              </aside>
             </div>
           </section>
         )}
@@ -2342,6 +2661,7 @@ function Inspector({
   const detailItems = getInspectorDetailItems(item, language);
   const lifecycleHistory = getLifecycleHistoryEntries(item, language);
   const releaseGuidance = buildReleaseActionGuidance(item, language);
+  const systemInstallerFollowUp = buildSystemInstallerFollowUp(item, language);
   const showPrimaryInspectorAction = !(item.status === "needsChoice" && hasInstallableAsset(item));
   const installedLifecycleItem = isManagedPathKind(item.installPathKind) || isSystemInstallerKind(item.installPathKind);
   const showDangerInspectorActions = item.status !== "needsChoice" && installedLifecycleItem;
@@ -2352,6 +2672,7 @@ function Inspector({
     (showPrimaryInspectorAction || showDangerInspectorActions);
   const inspectorSummary = buildInspectorStatusSummary(item, selectedVersion, installRetrying, language);
   const selectedReleaseVersion = releaseVersions.find((version) => version.tagName === selectedVersion) ?? null;
+  const hasSelectedVersionOption = releaseVersions.some((version) => version.tagName === selectedVersion);
   const selectedReleaseTitle =
     selectedReleaseVersion?.name?.trim() || selectedVersion || item.releaseTitle || item.latestVersion || ui.noVersions;
   const decisionHeaderValue = installedLifecycleItem ? item.currentVersion : selectedReleaseTitle;
@@ -2369,12 +2690,17 @@ function Inspector({
   const showOpenAppSecondary = shouldShowOpenAppSecondary(item);
   const showOpenReleaseSecondary = shouldShowOpenReleaseSecondary(item, language);
   const showInstallLocationSecondary = shouldShowInstallLocationSecondary(item);
-  const showInstallerFolderSecondary = shouldShowInstallerFolderSecondary(item);
-  const showSystemInstallDetectionSecondary = shouldShowSystemInstallDetectionAction(item);
+  const showInstallerFileSecondary = !systemInstallerFollowUp && shouldShowInstallerFileSecondary(item);
+  const showInstallerFolderSecondary = !systemInstallerFollowUp && shouldShowInstallerFolderSecondary(item);
+  const showSystemInstallDetectionSecondary =
+    !systemInstallerFollowUp
+    && primaryActionKind !== "detectSystemInstall"
+    && shouldShowSystemInstallDetectionAction(item);
   const showSecondaryInspectorActions =
     showOpenAppSecondary
     || showOpenReleaseSecondary
     || showInstallLocationSecondary
+    || showInstallerFileSecondary
     || showInstallerFolderSecondary
     || showSystemInstallDetectionSecondary;
   const pendingInstallSafetyText = pendingInstall
@@ -2387,7 +2713,7 @@ function Inspector({
     : "";
   const inspectorActionSection = (
     <div className="inspectorActions" aria-label={ui.managedAppsTitle}>
-      {/* 主动作独占第一组：安装 / 更新 / 打开 / 重试 */}
+      {/* 主动作独占第一组：安装 / 更新 / 打开 / 检测 / 重试 */}
       {showPrimaryInspectorAction ? (
         <div className="inspectorActionsGroup primaryActionGroup">
           <button
@@ -2403,6 +2729,8 @@ function Inspector({
               <ExternalLink size={16} />
             ) : primaryActionKind === "openInstallLocation" || primaryActionKind === "openInstallerFile" ? (
               <FolderOpen size={16} />
+            ) : primaryActionKind === "detectSystemInstall" ? (
+              <RefreshCw size={16} />
             ) : primaryActionKind == null ? (
               <CircleAlert size={16} />
             ) : (
@@ -2433,6 +2761,16 @@ function Inspector({
             >
               <FolderOpen size={16} />
               <span>{ui.openInstallLocation}</span>
+            </button>
+          ) : null}
+          {showInstallerFileSecondary ? (
+            <button
+              type="button"
+              className="ghostButton actionButton inspectorSecondaryAction"
+              onClick={onOpenInstallPath}
+            >
+              <Play size={16} />
+              <span>{ui.openInstallerFile}</span>
             </button>
           ) : null}
           {showInstallerFolderSecondary ? (
@@ -2511,7 +2849,10 @@ function Inspector({
               onChange={(event) => onVersionChange(event.target.value)}
               disabled={busy || versionsLoading || releaseVersions.length === 0}
             >
-              {releaseVersions.length === 0 ? (
+              {selectedVersion && !hasSelectedVersionOption ? (
+                <option value={selectedVersion}>{versionsLoading ? ui.loadingVersions : selectedVersion}</option>
+              ) : null}
+              {releaseVersions.length === 0 && !selectedVersion ? (
                 <option value="">{versionsLoading ? ui.loadingVersions : ui.noVersions}</option>
               ) : null}
               {releaseVersions.map((version) => (
@@ -2564,6 +2905,42 @@ function Inspector({
         </div>
 
         {showInspectorActions ? inspectorActionSection : null}
+
+        {systemInstallerFollowUp ? (
+          <div className="versionLoadWarning systemInstallerFollowUp" role="status">
+            <div className="versionLoadWarningCopy">
+              <span className="statePill warning">{systemInstallerFollowUp.title}</span>
+              <span>{systemInstallerFollowUp.detail}</span>
+            </div>
+            <div className="versionLoadWarningActions">
+              <button
+                type="button"
+                className="ghostButton actionButton compactAction"
+                onClick={onRefreshSystemInstallDetection}
+                disabled={busy}
+              >
+                <RefreshCw size={15} />
+                <span>{systemInstallerFollowUp.primaryLabel}</span>
+              </button>
+              <button
+                type="button"
+                className="ghostButton actionButton compactAction"
+                onClick={onOpenInstallPath}
+              >
+                <Play size={15} />
+                <span>{systemInstallerFollowUp.runInstallerLabel}</span>
+              </button>
+              <button
+                type="button"
+                className="ghostButton actionButton compactAction"
+                onClick={onOpenInstallerFolder}
+              >
+                <FolderOpen size={15} />
+                <span>{systemInstallerFollowUp.openFolderLabel}</span>
+              </button>
+            </div>
+          </div>
+        ) : null}
 
         <dl className="detailList decisionDetailList">
           {detailItems.map((detail, index) => (
@@ -3117,7 +3494,8 @@ function configDraftKey(config: ConfigDraft) {
     checkIntervalMinutes: config.checkIntervalMinutes,
     downloadAccelerationEnabled: config.downloadAccelerationEnabled,
     downloadMaxConnections: clampDownloadMaxConnections(config.downloadMaxConnections),
-    autostartEnabled: config.autostartEnabled
+    autostartEnabled: config.autostartEnabled,
+    closeBehavior: normalizeCloseBehavior(config.closeBehavior)
   });
 }
 
@@ -3133,8 +3511,13 @@ function desktopConfigFromDraft(config: ConfigDraft): DesktopConfig {
     checkIntervalMinutes: config.checkIntervalMinutes,
     downloadAccelerationEnabled: config.downloadAccelerationEnabled,
     downloadMaxConnections: clampDownloadMaxConnections(config.downloadMaxConnections),
-    autostartEnabled: config.autostartEnabled
+    autostartEnabled: config.autostartEnabled,
+    closeBehavior: normalizeCloseBehavior(config.closeBehavior)
   };
+}
+
+function normalizeCloseBehavior(value?: string | null): "tray" | "exit" {
+  return value === "exit" ? "exit" : "tray";
 }
 
 function clampDownloadMaxConnections(value: number | string | null | undefined) {

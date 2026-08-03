@@ -5,6 +5,9 @@ import {
   buildConnectivityTestStatus,
   buildConnectivityTestViewState,
   buildReleaseVersionsFailurePresentation,
+  buildSystemInstallerFollowUp,
+  applySystemInstallAdoption,
+  shouldClearDiscoveryResultsForInput,
   sortDiscoveryResults,
   buildBackgroundCheckPresentation,
   buildNetworkConfigHealth,
@@ -29,6 +32,7 @@ import {
   hasSecondaryInspectorActions,
   isFailedInstallProgress,
   isSystemUninstallOnly,
+  isPendingSystemInstallAdoption,
   installManagementKindLabel,
   integrityStatusLabel,
   installPreviewIntegrityLabel,
@@ -41,6 +45,8 @@ import {
   releaseDirectionLabel,
   shouldInitializeWorkspace,
   resolveLifecycleSelection,
+  shouldLoadCachedReleaseVersions,
+  updateReleaseVersionsCache,
   resolveVersionSelectionAfterLoadFailure,
   resolveUninstallExecutionKind,
   getDetailPathLabel,
@@ -49,6 +55,7 @@ import {
   shouldShowLifecyclePreviewAction,
   shouldShowOpenAppSecondary,
   shouldShowOpenReleaseSecondary,
+  shouldShowInstallerFileSecondary,
   shouldShowInstallerFolderSecondary,
   shouldShowInstallLocationAction,
   shouldShowInstallLocationSecondary,
@@ -57,6 +64,7 @@ import {
   shouldShowSystemInstallDetectionAction,
   shouldLoadRemoteDashboard,
   shouldLoadReleaseVersions,
+  resolveDesktopShortcut,
   systemPackageManagerLabel,
   taskActionLabel,
   taskStageLabel,
@@ -68,6 +76,7 @@ import {
   selectVisibleIds,
   toggleSelection
 } from "./appModel";
+import type { ReleaseVersionsCache } from "./appModel";
 
 const language: Language = "en";
 
@@ -113,7 +122,112 @@ describe("startup release loading", () => {
   });
 });
 
+describe("Windows installer adoption and desktop shortcuts", () => {
+  const apps = [
+    {
+      id: "owner/installer",
+      name: "Installer app",
+      currentVersion: "v1.0.0",
+      latestVersion: "v1.0.0",
+      status: "current" as const,
+      source: "GitHub",
+      installPath: "C:/Users/A/Downloads/setup.exe",
+      installerPath: "C:/Users/A/Downloads/setup.exe",
+      installPathKind: "systemInstaller" as const,
+      launchPath: undefined
+    },
+    {
+      id: "owner/other",
+      name: "Other app",
+      currentVersion: "v1.0.0",
+      latestVersion: "v1.0.0",
+      status: "current" as const,
+      source: "GitHub",
+      installPath: "C:/Apps/Other/other.exe",
+      installPathKind: "managedPath" as const
+    }
+  ];
+
+  it("merges an adopted system installer into only its matching repository", () => {
+    const merged = applySystemInstallAdoption(apps, {
+      status: "adopted",
+      repoId: "owner/installer",
+      installPath: "C:/Program Files/Installer app",
+      launchPath: "C:/Program Files/Installer app/installer.exe"
+    });
+
+    expect(merged[0]).toMatchObject({
+      installPath: "C:/Program Files/Installer app",
+      installerPath: "C:/Users/A/Downloads/setup.exe",
+      launchPath: "C:/Program Files/Installer app/installer.exe"
+    });
+    expect(merged[1]).toEqual(apps[1]);
+  });
+
+  it("keeps pending installer state unchanged when automatic adoption times out", () => {
+    expect(applySystemInstallAdoption(apps, {
+      status: "timedOut",
+      repoId: "owner/installer"
+    })).toBe(apps);
+  });
+
+  it("resolves shortcuts only in a safe dashboard context", () => {
+    expect(resolveDesktopShortcut({
+      key: "r",
+      ctrlOrMeta: true,
+      activeView: "dashboard",
+      busy: false,
+      editable: false,
+      hasDialog: false
+    })).toBe("refreshDashboard");
+    expect(resolveDesktopShortcut({
+      key: "ArrowDown",
+      ctrlOrMeta: false,
+      activeView: "dashboard",
+      busy: false,
+      editable: false,
+      hasDialog: false
+    })).toBe("selectNext");
+    expect(resolveDesktopShortcut({
+      key: "Escape",
+      ctrlOrMeta: false,
+      activeView: "settings",
+      busy: true,
+      editable: true,
+      hasDialog: true
+    })).toBeNull();
+    expect(resolveDesktopShortcut({
+      key: "Escape",
+      ctrlOrMeta: false,
+      activeView: "settings",
+      busy: false,
+      editable: true,
+      hasDialog: true
+    })).toBe("cancelDialog");
+    expect(resolveDesktopShortcut({
+      key: "f",
+      ctrlOrMeta: true,
+      activeView: "dashboard",
+      busy: false,
+      editable: true,
+      hasDialog: false
+    })).toBeNull();
+  });
+});
+
 describe("GitHub discovery results", () => {
+  it("clears stale candidates when the search input is cleared or changed", () => {
+    expect(shouldClearDiscoveryResultsForInput("", "micro")).toBe(true);
+    expect(shouldClearDiscoveryResultsForInput("   ", "micro")).toBe(true);
+    expect(shouldClearDiscoveryResultsForInput("other", "micro")).toBe(true);
+  });
+
+  it("keeps candidates while the input still matches the searched query", () => {
+    expect(shouldClearDiscoveryResultsForInput("micro", "micro")).toBe(false);
+    expect(shouldClearDiscoveryResultsForInput("micro ", "micro")).toBe(false);
+    expect(shouldClearDiscoveryResultsForInput("micro", "")).toBe(false);
+  });
+
   it("prioritizes repositories with installable release assets and then stars", () => {
     expect(sortDiscoveryResults([
       {
@@ -168,6 +282,59 @@ describe("release lifecycle inspector state", () => {
       assetName: "project.AppImage"
     }
   };
+
+  it("keeps loaded release versions isolated per repository", () => {
+    const firstVersions = [
+      { tagName: "v2.0.0", prerelease: false },
+      { tagName: "v1.0.0", prerelease: false }
+    ];
+    const secondVersions = [{ tagName: "v3.0.0", prerelease: false }];
+    let cache: ReleaseVersionsCache = {};
+
+    cache = updateReleaseVersionsCache(cache, "owner/first", {
+      versions: firstVersions,
+      selectedVersion: "v2.0.0",
+      loaded: true,
+      loading: false,
+      error: null
+    });
+    cache = updateReleaseVersionsCache(cache, "owner/second", {
+      versions: secondVersions,
+      selectedVersion: "v3.0.0",
+      loaded: true,
+      loading: false,
+      error: null
+    });
+
+    expect(cache["owner/first"]?.versions).toEqual(firstVersions);
+    expect(cache["owner/first"]?.selectedVersion).toBe("v2.0.0");
+    expect(cache["owner/second"]?.versions).toEqual(secondVersions);
+    expect(cache["owner/second"]?.selectedVersion).toBe("v3.0.0");
+    expect(shouldLoadCachedReleaseVersions(cache, "owner/first")).toBe(false);
+    expect(shouldLoadCachedReleaseVersions(cache, "owner/second")).toBe(false);
+    expect(shouldLoadCachedReleaseVersions(cache, "owner/new")).toBe(true);
+  });
+
+  it("keeps the cached target visible while a repository version refresh fails", () => {
+    let cache: ReleaseVersionsCache = updateReleaseVersionsCache({}, "owner/project", {
+      versions: [{ tagName: "v2.0.0", prerelease: false }],
+      selectedVersion: "v2.0.0",
+      loaded: true,
+      loading: false,
+      error: null
+    });
+
+    cache = updateReleaseVersionsCache(cache, "owner/project", {
+      loading: false,
+      error: "GitHub rate limit exceeded"
+    });
+
+    expect(cache["owner/project"]?.versions).toEqual([
+      { tagName: "v2.0.0", prerelease: false }
+    ]);
+    expect(cache["owner/project"]?.selectedVersion).toBe("v2.0.0");
+    expect(cache["owner/project"]?.error).toBe("GitHub rate limit exceeded");
+  });
 
   it("offers rollback only for managed installs with a snapshot", () => {
     expect(getRollbackAvailability(managed, false, "en").enabled).toBe(true);
@@ -1178,11 +1345,24 @@ describe("buildUpdateInbox", () => {
       }
     ], "zh-CN")[0];
 
-    expect(systemInstaller.actionLabel).toBe("执行安装包");
+    expect(systemInstaller.actionLabel).toBe("重新检测安装状态");
+    expect(isPendingSystemInstallAdoption(systemInstaller)).toBe(true);
+    expect(shouldShowInstallerFileSecondary(systemInstaller)).toBe(true);
     expect(shouldShowInstallerFolderSecondary(systemInstaller)).toBe(true);
     expect(shouldShowInstallLocationSecondary(systemInstaller)).toBe(false);
     expect(isSystemUninstallOnly(systemInstaller)).toBe(false);
     expect(shouldShowSystemInstallDetectionAction(systemInstaller)).toBe(true);
+    expect(getPrimaryActionAvailability(systemInstaller, true, "zh-CN")).toEqual({
+      enabled: false,
+      reason: "当前有任务在执行"
+    });
+    expect(buildSystemInstallerFollowUp(systemInstaller, "zh-CN")).toEqual({
+      title: "Windows 安装器后续操作",
+      detail: "完成 Windows 安装向导后重新检测安装状态，ReleaseDock 才能从安装包记录切换到真实软件路径。",
+      primaryLabel: "重新检测安装状态",
+      runInstallerLabel: "执行安装包",
+      openFolderLabel: "打开安装包目录"
+    });
   });
 
   it("opens adopted system installers like installed apps when a launch target exists", () => {
@@ -1205,8 +1385,11 @@ describe("buildUpdateInbox", () => {
     expect(getPrimaryActionAvailability(adoptedInstaller, false, language)).toEqual({ enabled: true });
     expect(getOpenAppAvailability(adoptedInstaller, false, language)).toEqual({ enabled: true });
     expect(shouldShowInstallLocationSecondary(adoptedInstaller)).toBe(true);
+    expect(isPendingSystemInstallAdoption(adoptedInstaller)).toBe(false);
+    expect(shouldShowInstallerFileSecondary(adoptedInstaller)).toBe(false);
     expect(shouldShowInstallerFolderSecondary(adoptedInstaller)).toBe(false);
     expect(shouldShowSystemInstallDetectionAction(adoptedInstaller)).toBe(false);
+    expect(buildSystemInstallerFollowUp(adoptedInstaller, language)).toBeNull();
     expect(getInspectorDetailItems(adoptedInstaller, language)).toEqual([
       {
         label: "Asset file",
@@ -1270,6 +1453,8 @@ describe("buildUpdateInbox", () => {
     expect(shouldShowSystemInstallDetectionAction(externalInstaller)).toBe(true);
     expect(shouldShowSystemInstallDetectionAction(managedApp)).toBe(false);
     expect(shouldShowSystemInstallDetectionAction(pendingInstaller)).toBe(false);
+    expect(isPendingSystemInstallAdoption(pendingInstaller)).toBe(false);
+    expect(buildSystemInstallerFollowUp(pendingInstaller, language)).toBeNull();
   });
 
   it("keeps executable installs on the managed uninstall path even when legacy support is false", () => {

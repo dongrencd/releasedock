@@ -118,6 +118,8 @@ type Copy = {
   openInstallerFile: string;
   openInstallerFolder: string;
   refreshSystemInstallDetection: string;
+  systemInstallerFollowUpTitle: string;
+  systemInstallerFollowUpDetail: string;
   removeTracked: string;
   noSelection: string;
   settingsTitleSmall: string;
@@ -175,6 +177,10 @@ type Copy = {
   autostartEnabled: string;
   autostartDisabled: string;
   autostartHelp: string;
+  closeBehavior: string;
+  closeBehaviorTray: string;
+  closeBehaviorExit: string;
+  closeBehaviorHelp: string;
   notificationPermission: string;
   notificationPermissionGranted: string;
   notificationPermissionDenied: string;
@@ -201,6 +207,13 @@ type Copy = {
   downloadMaxConnections: string;
   downloadConnectionsUnit: string;
   downloadMaxConnectionsHelp: string;
+  settingsActions: string;
+  settingsActionsHelp: string;
+  selfManagedRestartTitle: string;
+  selfManagedRestartDetail: string;
+  restartManagedSelf: string;
+  openDataDir: string;
+  quitReleaseDock: string;
   trayBadge: (count: number) => string;
   currentStatusLoading: string;
   currentStatusLoaded: (count: number) => string;
@@ -411,6 +424,8 @@ const copy: Record<Language, Copy> = {
     openInstallerFile: "Run installer",
     openInstallerFolder: "Open installer folder",
     refreshSystemInstallDetection: "Re-detect install",
+    systemInstallerFollowUpTitle: "Windows installer follow-up",
+    systemInstallerFollowUpDetail: "Finish any Windows setup windows, then re-detect the install so ReleaseDock can switch from the installer package to the real app path.",
     removeTracked: "Remove tracking",
     noSelection: "No app selected",
     settingsTitleSmall: "8 local settings",
@@ -468,6 +483,10 @@ const copy: Record<Language, Copy> = {
     autostartEnabled: "Enabled",
     autostartDisabled: "Disabled",
     autostartHelp: "Start ReleaseDock in the background after sign-in. It only runs update checks; it never installs updates automatically.",
+    closeBehavior: "When closing window",
+    closeBehaviorTray: "Stay in tray",
+    closeBehaviorExit: "Exit app",
+    closeBehaviorHelp: "Choose whether the window close button keeps background checks running or quits ReleaseDock.",
     notificationPermission: "Notifications",
     notificationPermissionGranted: "Allowed",
     notificationPermissionDenied: "Blocked",
@@ -497,6 +516,13 @@ const copy: Record<Language, Copy> = {
     downloadMaxConnections: "Max connections",
     downloadConnectionsUnit: "connections",
     downloadMaxConnectionsHelp: "Default is 4. Values are limited to 1-8.",
+    settingsActions: "Application actions",
+    settingsActionsHelp: "Open the local data folder or exit ReleaseDock.",
+    selfManagedRestartTitle: "ReleaseDock moved itself into the managed folder",
+    selfManagedRestartDetail: "Restart once to keep future updates and launch actions on the managed copy. The original download is left untouched.",
+    restartManagedSelf: "Restart managed copy",
+    openDataDir: "Open data folder",
+    quitReleaseDock: "Quit ReleaseDock",
     trayBadge: (count) => `${count} updates available`,
     currentStatusLoading: "Loading GitHub Release data",
     currentStatusLoaded: (count) => `Loaded ${count} apps`,
@@ -707,6 +733,8 @@ const copy: Record<Language, Copy> = {
     openInstallerFile: "执行安装包",
     openInstallerFolder: "打开安装包目录",
     refreshSystemInstallDetection: "重新检测安装状态",
+    systemInstallerFollowUpTitle: "Windows 安装器后续操作",
+    systemInstallerFollowUpDetail: "完成 Windows 安装向导后重新检测安装状态，ReleaseDock 才能从安装包记录切换到真实软件路径。",
     removeTracked: "移除跟踪",
     noSelection: "暂无可展示的软件",
     settingsTitleSmall: "8 个本地配置项",
@@ -764,6 +792,10 @@ const copy: Record<Language, Copy> = {
     autostartEnabled: "已启用",
     autostartDisabled: "已关闭",
     autostartHelp: "登录系统后在后台启动 ReleaseDock，只做更新检查，不会自动安装更新。",
+    closeBehavior: "关闭窗口时",
+    closeBehaviorTray: "驻留托盘",
+    closeBehaviorExit: "退出程序",
+    closeBehaviorHelp: "选择点击窗口关闭按钮后继续后台检查，还是直接退出 ReleaseDock。",
     notificationPermission: "系统通知",
     notificationPermissionGranted: "已允许",
     notificationPermissionDenied: "已阻止",
@@ -791,6 +823,13 @@ const copy: Record<Language, Copy> = {
     downloadMaxConnections: "最大连接数",
     downloadConnectionsUnit: "连接",
     downloadMaxConnectionsHelp: "默认 4，取值限制为 1-8。",
+    settingsActions: "应用操作",
+    settingsActionsHelp: "打开本地数据目录或退出 ReleaseDock。",
+    selfManagedRestartTitle: "ReleaseDock 已复制到管理目录",
+    selfManagedRestartDetail: "重启一次即可切换到托管副本，后续更新和打开动作都会使用管理目录；原下载文件不会被删除。",
+    restartManagedSelf: "重启托管副本",
+    openDataDir: "打开数据目录",
+    quitReleaseDock: "退出 ReleaseDock",
     trayBadge: (count) => `${count} 个有更新`,
     currentStatusLoading: "正在加载 GitHub Release 数据",
     currentStatusLoaded: (count) => `已加载 ${count} 个软件`,
@@ -952,6 +991,8 @@ export function createTaskStatusText(language: Language) {
     testingGithubConnectivity: localizedText(language, "Testing GitHub connection", "正在测试 GitHub 连接"),
     githubConnectivitySucceeded: localizedText(language, "GitHub connection test passed", "GitHub 连接测试通过"),
     githubConnectivityFailed: localizedText(language, "GitHub connection test failed", "GitHub 连接测试失败"),
+    restartingManagedSelf: localizedText(language, "Restarting managed ReleaseDock", "正在重启托管版 ReleaseDock"),
+    restartManagedSelfFailed: localizedText(language, "Failed to restart managed ReleaseDock", "重启托管版 ReleaseDock 失败"),
     generatingInstallPreview: (name: string) =>
       localizedTemplate(language, `Generating install preview for ${name}`, `正在为 ${name} 生成安装预览`),
     generatedInstallPreview: (name: string) =>
@@ -972,6 +1013,19 @@ export function createTaskStatusText(language: Language) {
       localizedTemplate(language, `Finished installing ${name}`, `已完成安装 ${name}`),
     installedOrUpdated: (name: string) =>
       localizedTemplate(language, `Installed or updated ${name}`, `已安装或更新 ${name}`),
+    systemInstallerNeedsDetection: localizedText(
+      language,
+      "Installer finished. ReleaseDock is checking Windows for the installed app.",
+      "安装器已执行。ReleaseDock 正在检测 Windows 中的已安装应用。"
+    ),
+    systemInstallerAutoDetected: (repo: string) =>
+      localizedTemplate(language, `Detected installation for ${repo}`, `已检测到 ${repo} 的安装位置`),
+    systemInstallerAutoDetectionTimedOut: (repo: string) =>
+      localizedTemplate(
+        language,
+        `Could not detect ${repo} yet. Finish setup, then re-detect the install.`,
+        `暂未检测到 ${repo}。请完成安装向导后重新检测安装状态。`
+      ),
     installFailed: localizedText(language, "Install failed", "安装失败"),
     uninstalling: (name: string) => localizedTemplate(language, `Uninstalling ${name}`, `正在卸载 ${name}`),
     finishedUninstalling: (name: string) =>
@@ -1019,6 +1073,8 @@ export function createTaskStatusText(language: Language) {
     openFolderFailed: localizedText(language, "Open folder failed", "打开目录失败"),
     noInstallRootSelected: localizedText(language, "No install root selected", "没有选择安装根目录"),
     openedInstallRoot: localizedText(language, "Opened install root", "已打开安装根目录"),
+    openedDataDir: localizedText(language, "Opened data folder", "已打开数据目录"),
+    quitFailed: localizedText(language, "Failed to quit ReleaseDock", "退出 ReleaseDock 失败"),
     releaseNoteCopied: localizedText(language, "Release note copied", "已复制 release note"),
     copiedValue: (label: string) => localizedTemplate(language, `Copied ${label}`, `已复制${label}`)
   };
@@ -1038,6 +1094,14 @@ export function themeModeOptions(language: Language) {
     { value: "system" as const, label: ui.themeSystem },
     { value: "light" as const, label: ui.themeLight },
     { value: "dark" as const, label: ui.themeDark }
+  ];
+}
+
+export function closeBehaviorOptions(language: Language) {
+  const ui = createUiText(language);
+  return [
+    { value: "tray" as const, label: ui.closeBehaviorTray },
+    { value: "exit" as const, label: ui.closeBehaviorExit }
   ];
 }
 

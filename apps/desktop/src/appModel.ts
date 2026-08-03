@@ -5,6 +5,7 @@ import type {
   ReleaseChannel,
   ReleaseDirection,
   ReleasePolicy
+ ,ReleaseVersion
 } from "./backend";
 
 export type AppStatus = "updateAvailable" | "downgradeAvailable" | "current" | "needsChoice" | "noRelease" | "failed";
@@ -38,6 +39,29 @@ export type ManagedApp = {
   releaseDirection?: ReleaseDirection;
   recentActivities?: LifecycleActivity[] | null;
 };
+
+export type SystemInstallAdoptionEvent =
+  | {
+      status: "adopted";
+      repoId: string;
+      installPath: string;
+      launchPath: string | null;
+    }
+  | {
+      status: "timedOut";
+      repoId: string;
+    };
+
+export type DesktopShortcutInput = {
+  key: string;
+  ctrlOrMeta: boolean;
+  activeView: "dashboard" | "settings";
+  busy: boolean;
+  editable: boolean;
+  hasDialog: boolean;
+};
+
+export type DesktopShortcut = "refreshDashboard" | "focusSearch" | "selectPrevious" | "selectNext" | "cancelDialog";
 
 export type LifecycleActivity = {
   repoId: string;
@@ -110,6 +134,17 @@ export type InspectorStatusSummary = {
   tone: "neutral" | "success" | "warning" | "danger";
 };
 
+// 版本列表按仓库隔离，避免切换软件时用一个全局数组覆盖另一个软件的目标版本。
+export type ReleaseVersionsCacheEntry = {
+  versions: ReleaseVersion[];
+  loading: boolean;
+  error: string | null;
+  selectedVersion: string;
+  loaded: boolean;
+};
+
+export type ReleaseVersionsCache = Record<string, ReleaseVersionsCacheEntry>;
+
 // 公开筛选以用户任务语义命名，而不是直接映射内部状态名。
 // actionRequired 是聚合筛选：匹配 needsChoice 以及可移除的 noRelease 跟踪项。
 export type InboxFilter = "all" | "updateAvailable" | "actionRequired" | "failed";
@@ -155,7 +190,16 @@ export type PrimaryActionKind =
   | "openRelease"
   | "openInstallLocation"
   | "openInstallerFile"
+  | "detectSystemInstall"
   | "retry";
+
+export type SystemInstallerFollowUp = {
+  title: string;
+  detail: string;
+  primaryLabel: string;
+  runInstallerLabel: string;
+  openFolderLabel: string;
+};
 
 export type StatusDockPresentation = {
   eyebrow: string;
@@ -218,8 +262,59 @@ export type DiscoveryResult = {
   htmlUrl: string;
 };
 
+// A candidate list belongs to the query that produced it, not to every later input value.
+export function shouldClearDiscoveryResultsForInput(input: string, searchedQuery: string): boolean {
+  const trimmedInput = input.trim();
+  return trimmedInput.length === 0 || (searchedQuery.length > 0 && trimmedInput !== searchedQuery);
+}
+
 export function shouldLoadRemoteDashboard(result: GithubConnectivityResultLike | null): boolean {
   return result?.ok === true;
+}
+
+export function applySystemInstallAdoption(
+  apps: ManagedApp[],
+  event: SystemInstallAdoptionEvent
+): ManagedApp[] {
+  if (event.status !== "adopted") {
+    return apps;
+  }
+
+  let changed = false;
+  const nextApps = apps.map((app) => {
+    if (app.id !== event.repoId) {
+      return app;
+    }
+    changed = true;
+    return {
+      ...app,
+      installPath: event.installPath,
+      launchPath: event.launchPath ?? undefined
+    };
+  });
+  return changed ? nextApps : apps;
+}
+
+export function resolveDesktopShortcut(input: DesktopShortcutInput): DesktopShortcut | null {
+  if (input.key === "Escape" && input.hasDialog && !input.busy) {
+    return "cancelDialog";
+  }
+  if (input.activeView !== "dashboard" || input.busy || input.editable || input.hasDialog) {
+    return null;
+  }
+  if (input.ctrlOrMeta && input.key.toLowerCase() === "r") {
+    return "refreshDashboard";
+  }
+  if (input.ctrlOrMeta && input.key.toLowerCase() === "f") {
+    return "focusSearch";
+  }
+  if (input.key === "ArrowUp") {
+    return "selectPrevious";
+  }
+  if (input.key === "ArrowDown") {
+    return "selectNext";
+  }
+  return null;
 }
 
 export function shouldLoadReleaseVersions(remoteDashboardReady: boolean, status?: AppStatus): boolean {
@@ -575,7 +670,11 @@ export function shouldShowInstallerFolderSecondary(item: ManagedApp | null): boo
     && Boolean(resolveInstallerPackagePath(item));
 }
 
-export function shouldShowSystemInstallDetectionAction(item: ManagedApp | null): boolean {
+export function shouldShowInstallerFileSecondary(item: ManagedApp | null): boolean {
+  return isPendingSystemInstallAdoption(item) && Boolean(item && resolveInstallerPackagePath(item));
+}
+
+export function isPendingSystemInstallAdoption(item: ManagedApp | null): boolean {
   if (!item) {
     return false;
   }
@@ -583,6 +682,28 @@ export function shouldShowSystemInstallDetectionAction(item: ManagedApp | null):
   return item.status !== "needsChoice"
     && isSystemInstallerKind(item.installPathKind)
     && !isAdoptedSystemInstaller(item);
+}
+
+export function shouldShowSystemInstallDetectionAction(item: ManagedApp | null): boolean {
+  return isPendingSystemInstallAdoption(item);
+}
+
+export function buildSystemInstallerFollowUp(
+  item: ManagedApp | null,
+  language: Language
+): SystemInstallerFollowUp | null {
+  if (!isPendingSystemInstallAdoption(item)) {
+    return null;
+  }
+
+  const ui = createUiText(language);
+  return {
+    title: ui.systemInstallerFollowUpTitle,
+    detail: ui.systemInstallerFollowUpDetail,
+    primaryLabel: ui.refreshSystemInstallDetection,
+    runInstallerLabel: ui.openInstallerFile,
+    openFolderLabel: ui.openInstallerFolder
+  };
 }
 
 export function shouldShowNotificationPermissionRequest(permission: string): boolean {
@@ -904,6 +1025,31 @@ export function resolveLifecycleSelection(
   };
 }
 
+export function shouldLoadCachedReleaseVersions(cache: ReleaseVersionsCache, repoId: string): boolean {
+  return !cache[repoId]?.loaded;
+}
+
+export function updateReleaseVersionsCache(
+  cache: ReleaseVersionsCache,
+  repoId: string,
+  update: Partial<ReleaseVersionsCacheEntry>
+): ReleaseVersionsCache {
+  const current = cache[repoId] ?? {
+    versions: [],
+    loading: false,
+    error: null,
+    selectedVersion: "",
+    loaded: false
+  };
+  return {
+    ...cache,
+    [repoId]: {
+      ...current,
+      ...update
+    }
+  };
+}
+
 export function releaseChannelForVersion(version: { prerelease: boolean } | null | undefined): ReleaseChannel {
   return version?.prerelease ? "prerelease" : "stable";
 }
@@ -1065,6 +1211,10 @@ export function resolvePrimaryActionKind(item: ManagedApp | null): PrimaryAction
     case "current":
       if (item.launchPath && !isUnknownInstallPathKind(item.installPathKind)) {
         return "openApp";
+      }
+
+      if (isPendingSystemInstallAdoption(item)) {
+        return "detectSystemInstall";
       }
 
       if (shouldShowInstallLocationAction(item)) {
@@ -1261,6 +1411,7 @@ export function hasSecondaryInspectorActions(item: InboxItem | null, language: L
 
   return shouldShowOpenAppSecondary(item)
     || shouldShowOpenReleaseSecondary(item, language)
+    || shouldShowInstallerFileSecondary(item)
     || shouldShowInstallerFolderSecondary(item)
     || shouldShowSystemInstallDetectionAction(item)
     || shouldShowInstallLocationSecondary(item);
@@ -1551,6 +1702,8 @@ function actionForApp(app: ManagedApp, language: Language): InboxItem["actionLab
       return ui.openInstallLocation;
     case "openInstallerFile":
       return ui.openInstallerFile;
+    case "detectSystemInstall":
+      return ui.refreshSystemInstallDetection;
     case "retry":
       return ui.action.retry;
   }

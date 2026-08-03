@@ -41,10 +41,12 @@ The desktop app is a compact update workbench built with Tauri 2 and React.
 - Left side: tracked repositories, local filters, selection, bulk remove/uninstall affordances.
 - Right side: selected release, version policy, install preview, lifecycle history, release notes, and contextual actions.
 - Bottom status strip: refresh, download, install, uninstall, rollback, and failure progress.
-- Settings: GitHub token, GitHub proxy, install root, language, theme, background checks, start-with-Windows, notification permission actions, check interval, and download acceleration.
-- System tray: close-to-tray behavior, consistent unminimize/focus restore, single-instance restore, manual check, restore window, quit, and update-count tooltip. Start-with-Windows launches in a lightweight hidden mode and defers dashboard/network loading until the window is restored. Background network or Token failures are surfaced as partial/failed diagnostics instead of being reported as zero updates.
+- Settings: GitHub token, GitHub proxy, install root, language, theme, close-window behavior, background checks, start-with-Windows, notification permission actions, check interval, and download acceleration, plus actions to open the local data folder or quit the app.
+- System tray: configurable close-to-tray or exit behavior, consistent unminimize/focus restore, single-instance restore, manual check, restore window, localized quit menu, and update-count tooltip. Start-with-Windows launches in a lightweight hidden mode and defers dashboard/network loading until the window is restored. Background network or Token failures are surfaced as partial/failed diagnostics instead of being reported as zero updates.
 
 Public repositories work without a token. Private repositories and frequent refreshes should use a GitHub token. The proxy setting applies to GitHub API queries and Release asset downloads.
+
+Release version lists are cached per repository for the current process. Switching back to a loaded app restores its version list and last target immediately; manual retry, Dashboard refresh, or changing the GitHub token/proxy invalidates the cache.
 
 On first startup, ReleaseDock shows local manifest and tracked-repository records before contacting GitHub. It performs one connection check and only loads release data when that check succeeds. Network, proxy, rate-limit, or token failures keep the local records visible and can be recovered through the existing network settings and Check updates actions instead of repeatedly refreshing the release list.
 
@@ -73,7 +75,11 @@ ReleaseDock distinguishes how an asset is managed:
 - **System package**: Linux `.deb`, `.rpm`, and `.pkg.tar.*` packages installed and removed through the system package manager.
 - **External installer**: Windows `.exe` / `.msi` installers that may install software outside ReleaseDock's managed root.
 
-Managed-local updates use staging and rollback snapshots so a failed replacement can keep or restore the previous install. System installers stay traceable: ReleaseDock records the installer package path, and on Windows automatically re-detects a real installed app location from the system uninstall registry during install follow-up, dashboard refresh, or the inspector's manual re-detect action when metadata is available.
+Managed-local updates use staging and rollback snapshots so a failed replacement can keep or restore the previous install. System installers stay traceable: ReleaseDock records the installer package path, and on Windows automatically re-detects a real installed app location from the system uninstall registry during install follow-up, dashboard refresh, or the inspector's manual re-detect action when metadata is available. If the installer finished but no registry metadata is available yet, the desktop keeps the app visible with `Re-detect install` as the primary action and keeps explicit secondary actions to run the installer package again or open its folder.
+
+After a Windows `.exe` or `.msi` installer returns without a detected app location, ReleaseDock checks the uninstall registry every four seconds for up to two minutes. A match updates only that app in the dashboard; a timeout retains the same manual re-detect and installer-package recovery actions.
+
+When the Windows desktop is first launched from a manually downloaded `ReleaseDock-windows-x64.exe`, ReleaseDock copies that running executable into its managed install root and asks for one restart so future updates and launch actions use the managed copy. The restart is handed off through ReleaseDock's internal helper and the Windows shell, without `cmd` scripts or a temporary console. The original downloaded file is left untouched.
 
 Older Windows records may have classified a bare runnable `.exe` as an external installer. When the next selected asset is still a bare executable, ReleaseDock migrates that record into a managed-local install during the successful update. Real installers such as `.msi` and `setup.exe`, or records already adopted to a real installed app location, stay external installer records.
 

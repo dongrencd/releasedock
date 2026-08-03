@@ -321,7 +321,8 @@ input {
 .ghostButton,
 .primaryButton,
 .iconButton,
-.linkButton {
+.linkButton,
+.dangerButton {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -782,6 +783,26 @@ input {
   background: #fef2f2;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.selfManagementBanner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-color: #facc15;
+  color: #854d0e;
+  background: #fffbeb;
+}
+
+.selfManagementBanner > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.selfManagementBanner button {
+  flex: 0 0 auto;
 }
 
 .inboxPanel,

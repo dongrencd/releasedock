@@ -10,10 +10,11 @@ use std::{
     fs,
     future::Future,
     path::{Path, PathBuf},
+    thread,
     sync::{Arc, LazyLock},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-#[cfg(not(target_os = "windows"))]
 use std::process::Command;
 
 use anyhow::{Context, Result};
@@ -21,9 +22,10 @@ use releasedock_core::{
     asset_matcher::{Architecture, AssetMatcher, InstallType, OperatingSystem},
     config::{Config, ConfigStore, Language},
     config::{
-        background_check_enabled, check_interval_minutes, download_acceleration_enabled,
-        download_max_connections, effective_install_root,
+        background_check_enabled, check_interval_minutes, close_behavior,
+        download_acceleration_enabled, download_max_connections, effective_install_root,
     },
+    config::CloseBehavior,
     install_plan::{InstallManagementKind, InstallPlan, InstallSelectionGuard},
     installer::{
         ProgressReporter, RollbackGuard, TaskProgress, adopt_pending_system_installer_apps,
@@ -52,6 +54,10 @@ use tokio::task::{JoinHandle, JoinSet};
 #[cfg(target_os = "windows")]
 use std::os::windows::ffi::OsStrExt;
 #[cfg(target_os = "windows")]
+use windows::Win32::Foundation::CloseHandle;
+#[cfg(target_os = "windows")]
+use windows::Win32::System::Threading::{OpenProcess, SYNCHRONIZE, WaitForSingleObject};
+#[cfg(target_os = "windows")]
 use windows::Win32::UI::Shell::ShellExecuteW;
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
@@ -65,14 +71,30 @@ mod tray;
 use tracking::{TrackedRepo, TrackedRepoStore};
 
 const DEFAULT_TRACKED_REPO_ID: &str = "dongrencd/releasedock";
+const SELF_MANAGED_REPO_ID: &str = DEFAULT_TRACKED_REPO_ID;
 const TASK_PROGRESS_EVENT: &str = "task-progress";
 const DASHBOARD_ITEM_EVENT: &str = "dashboard-item-updated";
 const DASHBOARD_PROGRESS_EVENT: &str = "dashboard-progress";
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const SYSTEM_INSTALL_ADOPTION_EVENT: &str = "system-install-adoption";
 const DASHBOARD_CONCURRENCY: usize = 6;
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const SYSTEM_INSTALL_ADOPTION_MAX_ATTEMPTS: usize = 30;
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const SYSTEM_INSTALL_ADOPTION_INTERVAL: Duration = Duration::from_secs(4);
+const RELAUNCH_MANAGED_SELF_ARG: &str = "--relaunch-managed-self";
+const RELAUNCH_PARENT_PID_ARG: &str = "--parent-pid";
+const RELAUNCH_TARGET_ARG: &str = "--target";
+const RELAUNCH_PARENT_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// 持有当前后台检查任务句柄，支持保存设置后热重启
 static BACKGROUND_TASK: LazyLock<Mutex<Option<JoinHandle<()>>>> =
     LazyLock::new(|| Mutex::new(None));
+
+// 每个仓库最多一个接管监测任务，避免重复安装或重复刷新产生并发注册表扫描。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+static SYSTEM_INSTALL_ADOPTION_WATCHES: LazyLock<Mutex<HashSet<String>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -85,6 +107,7 @@ enum AppStatus {
     Failed,
 }
 
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ManagedAppView {
@@ -116,6 +139,24 @@ struct ManagedAppView {
     release_direction: ReleaseDirection,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     recent_activities: Vec<LifecycleEvent>,
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SystemInstallAdoptionEvent {
+    repo_id: String,
+    status: SystemInstallAdoptionStatus,
+    install_path: Option<String>,
+    launch_path: Option<String>,
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum SystemInstallAdoptionStatus {
+    Adopted,
+    TimedOut,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -266,8 +307,93 @@ enum UiArch {
     Arm64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ManagedSelfRelaunchRequest {
+    parent_pid: u32,
+    target: PathBuf,
+}
+
+fn relaunch_request_from_args<I, S>(args: I) -> Result<Option<ManagedSelfRelaunchRequest>>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let mut enabled = false;
+    let mut parent_pid: Option<u32> = None;
+    let mut target: Option<PathBuf> = None;
+    let mut iter = args.into_iter();
+
+    // argv[0] 是当前程序路径；内部 helper 协议只解析后续参数。
+    let _ = iter.next();
+    while let Some(arg) = iter.next() {
+        let arg = arg.as_ref();
+        if arg == OsStr::new(RELAUNCH_MANAGED_SELF_ARG) {
+            enabled = true;
+            continue;
+        }
+        if arg == OsStr::new(RELAUNCH_PARENT_PID_ARG) {
+            let value = iter
+                .next()
+                .context("missing parent pid for managed self relaunch")?;
+            parent_pid = Some(
+                value
+                    .as_ref()
+                    .to_string_lossy()
+                    .parse()
+                    .context("invalid parent pid for managed self relaunch")?,
+            );
+            continue;
+        }
+        if arg == OsStr::new(RELAUNCH_TARGET_ARG) {
+            let value = iter
+                .next()
+                .context("missing target for managed self relaunch")?;
+            target = Some(PathBuf::from(value.as_ref()));
+        }
+    }
+
+    if !enabled {
+        return Ok(None);
+    }
+
+    Ok(Some(ManagedSelfRelaunchRequest {
+        parent_pid: parent_pid.context("missing parent pid for managed self relaunch")?,
+        target: target.context("missing target for managed self relaunch")?,
+    }))
+}
+
+fn run_managed_self_relaunch_helper(request: ManagedSelfRelaunchRequest) -> Result<()> {
+    wait_for_parent_exit(request.parent_pid, RELAUNCH_PARENT_WAIT_TIMEOUT);
+    launch_target_with_platform(&request.target)
+}
+
+#[cfg(target_os = "windows")]
+fn wait_for_parent_exit(parent_pid: u32, timeout: Duration) {
+    let timeout_ms = timeout.as_millis().min(u32::MAX as u128) as u32;
+    // 父进程句柄只用于等待旧实例退出；拿不到句柄时短暂等待后继续，
+    // 避免权限或竞态导致重启流程卡死。
+    unsafe {
+        if let Ok(handle) = OpenProcess(SYNCHRONIZE, false, parent_pid) {
+            let _ = WaitForSingleObject(handle, timeout_ms);
+            let _ = CloseHandle(handle);
+            return;
+        }
+    }
+    thread::sleep(Duration::from_millis(500));
+}
+
+#[cfg(not(target_os = "windows"))]
+fn wait_for_parent_exit(_parent_pid: u32, _timeout: Duration) {
+    thread::sleep(Duration::from_millis(500));
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    if let Some(request) = relaunch_request_from_args(env::args_os())? {
+        run_managed_self_relaunch_helper(request)?;
+        return Ok(());
+    }
+
     if should_run_cli() {
         releasedock_cli::run_from_args(env::args_os()).await?;
         return Ok(());
@@ -308,7 +434,11 @@ async fn main() -> Result<()> {
             uninstall_repo,
             remove_tracked_repo,
             bulk_remove_tracked_repos,
-            adopt_system_install,
+           adopt_system_install,
+            load_local_data_dir,
+           load_self_management_status,
+            restart_to_managed_self,
+            quit_app,
             open_app,
             open_url,
             open_path,
@@ -350,7 +480,14 @@ async fn main() -> Result<()> {
         // 关闭窗口时仅隐藏到托盘，不退出程序
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                // 首次关闭时发系统通知提示已驻留托盘
+                let language = runtime_config()
+                    .map(|config| ui_language(&config))
+                    .unwrap_or(Language::En);
+                if close_behavior(runtime_config().ok().as_ref()) == CloseBehavior::Exit {
+                    return;
+                }
+
+                // 首次关闭到托盘时发系统通知提示，避免用户误以为程序已经退出。
                 let app = window.app_handle();
                 let app_clone = app.clone();
                 tauri::async_runtime::spawn(async move {
@@ -362,7 +499,11 @@ async fn main() -> Result<()> {
                                     .notification()
                                     .builder()
                                     .title("ReleaseDock")
-                                    .body("ReleaseDock stays in the system tray. Click the tray icon to reopen.")
+                                    .body(&tr_owned(
+                                        language,
+                                        "ReleaseDock stays in the system tray. Click the tray icon to reopen.",
+                                        "ReleaseDock 已驻留系统托盘。点击托盘图标可重新打开窗口。",
+                                    ))
                                     .show();
                                 // 标记已提示
                                 let mut updated = config;
@@ -459,11 +600,11 @@ async fn load_dashboard(
 }
 
 #[tauri::command]
-async fn load_local_dashboard() -> Result<Vec<ManagedAppView>, String> {
+async fn load_local_dashboard(app: tauri::AppHandle) -> Result<Vec<ManagedAppView>, String> {
     let language = runtime_config()
         .map(|config| ui_language(&config))
         .unwrap_or(Language::En);
-    build_local_dashboard(language).map_err(format_error)
+    build_local_dashboard(&app, language).map_err(format_error)
 }
 
 #[tauri::command]
@@ -482,6 +623,7 @@ async fn save_config(
     let runtime_config = Config::from(config.clone());
     sync_autostart_setting(&app, runtime_config.autostart_enabled).map_err(format_error)?;
     store.save(&runtime_config).map_err(format_error)?;
+    tray::rebuild_tray(&app, ui_language(&runtime_config)).map_err(|error| error.to_string())?;
 
     // 保存后热重启后台检查任务
     restart_background_checker(app).await;
@@ -737,15 +879,43 @@ async fn open_system_uninstall_settings() -> Result<(), String> {
     open_system_uninstall_settings_in_system().map_err(format_error)
 }
 
+#[tauri::command]
+async fn load_local_data_dir() -> Result<String, String> {
+    default_local_data_dir()
+        .map(|path| path.to_string_lossy().into_owned())
+        .map_err(format_error)
+}
+
+#[tauri::command]
+async fn load_self_management_status(
+    app: tauri::AppHandle,
+) -> Result<SelfManagementStatus, String> {
+    build_self_management_status(&app).map_err(format_error)
+}
+
+#[tauri::command]
+async fn restart_to_managed_self(app: tauri::AppHandle) -> Result<(), String> {
+    restart_to_managed_self_impl(&app).map_err(format_error)
+}
+
+#[tauri::command]
+async fn quit_app(app: tauri::AppHandle) -> Result<(), String> {
+    app.exit(0);
+    Ok(())
+}
+
 async fn build_dashboard(app: &tauri::AppHandle, refresh_id: u64) -> Result<Vec<ManagedAppView>> {
     let store = ManifestStore::default()?;
     let runtime_config = runtime_config()?;
     // Dashboard 刷新不能被后台修正影响；失败时继续使用现有 manifest 记录渲染。
     let _ = adopt_pending_system_installer_apps(&store);
     let _ = repair_managed_windows_executable_records(&store, Some(&runtime_config));
-    let manifest = store.load()?;
     let tracked_store = TrackedRepoStore::default()?;
     tracked_store.seed_if_missing(&[DEFAULT_TRACKED_REPO_ID])?;
+    if let Err(error) = ensure_self_managed_install(app, &store, &tracked_store, &runtime_config) {
+        eprintln!("failed to adopt ReleaseDock into managed directory: {error:#}");
+    }
+    let manifest = store.load()?;
     let tracked_repos = tracked_store.load_for_dashboard()?.repos;
     let recent_activities = Arc::new(group_recent_activities(&manifest.lifecycle_events));
     let releasedock_core::manifest::Manifest { apps, .. } = manifest;
@@ -814,10 +984,14 @@ async fn build_dashboard(app: &tauri::AppHandle, refresh_id: u64) -> Result<Vec<
         .collect())
 }
 
-fn build_local_dashboard(language: Language) -> Result<Vec<ManagedAppView>> {
+fn build_local_dashboard(app: &tauri::AppHandle, language: Language) -> Result<Vec<ManagedAppView>> {
     let store = ManifestStore::default()?;
     let tracked_store = TrackedRepoStore::default()?;
     tracked_store.seed_if_missing(&[DEFAULT_TRACKED_REPO_ID])?;
+    let runtime_config = runtime_config()?;
+    if let Err(error) = ensure_self_managed_install(app, &store, &tracked_store, &runtime_config) {
+        eprintln!("failed to adopt ReleaseDock into managed directory: {error:#}");
+    }
     let tracked_load = tracked_store.load_for_dashboard()?;
     let tracked_repos = tracked_load.repos;
     let manifest = store.load()?;
@@ -1436,7 +1610,80 @@ async fn install_repo_to_tracking(
     )
     .await?;
 
-    build_dashboard(app, 0).await
+    let dashboard = build_dashboard(app, 0).await?;
+    let pending_system_installer = store
+        .load()?
+        .apps
+        .iter()
+        .find(|installed| installed.id == repo.id())
+        .is_some_and(should_watch_system_install_adoption);
+    if pending_system_installer {
+        start_system_install_adoption_watch(app.clone(), repo.id()).await;
+    }
+    Ok(dashboard)
+}
+
+fn should_watch_system_install_adoption(app: &InstalledApp) -> bool {
+    matches!(app.install_type, InstallType::WindowsInstaller)
+        && matches!(app.install_path_kind, InstallPathKind::SystemInstaller)
+        && app.launch_path.is_none()
+}
+
+async fn start_system_install_adoption_watch(app: tauri::AppHandle, repo_id: String) {
+    #[cfg(target_os = "windows")]
+    {
+        let mut active_watches = SYSTEM_INSTALL_ADOPTION_WATCHES.lock().await;
+        if !active_watches.insert(repo_id.clone()) {
+            return;
+        }
+        drop(active_watches);
+
+        tauri::async_runtime::spawn(async move {
+            let event = monitor_system_install_adoption(repo_id.clone()).await;
+            let _ = app.emit(SYSTEM_INSTALL_ADOPTION_EVENT, event);
+            SYSTEM_INSTALL_ADOPTION_WATCHES.lock().await.remove(&repo_id);
+        });
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app;
+        let _ = repo_id;
+    }
+}
+
+#[cfg(target_os = "windows")]
+async fn monitor_system_install_adoption(repo_id: String) -> SystemInstallAdoptionEvent {
+    for attempt in 0..SYSTEM_INSTALL_ADOPTION_MAX_ATTEMPTS {
+        let attempt_repo_id = repo_id.clone();
+        let adopted = match tokio::task::spawn_blocking(move || {
+            let repo = RepoRef::parse(&attempt_repo_id)?;
+            adopt_system_installer_app(&ManifestStore::default()?, &repo)
+        })
+        .await
+        {
+            Ok(Ok(app)) => Some(app),
+            Ok(Err(_)) | Err(_) => None,
+        };
+        if let Some(app) = adopted {
+            return SystemInstallAdoptionEvent {
+                repo_id,
+                status: SystemInstallAdoptionStatus::Adopted,
+                install_path: Some(app.install_path.to_string_lossy().into_owned()),
+                launch_path: app.launch_path.map(|path| path.to_string_lossy().into_owned()),
+            };
+        }
+        if attempt + 1 < SYSTEM_INSTALL_ADOPTION_MAX_ATTEMPTS {
+            tokio::time::sleep(SYSTEM_INSTALL_ADOPTION_INTERVAL).await;
+        }
+    }
+
+    SystemInstallAdoptionEvent {
+        repo_id,
+        status: SystemInstallAdoptionStatus::TimedOut,
+        install_path: None,
+        launch_path: None,
+    }
 }
 
 async fn mutate_release_policy_and_reload(
@@ -1926,6 +2173,270 @@ fn default_install_path(repo: &RepoRef) -> PathBuf {
         .join(format!("{}-{}", repo.owner, repo.name))
 }
 
+fn ensure_self_managed_install(
+    app: &tauri::AppHandle,
+    manifest_store: &ManifestStore,
+    tracked_store: &TrackedRepoStore,
+    runtime_config: &Config,
+) -> Result<Option<PathBuf>> {
+    #[cfg(target_os = "windows")]
+    {
+        let tracked = tracked_store.load_for_dashboard()?.repos;
+        if !tracked.iter().any(|repo| repo.repo_id == SELF_MANAGED_REPO_ID) {
+            return Ok(None);
+        }
+
+        let current_exe = env::current_exe().context("failed to resolve current executable")?;
+        adopt_self_executable_into_managed_root(
+            manifest_store,
+            runtime_config,
+            &current_exe,
+            app.package_info().version.to_string(),
+        )
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app;
+        let _ = manifest_store;
+        let _ = tracked_store;
+        let _ = runtime_config;
+        Ok(None)
+    }
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn adopt_self_executable_into_managed_root(
+    manifest_store: &ManifestStore,
+    runtime_config: &Config,
+    current_exe: &Path,
+    app_version: String,
+) -> Result<Option<PathBuf>> {
+    if !looks_like_releasedock_exe(current_exe) {
+        return Ok(None);
+    }
+
+    let manifest = manifest_store.load()?;
+    if let Some(existing) = manifest.apps.iter().find(|app| app.id == SELF_MANAGED_REPO_ID) {
+        return Ok(self_managed_pending_restart_path(existing, current_exe));
+    }
+
+    let repo = RepoRef::parse(SELF_MANAGED_REPO_ID)?;
+    let target_path = self_managed_target_path(&repo, runtime_config, current_exe)?;
+    if same_existing_path(current_exe, &target_path) {
+        write_self_managed_app(manifest_store, &repo, current_exe, current_exe, app_version)?;
+        return Ok(None);
+    }
+
+    copy_file_atomic(current_exe, &target_path)
+        .with_context(|| format!("failed to copy ReleaseDock to {}", target_path.display()))?;
+    write_self_managed_app(manifest_store, &repo, current_exe, &target_path, app_version)?;
+    Ok(Some(target_path))
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn write_self_managed_app(
+    manifest_store: &ManifestStore,
+    repo: &RepoRef,
+    source_exe: &Path,
+    managed_exe: &Path,
+    app_version: String,
+) -> Result<()> {
+    let asset_name = source_exe
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("ReleaseDock-windows-x64.exe")
+        .to_string();
+    let mut app = InstalledApp::with_install_metadata(
+        repo.id(),
+        repo.name.clone(),
+        normalize_self_version(&app_version),
+        asset_name,
+        managed_exe.to_path_buf(),
+        InstallType::Executable,
+        InstallPathKind::ManagedPath,
+        true,
+    );
+    app.managed_root = managed_exe.parent().map(Path::to_path_buf);
+    manifest_store.upsert_app(app)
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn self_managed_target_path(
+    repo: &RepoRef,
+    runtime_config: &Config,
+    current_exe: &Path,
+) -> Result<PathBuf> {
+    let file_name = current_exe
+        .file_name()
+        .context("current executable has no file name")?;
+    let base_dir = effective_install_root(Some(runtime_config), install_root_fallback());
+    Ok(base_dir
+        .join("apps")
+        .join(format!("{}-{}", repo.owner, repo.name))
+        .join(file_name))
+}
+
+fn self_managed_pending_restart_path(
+    app: &InstalledApp,
+    current_exe: &Path,
+) -> Option<PathBuf> {
+    if app.id != SELF_MANAGED_REPO_ID || !matches!(app.install_path_kind, InstallPathKind::ManagedPath) {
+        return None;
+    }
+    if same_existing_path(current_exe, &app.install_path) {
+        return None;
+    }
+    Some(app.install_path.clone())
+}
+
+fn build_self_management_status(app: &tauri::AppHandle) -> Result<SelfManagementStatus> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app;
+        return Ok(SelfManagementStatus {
+            pending_restart: false,
+            managed_path: None,
+            current_path: env::current_exe().ok(),
+        });
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+    let manifest_store = ManifestStore::default()?;
+    let tracked_store = TrackedRepoStore::default()?;
+    let runtime_config = runtime_config()?;
+    tracked_store.seed_if_missing(&[DEFAULT_TRACKED_REPO_ID])?;
+    let pending_path = ensure_self_managed_install(app, &manifest_store, &tracked_store, &runtime_config)?;
+    let current_path = env::current_exe().ok();
+    let managed_path = pending_path.or_else(|| {
+        manifest_store
+            .load()
+            .ok()
+            .and_then(|manifest| {
+                manifest
+                    .apps
+                    .into_iter()
+                    .find(|candidate| candidate.id == SELF_MANAGED_REPO_ID)
+            })
+            .and_then(|installed| self_managed_pending_restart_path(&installed, current_path.as_deref()?))
+    });
+
+    Ok(SelfManagementStatus {
+        pending_restart: managed_path.is_some(),
+        managed_path,
+        current_path,
+    })
+    }
+}
+
+fn restart_to_managed_self_impl(app: &tauri::AppHandle) -> Result<()> {
+    let status = build_self_management_status(app)?;
+    let managed_path = status
+        .managed_path
+        .filter(|path| path.exists())
+        .context("ReleaseDock managed executable is not ready")?;
+    spawn_managed_self_relaunch_helper(&managed_path)?;
+    app.exit(0);
+    Ok(())
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn normalize_self_version(version: &str) -> String {
+    let trimmed = version.trim();
+    if trimmed.starts_with('v') {
+        trimmed.to_string()
+    } else {
+        format!("v{trimmed}")
+    }
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn looks_like_releasedock_exe(path: &Path) -> bool {
+    let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    let lower = file_name.to_ascii_lowercase();
+    lower.ends_with(".exe") && lower.contains("releasedock")
+}
+
+fn same_existing_path(left: &Path, right: &Path) -> bool {
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn copy_file_atomic(source: &Path, target: &Path) -> Result<()> {
+    let parent = target
+        .parent()
+        .context("self-managed target path has no parent")?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("failed to create {}", parent.display()))?;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_millis())
+        .unwrap_or_default();
+    let file_name = target
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("releasedock.exe");
+    let temp_path = parent.join(format!(".{file_name}.{stamp}.tmp"));
+    fs::copy(source, &temp_path).with_context(|| {
+        format!(
+            "failed to copy {} to {}",
+            source.display(),
+            temp_path.display()
+        )
+    })?;
+    replace_file(&temp_path, target)?;
+    Ok(())
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn replace_file(source: &Path, target: &Path) -> Result<()> {
+    match fs::rename(source, target) {
+        Ok(()) => Ok(()),
+        Err(_error) if target.exists() => {
+            fs::remove_file(target)
+                .with_context(|| format!("failed to replace {}", target.display()))?;
+            fs::rename(source, target).with_context(|| {
+                format!(
+                    "failed to move {} to {} after removing old file",
+                    source.display(),
+                    target.display()
+                )
+            })
+        }
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "failed to move {} to {}",
+                source.display(),
+                target.display()
+            )
+        }),
+    }
+}
+
+fn spawn_managed_self_relaunch_helper(target: &Path) -> Result<()> {
+    let current_exe = env::current_exe().context("failed to locate current ReleaseDock exe")?;
+    Command::new(&current_exe)
+        .arg(RELAUNCH_MANAGED_SELF_ARG)
+        .arg(RELAUNCH_PARENT_PID_ARG)
+        .arg(std::process::id().to_string())
+        .arg(RELAUNCH_TARGET_ARG)
+        .arg(target)
+        .spawn()
+        .with_context(|| {
+            format!(
+                "failed to spawn {} for managed self restart",
+                current_exe.display()
+            )
+        })?;
+    Ok(())
+}
+
 fn config_store() -> Result<ConfigStore> {
     ConfigStore::from_env_or_default()
 }
@@ -2057,6 +2568,7 @@ struct DesktopConfig {
     download_acceleration_enabled: Option<bool>,
     download_max_connections: Option<u8>,
     autostart_enabled: Option<bool>,
+    close_behavior: Option<String>,
 }
 
 impl From<DesktopConfig> for Config {
@@ -2073,6 +2585,7 @@ impl From<DesktopConfig> for Config {
             download_acceleration_enabled: value.download_acceleration_enabled,
             download_max_connections: value.download_max_connections,
             autostart_enabled: value.autostart_enabled,
+            close_behavior: value.close_behavior,
         }
     }
 }
@@ -2081,6 +2594,11 @@ fn desktop_config_from_runtime(value: Config) -> DesktopConfig {
     let effective_install_root = effective_install_root(Some(&value), install_root_fallback());
     let download_acceleration_enabled = download_acceleration_enabled(Some(&value));
     let download_max_connections = download_max_connections(Some(&value));
+    let close_behavior = match close_behavior(Some(&value)) {
+        CloseBehavior::Tray => "tray",
+        CloseBehavior::Exit => "exit",
+    }
+    .to_string();
     DesktopConfig {
         github_token: value.github_token,
         proxy_url: value.proxy_url,
@@ -2094,7 +2612,23 @@ fn desktop_config_from_runtime(value: Config) -> DesktopConfig {
         download_acceleration_enabled: Some(download_acceleration_enabled),
         download_max_connections: Some(download_max_connections),
         autostart_enabled: value.autostart_enabled,
+        close_behavior: Some(close_behavior),
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SelfManagementStatus {
+    pending_restart: bool,
+    managed_path: Option<PathBuf>,
+    current_path: Option<PathBuf>,
+}
+
+fn default_local_data_dir() -> Result<PathBuf> {
+    ManifestStore::default_path()?
+        .parent()
+        .map(Path::to_path_buf)
+        .context("manifest path has no parent data directory")
 }
 
 /// 重启后台检查任务（abort 旧任务 → 读最新 config → 决定是否 spawn 新任务）
@@ -2256,6 +2790,13 @@ fn resolve_launch_path(app: &releasedock_core::manifest::InstalledApp) -> Option
         }
     }
 
+    if app.id == SELF_MANAGED_REPO_ID
+        && matches!(app.install_type, InstallType::Executable)
+        && app.install_path.exists()
+    {
+        return Some(app.install_path.clone());
+    }
+
     infer_launch_target(
         &app.install_path,
         app.install_type,
@@ -2317,10 +2858,10 @@ mod tests {
 
     use releasedock_core::{
         asset_matcher::{Architecture, AssetMatcher, InstallType, OperatingSystem},
-        config::Language,
+        config::{Config, Language},
         install_plan::InstallSelectionGuard,
         integrity::{IntegrityPlan, IntegrityStatus},
-        manifest::{InstallPathKind, InstalledApp, RollbackSnapshot},
+        manifest::{InstallPathKind, InstalledApp, ManifestStore, RollbackSnapshot},
         release::{Release, ReleaseAsset, ReleasePage},
         release_policy::{ReleaseChannel, ReleaseDirection, ReleasePolicy, ReleaseSelector},
         repo::RepoRef,
@@ -2329,10 +2870,13 @@ mod tests {
     use super::{
         InstallPlanView, RollbackPreview, background_start_from_args, build_dashboard_work_items,
         build_local_dashboard_views, build_plan_from_releases, classify_connectivity_problem,
+        SELF_MANAGED_REPO_ID, adopt_self_executable_into_managed_root,
         ensure_install_preview_matches, load_release_catalog_with, management_kind_for_app,
-        preview_install, release_catalog_complete_for_selection, release_versions_from_catalog,
-        render_app, resolve_installer_folder_target, resolve_open_install_location_target,
+        normalize_self_version, preview_install, release_catalog_complete_for_selection,
+        release_versions_from_catalog, relaunch_request_from_args, render_app,
+        resolve_installer_folder_target, resolve_launch_path, resolve_open_install_location_target,
         rollback_guard_from_preview, sanitize_connectivity_message, select_tracked_release,
+        should_watch_system_install_adoption,
         validate_github_url,
     };
 
@@ -2359,6 +2903,61 @@ mod tests {
             "--background",
         ]));
         assert!(!background_start_from_args(["releasedock.exe", "--gui"]));
+    }
+
+    #[test]
+    fn relaunch_request_is_parsed_from_internal_arguments() {
+        let request = relaunch_request_from_args([
+            "releasedock.exe",
+            "--relaunch-managed-self",
+            "--parent-pid",
+            "1234",
+            "--target",
+            "C:/ReleaseDock/ReleaseDock.exe",
+        ])
+        .expect("internal relaunch arguments should parse")
+        .expect("internal relaunch flag should create a request");
+
+        assert_eq!(request.parent_pid, 1234);
+        assert_eq!(
+            request.target,
+            PathBuf::from("C:/ReleaseDock/ReleaseDock.exe")
+        );
+        assert!(
+            relaunch_request_from_args(["releasedock.exe", "--background"])
+                .expect("ordinary desktop arguments should parse")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn watches_only_pending_windows_system_installers() {
+        let pending = InstalledApp::with_install_metadata(
+            "owner/project",
+            "project",
+            "v1.0.0",
+            "project-setup.exe",
+            PathBuf::from("C:/Users/A/Downloads/project-setup.exe"),
+            InstallType::WindowsInstaller,
+            InstallPathKind::SystemInstaller,
+            false,
+        );
+        let mut adopted = pending.clone();
+        adopted.launch_path = Some(PathBuf::from("C:/Program Files/Project/project.exe"));
+        let portable = InstalledApp::with_install_metadata(
+            "owner/portable",
+            "portable",
+            "v1.0.0",
+            "portable.zip",
+            PathBuf::from("C:/ReleaseDock/apps/owner-portable"),
+            InstallType::PortableArchive,
+            InstallPathKind::ManagedPath,
+            true,
+        );
+
+        assert!(should_watch_system_install_adoption(&pending));
+        assert!(!should_watch_system_install_adoption(&adopted));
+        assert!(!should_watch_system_install_adoption(&portable));
     }
 
     #[test]
@@ -2449,9 +3048,122 @@ mod tests {
             "dashboard should expose GitHub repository discovery"
         );
         assert!(
+            handlers.contains("load_local_data_dir") && handlers.contains("quit_app"),
+            "settings should expose local data folder and an explicit quit action"
+        );
+        assert!(
             source.contains("ms-settings:notifications"),
             "Windows notification settings should open the OS notification settings page"
         );
+    }
+
+    #[test]
+    fn close_to_tray_behavior_is_configurable_and_localized() {
+        let source = include_str!("main.rs");
+        assert!(
+            source.contains("close_behavior(runtime_config().ok().as_ref()) == CloseBehavior::Exit"),
+            "window close handling should read the saved close behavior before hiding to tray"
+        );
+        assert!(
+            source.contains("ReleaseDock 已驻留系统托盘"),
+            "close-to-tray notification should follow the selected UI language"
+        );
+    }
+
+    #[test]
+    fn self_adoption_copies_current_exe_into_managed_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let current_exe = temp.path().join("ReleaseDock-windows-x64.exe");
+        std::fs::write(&current_exe, b"releasedock").unwrap();
+        let manifest_store = ManifestStore::at_path(temp.path().join("apps.json"));
+        let config = Config {
+            install_root: Some(temp.path().join("root")),
+            ..Default::default()
+        };
+
+        let pending = adopt_self_executable_into_managed_root(
+            &manifest_store,
+            &config,
+            &current_exe,
+            "0.2.13".to_string(),
+        )
+        .unwrap()
+        .unwrap();
+        let manifest = manifest_store.load().unwrap();
+        let app = manifest.apps.iter().find(|app| app.id == SELF_MANAGED_REPO_ID).unwrap();
+
+        assert_eq!(pending, app.install_path);
+        assert_eq!(app.installed_version, "v0.2.13");
+        assert_eq!(app.install_type, InstallType::Executable);
+        assert_eq!(app.install_path_kind, InstallPathKind::ManagedPath);
+        assert_eq!(app.managed_root.as_deref(), app.install_path.parent());
+        assert_eq!(std::fs::read(&app.install_path).unwrap(), b"releasedock");
+    }
+
+    #[test]
+    fn self_adoption_does_not_overwrite_existing_managed_record() {
+        let temp = tempfile::tempdir().unwrap();
+        let current_exe = temp.path().join("ReleaseDock-windows-x64.exe");
+        std::fs::write(&current_exe, b"new").unwrap();
+        let manifest_store = ManifestStore::at_path(temp.path().join("apps.json"));
+        let existing_path = temp.path().join("root/apps/dongrencd-releasedock/ReleaseDock.exe");
+        std::fs::create_dir_all(existing_path.parent().unwrap()).unwrap();
+        std::fs::write(&existing_path, b"old").unwrap();
+        manifest_store
+            .upsert_app(InstalledApp::with_install_metadata(
+                SELF_MANAGED_REPO_ID,
+                "releasedock",
+                "v0.2.12",
+                "ReleaseDock.exe",
+                existing_path.clone(),
+                InstallType::Executable,
+                InstallPathKind::ManagedPath,
+                true,
+            ))
+            .unwrap();
+        let config = Config {
+            install_root: Some(temp.path().join("root")),
+            ..Default::default()
+        };
+
+        let pending = adopt_self_executable_into_managed_root(
+            &manifest_store,
+            &config,
+            &current_exe,
+            "0.2.13".to_string(),
+        )
+        .unwrap();
+        let manifest = manifest_store.load().unwrap();
+        let app = manifest.apps.iter().find(|app| app.id == SELF_MANAGED_REPO_ID).unwrap();
+
+        assert_eq!(pending, Some(existing_path.clone()));
+        assert_eq!(app.installed_version, "v0.2.12");
+        assert_eq!(app.install_path, existing_path);
+    }
+
+    #[test]
+    fn self_managed_release_dock_executable_is_launchable() {
+        let temp = tempfile::tempdir().unwrap();
+        let managed_exe = temp.path().join("ReleaseDock-windows-x64.exe");
+        std::fs::write(&managed_exe, b"releasedock").unwrap();
+        let app = InstalledApp::with_install_metadata(
+            SELF_MANAGED_REPO_ID,
+            "releasedock",
+            "v0.2.13",
+            "ReleaseDock-windows-x64.exe",
+            managed_exe.clone(),
+            InstallType::Executable,
+            InstallPathKind::ManagedPath,
+            true,
+        );
+
+        assert_eq!(resolve_launch_path(&app), Some(managed_exe));
+    }
+
+    #[test]
+    fn self_version_is_normalized_to_release_tag_shape() {
+        assert_eq!(normalize_self_version("0.2.13"), "v0.2.13");
+        assert_eq!(normalize_self_version("v0.2.13"), "v0.2.13");
     }
 
     #[test]
@@ -3238,6 +3950,39 @@ mod tests {
         assert!(
             !production_source.contains("spawn_without_console"),
             "Windows open paths should not need a console-hiding helper"
+        );
+    }
+
+    #[test]
+    fn managed_self_restart_uses_internal_helper_without_shell_commands() {
+        let source = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+        )
+        .expect("read main.rs");
+        let production_source = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("main.rs should contain a test module marker");
+
+        assert!(
+            production_source.contains("--relaunch-managed-self"),
+            "managed self restart should use an internal helper argument"
+        );
+        assert!(
+            production_source.contains("spawn_managed_self_relaunch_helper"),
+            "managed self restart should spawn ReleaseDock itself as the helper"
+        );
+        assert!(
+            !production_source.contains(r#"Command::new("cmd")"#),
+            "managed self restart should not spawn cmd.exe"
+        );
+        assert!(
+            !production_source.contains("ping 127.0.0.1"),
+            "managed self restart should not delay with ping"
+        );
+        assert!(
+            !production_source.contains(r#"start \"\""#),
+            "managed self restart should not use the shell start command"
         );
     }
 
