@@ -56,7 +56,7 @@ use std::os::windows::ffi::OsStrExt;
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::CloseHandle;
 #[cfg(target_os = "windows")]
-use windows::Win32::System::Threading::{OpenProcess, SYNCHRONIZE, WaitForSingleObject};
+use windows::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject};
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::Shell::ShellExecuteW;
 #[cfg(target_os = "windows")]
@@ -373,7 +373,7 @@ fn wait_for_parent_exit(parent_pid: u32, timeout: Duration) {
     // 父进程句柄只用于等待旧实例退出；拿不到句柄时短暂等待后继续，
     // 避免权限或竞态导致重启流程卡死。
     unsafe {
-        if let Ok(handle) = OpenProcess(SYNCHRONIZE, false, parent_pid) {
+        if let Ok(handle) = OpenProcess(PROCESS_SYNCHRONIZE, false, parent_pid) {
             let _ = WaitForSingleObject(handle, timeout_ms);
             let _ = CloseHandle(handle);
             return;
