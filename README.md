@@ -148,6 +148,8 @@ Tags that match `v*.*.*` create a GitHub Release with the same version and uploa
 Tagged Windows releases publish Authenticode-signed executable, NSIS, and MSI assets when the repository's code-signing secrets are configured. Builds without a trusted certificate may still show Windows SmartScreen warnings.
 Tagged releases also include `SHA256SUMS` for the uploaded assets.
 
+`VERSION` is the canonical application version. Use `python3 scripts/release-version.py <version>` to synchronize manifests, lockfiles, Tauri metadata, and README tag examples before adding the matching changelog entry and tag.
+
 ```bash
 git tag v0.2.14
 git push origin v0.2.14

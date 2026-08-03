@@ -148,6 +148,8 @@ bash scripts/linux/build-desktop.sh
 带 tag 的 Windows Release 在仓库配置代码签名 secrets 时，会发布 Authenticode 签名后的可执行文件、NSIS 和 MSI 资产。没有可信证书的构建仍可能触发 Windows SmartScreen 提示。
 带 tag 的 Release 还会包含 `SHA256SUMS`，用于核对已上传产物的 SHA-256。
 
+`VERSION` 是应用版本的唯一来源。发布前使用 `python3 scripts/release-version.py <version>` 同步 manifests、lockfile、Tauri 元数据和 README 中的 tag 示例，再手工补充对应的 changelog 和 tag。
+
 ```bash
 git tag v0.2.14
 git push origin v0.2.14

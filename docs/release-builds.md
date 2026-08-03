@@ -19,6 +19,17 @@ Triggers:
 - pull request
 - manual `workflow_dispatch` from the GitHub UI
 
+## Version updates
+
+`VERSION` is the canonical application version. Synchronize manifests, lockfiles, Tauri metadata, and README tag examples with:
+
+```bash
+python3 scripts/release-version.py 0.2.15
+python3 scripts/release-version.py --check
+```
+
+Add the matching `CHANGELOG.md` entry manually because release notes describe the actual user-facing changes. Run the local verification commands before committing and pushing the `main` branch and matching `v0.2.15` tag.
+
 ## Artifacts
 
 - `releasedock-linux-x64`: Linux CLI executable, runnable with `./releasedock-linux-x64 --help`

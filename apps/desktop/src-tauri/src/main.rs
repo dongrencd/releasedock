@@ -2854,6 +2854,14 @@ fn format_error(error: anyhow::Error) -> String {
 
 #[cfg(test)]
 mod tests {
+    // Keep self-adoption fixtures coupled to the desktop package version rather
+    // than requiring every release bump to edit test data manually.
+    const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+    fn current_release_tag() -> String {
+        format!("v{PACKAGE_VERSION}")
+    }
+
     use std::{cell::RefCell, collections::VecDeque, future::ready, path::PathBuf, rc::Rc};
 
     use releasedock_core::{
@@ -3085,7 +3093,7 @@ mod tests {
             &manifest_store,
             &config,
             &current_exe,
-            "0.2.14".to_string(),
+            PACKAGE_VERSION.to_string(),
         )
         .unwrap()
         .unwrap();
@@ -3093,7 +3101,7 @@ mod tests {
         let app = manifest.apps.iter().find(|app| app.id == SELF_MANAGED_REPO_ID).unwrap();
 
         assert_eq!(pending, app.install_path);
-        assert_eq!(app.installed_version, "v0.2.14");
+        assert_eq!(app.installed_version, current_release_tag());
         assert_eq!(app.install_type, InstallType::Executable);
         assert_eq!(app.install_path_kind, InstallPathKind::ManagedPath);
         assert_eq!(app.managed_root.as_deref(), app.install_path.parent());
@@ -3130,7 +3138,7 @@ mod tests {
             &manifest_store,
             &config,
             &current_exe,
-            "0.2.14".to_string(),
+            PACKAGE_VERSION.to_string(),
         )
         .unwrap();
         let manifest = manifest_store.load().unwrap();
@@ -3149,7 +3157,7 @@ mod tests {
         let app = InstalledApp::with_install_metadata(
             SELF_MANAGED_REPO_ID,
             "releasedock",
-            "v0.2.14",
+            &current_release_tag(),
             "ReleaseDock-windows-x64.exe",
             managed_exe.clone(),
             InstallType::Executable,
@@ -3162,8 +3170,8 @@ mod tests {
 
     #[test]
     fn self_version_is_normalized_to_release_tag_shape() {
-        assert_eq!(normalize_self_version("0.2.14"), "v0.2.14");
-        assert_eq!(normalize_self_version("v0.2.14"), "v0.2.14");
+        assert_eq!(normalize_self_version(PACKAGE_VERSION), current_release_tag());
+        assert_eq!(normalize_self_version(&current_release_tag()), current_release_tag());
     }
 
     #[test]
