@@ -2,6 +2,10 @@ use std::{
     fs,
     io::{Read, Write},
     path::{Path, PathBuf},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -14,7 +18,12 @@ use reqwest::{
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::repo::RepoRef;
+use crate::{
+    repo::RepoRef,
+    system_proxy::{
+        ProxySource, auto_proxy_for_url, current_user_settings, effective_proxy_for_url,
+    },
+};
 
 const GITHUB_API_TIMEOUT: Duration = Duration::from_secs(20);
 const GITHUB_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -141,6 +150,42 @@ pub struct ReleaseClient {
     api_timeout: Duration,
     api_base_url: Url,
     download_acceleration: DownloadAcceleration,
+    proxy_source: ProxySource,
+    proxy_route: Arc<ProxyRouteState>,
+}
+
+/// 记录本次客户端实际交给 reqwest 的代理地址。
+///
+/// PAC 可以按 URL 返回 `DIRECT`，因此“配置了系统策略”不等于“这一请求经过代理”。
+/// 该状态同时让上层可以脱敏 HTTP 库在错误中回显的代理地址。
+#[derive(Default)]
+struct ProxyRouteState {
+    used_proxy: AtomicBool,
+    redaction_urls: Mutex<Vec<String>>,
+}
+
+impl ProxyRouteState {
+    fn record(&self, proxy_url: &str) {
+        self.used_proxy.store(true, Ordering::Relaxed);
+
+        let Ok(mut urls) = self.redaction_urls.lock() else {
+            return;
+        };
+        if !urls.iter().any(|known| known == proxy_url) {
+            urls.push(proxy_url.to_string());
+        }
+    }
+
+    fn used_proxy(&self) -> bool {
+        self.used_proxy.load(Ordering::Relaxed)
+    }
+
+    fn redaction_urls(&self) -> Vec<String> {
+        self.redaction_urls
+            .lock()
+            .map(|urls| urls.clone())
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -208,17 +253,48 @@ impl ReleaseClient {
             .default_headers(headers)
             .connect_timeout(GITHUB_CONNECT_TIMEOUT)
             .read_timeout(download_read_timeout);
-        if let Some(proxy_url) = proxy_url.filter(|value| !value.trim().is_empty()) {
-            let proxy =
-                Proxy::all(proxy_url).context("failed to configure proxy for GitHub client")?;
-            builder = builder.proxy(proxy);
-        }
+
+        let proxy_route = Arc::new(ProxyRouteState::default());
+
+        // 显式代理始终优先：用户已经明确选择了该出口时，不能再混入 Windows
+        // PAC/WPAD 的分流结果。未配置显式代理时才读取当前用户受信任的系统策略。
+        let proxy_source =
+            if let Some(proxy_url) = proxy_url.filter(|value| !value.trim().is_empty()) {
+                let proxy =
+                    Proxy::all(proxy_url).context("failed to configure proxy for GitHub client")?;
+                builder = builder.proxy(proxy);
+                proxy_route.record(proxy_url);
+                ProxySource::Explicit
+            } else {
+                let settings = current_user_settings();
+                let source = settings.preferred_source();
+                if source.uses_proxy() {
+                    // Proxy::custom 会为 API、Release 元数据和每个重定向后的资产 URL
+                    // 单独询问 Windows，确保 PAC 可以对不同 GitHub 域名做正确分流。
+                    let resolver_settings = settings.clone();
+                    let resolver_route = Arc::clone(&proxy_route);
+                    builder = builder.proxy(Proxy::custom(move |url| {
+                        let proxy_url = effective_proxy_for_url(
+                            &resolver_settings,
+                            url,
+                            auto_proxy_for_url(&resolver_settings, url),
+                        );
+                        if let Some(proxy_url) = proxy_url.as_deref() {
+                            resolver_route.record(proxy_url);
+                        }
+                        proxy_url
+                    }));
+                }
+                source
+            };
 
         Ok(Self {
             client: builder.build().context("failed to build GitHub client")?,
             api_timeout,
             api_base_url,
             download_acceleration: DownloadAcceleration::default(),
+            proxy_source,
+            proxy_route,
         })
     }
 
@@ -228,6 +304,21 @@ impl ReleaseClient {
             max_connections: max_connections.clamp(1, 8),
         };
         self
+    }
+
+    /// 返回客户端采用的网络策略来源，不暴露系统代理地址或 PAC 地址。
+    pub fn proxy_source(&self) -> ProxySource {
+        self.proxy_source
+    }
+
+    /// 返回本次已发生的代理路由，供上层判断连接问题类别。
+    pub fn used_proxy(&self) -> bool {
+        self.proxy_route.used_proxy()
+    }
+
+    /// 返回仅用于脱敏的代理 URL；调用方不得将它们展示或写入日志。
+    pub fn proxy_redaction_urls(&self) -> Vec<String> {
+        self.proxy_route.redaction_urls()
     }
 
     /// 只在本模块 HTTP 单测中替换 API 地址，生产构建不会暴露该入口。

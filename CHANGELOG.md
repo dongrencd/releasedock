@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.15] - 2026-08-04
+
+### Added
+- Windows GitHub requests now follow the current user's trusted manual proxy, PAC, or WPAD policy when no application proxy is configured.
+- Connectivity diagnostics report the selected route source without exposing system proxy addresses or credentials.
+
+### Changed
+- An explicitly configured application proxy remains the highest-priority route.
+- PAC/WPAD `DIRECT` decisions are preserved instead of falling back to a manual proxy.
+- Windows network settings and security boundaries are documented in the bilingual README and desktop implementation notes.
+
 ## [0.2.14] - 2026-08-03
 
 ### Fixed

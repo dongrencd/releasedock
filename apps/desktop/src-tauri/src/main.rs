@@ -273,6 +273,7 @@ struct GithubConnectivityTestResult {
     problem: String,
     used_token: bool,
     used_proxy: bool,
+    route_source: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -655,39 +656,49 @@ async fn test_github_connectivity(
     let token = non_empty_config_value(config.github_token);
     let proxy = non_empty_config_value(config.proxy_url);
     let used_token = token.is_some();
-    let used_proxy = proxy.is_some();
 
     let client = match ReleaseClient::new(token.as_deref(), proxy.as_deref()) {
         Ok(client) => client,
         Err(error) => {
+            let route_source = if proxy.is_some() { "explicitProxy" } else { "direct" };
+            let used_proxy = proxy.is_some();
             let message = sanitize_connectivity_message(
                 &format_error(error),
                 token.as_deref(),
                 proxy.as_deref(),
+                &[],
             );
             let problem = classify_connectivity_problem(&message, used_proxy);
             return Ok(github_connectivity_result(
-                false, message, problem, used_token, used_proxy,
+                false, message, problem, used_token, used_proxy, route_source,
             ));
         }
     };
+    let route_source = client.proxy_source().as_str();
 
     let result = match client.check_connectivity().await {
-        Ok(()) => github_connectivity_result(
-            true,
-            "GitHub API is reachable with the current settings.".to_string(),
-            "none",
-            used_token,
-            used_proxy,
-        ),
+        Ok(()) => {
+            let used_proxy = client.used_proxy();
+            github_connectivity_result(
+                true,
+                github_connectivity_success_message(route_source, used_proxy),
+                "none",
+                used_token,
+                used_proxy,
+                route_source,
+            )
+        }
         Err(error) => {
+            let used_proxy = client.used_proxy();
+            let system_proxy_urls = client.proxy_redaction_urls();
             let message = sanitize_connectivity_message(
                 &format_error(error),
                 token.as_deref(),
                 proxy.as_deref(),
+                &system_proxy_urls,
             );
             let problem = classify_connectivity_problem(&message, used_proxy);
-            github_connectivity_result(false, message, problem, used_token, used_proxy)
+            github_connectivity_result(false, message, problem, used_token, used_proxy, route_source)
         }
     };
 
@@ -2469,6 +2480,7 @@ fn github_connectivity_result(
     problem: &str,
     used_token: bool,
     used_proxy: bool,
+    route_source: &str,
 ) -> GithubConnectivityTestResult {
     GithubConnectivityTestResult {
         ok,
@@ -2476,6 +2488,27 @@ fn github_connectivity_result(
         problem: problem.to_string(),
         used_token,
         used_proxy,
+        route_source: route_source.to_string(),
+    }
+}
+
+fn github_connectivity_success_message(route_source: &str, used_proxy: bool) -> String {
+    match route_source {
+        "windowsManualProxy" if used_proxy => {
+            "GitHub API is reachable through the Windows system proxy.".to_string()
+        }
+        "windowsManualProxy" => {
+            "GitHub API is reachable after applying the Windows system proxy bypass rule."
+                .to_string()
+        }
+        "windowsAutoProxy" if used_proxy => {
+            "GitHub API is reachable through the Windows PAC/WPAD policy.".to_string()
+        }
+        "windowsAutoProxy" => {
+            "GitHub API is reachable after applying the Windows PAC/WPAD direct rule.".to_string()
+        }
+        "explicitProxy" => "GitHub API is reachable through the configured proxy.".to_string(),
+        _ => "GitHub API is reachable through the official direct connection.".to_string(),
     }
 }
 
@@ -2518,6 +2551,7 @@ fn sanitize_connectivity_message(
     message: &str,
     github_token: Option<&str>,
     proxy_url: Option<&str>,
+    system_proxy_urls: &[String],
 ) -> String {
     let mut sanitized = message.replace('\n', " ");
 
@@ -2526,23 +2560,10 @@ fn sanitize_connectivity_message(
     }
 
     if let Some(proxy) = proxy_url.filter(|value| !value.trim().is_empty()) {
-        sanitized = sanitized.replace(proxy, "[proxy]");
-
-        // reqwest/url 错误有时只包含代理的 host 或 host:port；这里也做替换，避免泄漏本地代理地址。
-        if let Ok(parsed) = url::Url::parse(proxy) {
-            if let Some(host) = parsed.host_str() {
-                if let Some(port) = parsed.port() {
-                    sanitized = sanitized.replace(&format!("{host}:{port}"), "[proxy]");
-                }
-                sanitized = sanitized.replace(host, "[proxy]");
-            }
-            if !parsed.username().is_empty() {
-                sanitized = sanitized.replace(parsed.username(), "[proxy-user]");
-            }
-            if let Some(password) = parsed.password() {
-                sanitized = sanitized.replace(password, "[proxy-password]");
-            }
-        }
+        sanitized = redact_proxy_value(sanitized, proxy);
+    }
+    for proxy in system_proxy_urls {
+        sanitized = redact_proxy_value(sanitized, proxy);
     }
 
     let trimmed = sanitized.trim();
@@ -2551,6 +2572,29 @@ fn sanitize_connectivity_message(
     } else {
         trimmed.to_string()
     }
+}
+
+/// reqwest/url 错误有时只包含代理的 host 或 host:port；逐项替换，避免把受信任的
+/// Windows 系统策略中解析出的内网地址、账号或口令带到桌面界面。
+fn redact_proxy_value(mut message: String, proxy: &str) -> String {
+    message = message.replace(proxy, "[proxy]");
+
+    if let Ok(parsed) = url::Url::parse(proxy) {
+        if let Some(host) = parsed.host_str() {
+            if let Some(port) = parsed.port() {
+                message = message.replace(&format!("{host}:{port}"), "[proxy]");
+            }
+            message = message.replace(host, "[proxy]");
+        }
+        if !parsed.username().is_empty() {
+            message = message.replace(parsed.username(), "[proxy-user]");
+        }
+        if let Some(password) = parsed.password() {
+            message = message.replace(password, "[proxy-password]");
+        }
+    }
+
+    message
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -3788,11 +3832,26 @@ mod tests {
             message,
             Some("ghp_secret"),
             Some("http://user:pass@proxy.example.com:8080"),
+            &[],
         );
 
         assert!(!sanitized.contains("ghp_secret"));
         assert!(!sanitized.contains("user:pass"));
         assert!(sanitized.contains("[token]"));
+        assert!(sanitized.contains("[proxy]"));
+    }
+
+    #[test]
+    fn sanitizes_windows_proxy_values_observed_during_a_connectivity_check() {
+        let sanitized = sanitize_connectivity_message(
+            "connection to http://office:secret@proxy.internal.example:3128 failed",
+            None,
+            None,
+            &["http://office:secret@proxy.internal.example:3128".to_string()],
+        );
+
+        assert!(!sanitized.contains("proxy.internal.example"));
+        assert!(!sanitized.contains("office:secret"));
         assert!(sanitized.contains("[proxy]"));
     }
 

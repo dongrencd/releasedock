@@ -88,6 +88,7 @@ export type GithubConnectivityTestResult = {
   problem: "none" | "network" | "proxy" | "rateLimit" | "auth" | "unknown";
   usedToken: boolean;
   usedProxy: boolean;
+  routeSource: "explicitProxy" | "windowsManualProxy" | "windowsAutoProxy" | "direct";
 };
 
 // 后台检查完成事件

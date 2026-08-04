@@ -239,6 +239,7 @@ export type ConnectivityTestViewState = {
   status: "idle" | "testing" | "success" | "failed" | "stale";
   message?: string;
   problem?: GithubConnectivityProblem;
+  routeSource?: GithubConnectivityResultLike["routeSource"];
   configKey?: string;
 };
 
@@ -248,6 +249,7 @@ export type GithubConnectivityResultLike = {
   problem: GithubConnectivityProblem;
   usedToken?: boolean;
   usedProxy?: boolean;
+  routeSource?: "explicitProxy" | "windowsManualProxy" | "windowsAutoProxy" | "direct";
 };
 
 export type DiscoveryResult = {
@@ -547,6 +549,7 @@ export function buildConnectivityTestViewState(
     status: result.ok ? "success" : "failed",
     message: result.message,
     problem: result.problem,
+    routeSource: result.routeSource,
     configKey: getNetworkConfigKey(config)
   };
 }

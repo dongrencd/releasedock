@@ -41,10 +41,10 @@ ReleaseDock 不是系统包管理器的替代品。如果项目已经通过 `win
 - 左侧：跟踪仓库、本地筛选、选择状态、批量移除和卸载入口。
 - 右侧：当前 Release、版本策略、安装预览、生命周期历史、发布说明和上下文动作。
 - 底部状态栏：刷新、下载、安装、卸载、回滚和失败进度。
-- 设置：GitHub Token、GitHub 代理、安装根目录、界面语言、主题、关闭窗口行为、后台检查、开机后后台启动、通知权限操作、检查间隔和下载加速；同时提供打开本地数据目录和退出应用操作。
+- 设置：GitHub Token、GitHub 代理、安装根目录、界面语言、主题、关闭窗口行为、后台检查、开机后后台启动、通知权限操作、检查间隔和下载加速；同时提供打开本地数据目录和退出应用操作。Windows 上未填写应用代理时，ReleaseDock 会遵循当前用户已受信任的系统代理、PAC 或 WPAD 策略。
 - 系统托盘：可配置关闭后驻留托盘或退出程序、一致的取消最小化/聚焦恢复、单实例恢复窗口、手动检查、恢复窗口、本地化退出菜单和更新数量提示。
 
-公开仓库不需要 Token。私有仓库或频繁刷新建议配置 GitHub Token。代理设置会作用于 GitHub API 查询和 Release 资产下载。
+公开仓库不需要 Token。私有仓库或频繁刷新建议配置 GitHub Token。代理设置会作用于 GitHub API 查询和 Release 资产下载，并覆盖 Windows 系统策略。ReleaseDock 不会内置或使用第三方 GitHub 镜像/中转；官方直连和受信任的 Windows 策略都不可用时，连接测试会明确提示需要网络管理员提供获批出口。
 
 版本策略按仓库在当前进程内缓存。切换已加载的软件时会立即恢复该软件的版本列表和上次目标版本，不会重复请求 GitHub；手动重试、Dashboard 刷新或修改 Token/代理后才会重新加载。
 
@@ -151,8 +151,8 @@ bash scripts/linux/build-desktop.sh
 `VERSION` 是应用版本的唯一来源。发布前使用 `python3 scripts/release-version.py <version>` 同步 manifests、lockfile、Tauri 元数据和 README 中的 tag 示例，再手工补充对应的 changelog 和 tag。
 
 ```bash
-git tag v0.2.14
-git push origin v0.2.14
+git tag v0.2.15
+git push origin v0.2.15
 ```
 
 ## 文档

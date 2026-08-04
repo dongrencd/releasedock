@@ -144,6 +144,7 @@ pub fn spawn_background_checker(app: AppHandle, interval_minutes: u64) -> JoinHa
                 Err(error) => {
                     let result = BackgroundCheckResult::failed(sanitize_background_error(
                         &error.to_string(),
+                        &[],
                     ));
                     let _ = app.emit(BACKGROUND_CHECK_EVENT, &result);
                 }
@@ -213,7 +214,7 @@ async fn run_background_check() -> Result<BackgroundCheckResult> {
     let error = summary
         .first_error
         .as_deref()
-        .map(sanitize_background_error);
+        .map(|message| sanitize_background_error(message, &client.proxy_redaction_urls()));
     Ok(BackgroundCheckResult {
         update_count: summary.update_count,
         total_checked: summary.total_checked,
@@ -243,7 +244,7 @@ fn spawn_check_task(
     });
 }
 
-fn sanitize_background_error(message: &str) -> String {
+fn sanitize_background_error(message: &str, system_proxy_urls: &[String]) -> String {
     let config = crate::runtime_config().ok();
     let token = config
         .as_ref()
@@ -255,7 +256,12 @@ fn sanitize_background_error(message: &str) -> String {
         .and_then(|value| value.proxy_url.as_deref())
         .map(str::to_string)
         .or_else(|| std::env::var("HTTPS_PROXY").ok());
-    crate::sanitize_connectivity_message(message, token.as_deref(), proxy.as_deref())
+    crate::sanitize_connectivity_message(
+        message,
+        token.as_deref(),
+        proxy.as_deref(),
+        system_proxy_urls,
+    )
 }
 
 fn should_notify_updates(previous_count: Option<usize>, current_count: usize) -> bool {

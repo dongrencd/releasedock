@@ -1,6 +1,6 @@
 [package]
 name = "releasedock-core"
-version = "0.2.14"
+version = "0.2.15"
 edition.workspace = true
 
 [dependencies]
@@ -21,6 +21,7 @@ zip.workspace = true
 url.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Networking_WinHttp"] }
 winreg = "0.52"
 
 [dev-dependencies]

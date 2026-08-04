@@ -57,6 +57,8 @@ describe("createTaskStatusText", () => {
     expect(en.proxyUrlPlaceholder).toBe("http://proxy.example.com:port");
     expect(zh.proxyUrlHelp).toContain("GitHub 查询和 Release 资产下载");
     expect(en.proxyUrlHelp).toContain("GitHub queries and Release asset downloads");
+    expect(zh.proxyUrlHelp).toContain("Windows 系统代理、PAC 或 WPAD");
+    expect(en.proxyUrlHelp).toContain("Windows system proxy, PAC, or WPAD");
     expect(zh.proxyUrlHelp).not.toMatch(/\b\d{1,3}(?:\.\d{1,3}){3}:\d+\b/);
     expect(en.proxyUrlHelp).not.toMatch(/\b\d{1,3}(?:\.\d{1,3}){3}:\d+\b/);
   });
@@ -81,6 +83,7 @@ describe("createTaskStatusText", () => {
 
     expect(zh.networkConfigHealth).toBe("网络配置健康");
     expect(zh.networkConfigHealthHelp).toContain("公开仓库无需 Token");
+    expect(zh.networkConfigHealthHelp).toContain("Windows 系统代理、PAC 或 WPAD");
     expect(zh.networkProxyFormat).toContain("http://proxy.example.com:port");
     expect(zh.networkProxyFormat).not.toMatch(/\b\d{1,3}(?:\.\d{1,3}){3}:\d+\b/);
     expect(zh.testGithubConnectivity).toBe("测试 GitHub 连接");
@@ -99,6 +102,7 @@ describe("createTaskStatusText", () => {
     expect(zhTask.githubConnectivityFailed).toBe("GitHub 连接测试失败");
 
     expect(en.networkConfigHealth).toBe("Network configuration");
+    expect(en.networkConfigHealthHelp).toContain("Windows system proxy, PAC, or WPAD");
     expect(en.networkProxyFormat).toContain("http://proxy.example.com:port");
     expect(en.networkProxyFormat).not.toMatch(/\b\d{1,3}(?:\.\d{1,3}){3}:\d+\b/);
     expect(enTask.testingGithubConnectivity).toBe("Testing GitHub connection");

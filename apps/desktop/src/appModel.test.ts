@@ -519,7 +519,7 @@ describe("buildConnectivityTestStatus", () => {
   it("keeps connection test state presentation compact and localizable", () => {
     expect(buildConnectivityTestStatus({ status: "idle" }, "zh-CN")).toEqual({
       label: "尚未测试",
-      detail: "使用当前代理和可选 Token 设置测试 GitHub API 是否可访问。",
+      detail: "使用已配置代理或 Windows 系统网络策略，以及可选 Token，测试 GitHub API 是否可访问。",
       tone: "neutral"
     });
     expect(buildConnectivityTestStatus({ status: "testing" }, "zh-CN").tone).toBe("busy");
@@ -533,6 +533,18 @@ describe("buildConnectivityTestStatus", () => {
       detail: "proxy timeout Check the GitHub proxy format and whether the proxy service is reachable.",
       tone: "danger"
     });
+  });
+
+  it("preserves the safe network route source returned by the desktop backend", () => {
+    const state = buildConnectivityTestViewState({
+      ok: true,
+      message: "GitHub API is reachable through the Windows PAC/WPAD policy.",
+      problem: "none",
+      routeSource: "windowsAutoProxy"
+    }, { githubToken: "", proxyUrl: "" });
+
+    expect(state.routeSource).toBe("windowsAutoProxy");
+    expect(buildConnectivityTestStatus(state, "en").detail).toContain("Windows PAC/WPAD");
   });
 
   it("marks a previous connectivity result stale after token or proxy changes", () => {

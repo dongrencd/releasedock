@@ -41,10 +41,10 @@ The desktop app is a compact update workbench built with Tauri 2 and React.
 - Left side: tracked repositories, local filters, selection, bulk remove/uninstall affordances.
 - Right side: selected release, version policy, install preview, lifecycle history, release notes, and contextual actions.
 - Bottom status strip: refresh, download, install, uninstall, rollback, and failure progress.
-- Settings: GitHub token, GitHub proxy, install root, language, theme, close-window behavior, background checks, start-with-Windows, notification permission actions, check interval, and download acceleration, plus actions to open the local data folder or quit the app.
+- Settings: GitHub token, GitHub proxy, install root, language, theme, close-window behavior, background checks, start-with-Windows, notification permission actions, check interval, and download acceleration, plus actions to open the local data folder or quit the app. On Windows, when no app proxy is set, ReleaseDock follows the current trusted system proxy, PAC, or WPAD policy.
 - System tray: configurable close-to-tray or exit behavior, consistent unminimize/focus restore, single-instance restore, manual check, restore window, localized quit menu, and update-count tooltip. Start-with-Windows launches in a lightweight hidden mode and defers dashboard/network loading until the window is restored. Background network or Token failures are surfaced as partial/failed diagnostics instead of being reported as zero updates.
 
-Public repositories work without a token. Private repositories and frequent refreshes should use a GitHub token. The proxy setting applies to GitHub API queries and Release asset downloads.
+Public repositories work without a token. Private repositories and frequent refreshes should use a GitHub token. The proxy setting applies to GitHub API queries and Release asset downloads and overrides the Windows system policy. ReleaseDock never uses a bundled third-party GitHub mirror or relay; if direct access and the trusted Windows policy both fail, the connection test reports that the network administrator must provide an approved route.
 
 Release version lists are cached per repository for the current process. Switching back to a loaded app restores its version list and last target immediately; manual retry, Dashboard refresh, or changing the GitHub token/proxy invalidates the cache.
 
@@ -151,8 +151,8 @@ Tagged releases also include `SHA256SUMS` for the uploaded assets.
 `VERSION` is the canonical application version. Use `python3 scripts/release-version.py <version>` to synchronize manifests, lockfiles, Tauri metadata, and README tag examples before adding the matching changelog entry and tag.
 
 ```bash
-git tag v0.2.14
-git push origin v0.2.14
+git tag v0.2.15
+git push origin v0.2.15
 ```
 
 ## Documentation
